@@ -1,4 +1,5 @@
 use self::driver::ReqSlot;
+use futures::AsyncWriteExt;
 use std::sync::{Arc, Weak};
 
 /* ------------------------------------------------------------------------------------------ */
@@ -114,6 +115,9 @@ impl Handle {
     /// Send a notify to the remote end. This will return after writing all payload to underlying
     /// transport.
     pub async fn notify(&self, route: &str, payload: impl IntoIterator) -> std::io::Result<()> {
+        let mut body = self.body.write.lock().await;
+        let body = &mut *body.as_mut();
+
         todo!()
     }
 }
@@ -141,6 +145,7 @@ pub(crate) mod driver {
         ffi::CStr,
         mem::replace,
         pin::Pin,
+        ptr::null,
         sync::{
             atomic::{
                 AtomicBool,
@@ -153,12 +158,13 @@ pub(crate) mod driver {
 
     use dashmap::DashMap;
     use derive_new::new;
+    use futures::AsyncReadExt;
+    use futures::{AsyncRead, AsyncWrite};
     use parking_lot::Mutex;
 
     use crate::{
         alias::{default, AsyncMutex, PoolPtr},
         raw,
-        transport::{AsyncFrameRead, AsyncFrameWrite},
     };
 
     /* ------------------------------------------------------------------------------------------ */
@@ -179,14 +185,15 @@ pub(crate) mod driver {
     }
 
     /* ----------------------------------------- Builder ---------------------------------------- */
+
     /// Driver initialization information. All RPC session must be initialized with this struct.
     #[derive(typed_builder::TypedBuilder)]
     pub struct InitInfo {
         /// Write interface to the underlying transport layer
-        write: Box<dyn AsyncFrameWrite>,
+        write: Box<dyn AsyncWrite + Send + Sync + Unpin>,
 
         /// Read interface to the underlying transport layer
-        read: Box<dyn AsyncFrameRead>,
+        read: Box<dyn AsyncRead + Send + Sync + Unpin>,
 
         /// Number of maximum buffered notifies/requests that can be queued in buffer.
         /// If this limit is reached, the driver will discard further requests from client.
@@ -236,10 +243,12 @@ pub(crate) mod driver {
         weak_body: Weak<Instance>,
         tx_inbound: flume::Sender<super::Inbound>,
         rx_aborts: flume::Receiver<u128>,
-        read: Pin<Box<dyn AsyncFrameRead>>,
+        mut read: Pin<Box<dyn AsyncRead + Send + Sync + Unpin>>,
         req_table: Arc<ReqTable>,
     ) -> Result<(), Error> {
         // TODO: Payload allocators for various sized request ... (small < 256, medium < 16k, large)
+
+        let read = &mut *read.as_mut();
 
         todo!()
     }
@@ -566,9 +575,9 @@ pub(crate) mod driver {
     /// Handles write operation to the underlying transport layer
     pub(crate) struct Instance {
         pub rx_inbound: flume::Receiver<super::Inbound>,
-        tx_aborts: flume::Sender<u128>,
-        write: AsyncMutex<Pin<Box<dyn AsyncFrameWrite>>>,
-        reqs: Arc<ReqTable>,
+        pub tx_aborts: flume::Sender<u128>,
+        pub write: AsyncMutex<Pin<Box<dyn AsyncWrite + Send + Sync + Unpin>>>,
+        pub reqs: Arc<ReqTable>,
     }
 
     impl Instance {}
