@@ -29,7 +29,7 @@ impl Drop for ReplyWait {
 }
 
 impl std::future::Future for ReplyWait {
-    type Output = driver::Reply;
+    type Output = Option<driver::Reply>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -130,6 +130,7 @@ impl WeakHandle {
 /* ------------------------------------------------------------------------------------------ */
 pub(crate) mod driver {
     use std::{
+        collections::VecDeque,
         ffi::CStr,
         mem::replace,
         pin::Pin,
@@ -277,12 +278,12 @@ pub(crate) mod driver {
 
                 // This is when the value is not set, and the `cancel` routine must
                 // check in the reference.
-                table.pool.lock().1.push(self);
+                table.pool.lock().1.push_back(self);
             } else if handled == true {
                 // The value was set already, thus we have to cleanup the value, and reclaim
                 // this entity to the queue back.
                 *self.data.lock() = (None, None);
-                table.pool.lock().1.push(self);
+                table.pool.lock().1.push_back(self);
             } else {
                 // We're dealing with corner cases. Because `try_set_reply` has been called,
                 // this entity has already been removed from the `active` table, but `drop_flag`
@@ -297,7 +298,7 @@ pub(crate) mod driver {
         pub fn poll_reply(
             io_this: &mut Option<Arc<ReqSlot>>,
             cx: &mut std::task::Context<'_>,
-        ) -> Poll<Reply> {
+        ) -> Poll<Option<Reply>> {
             let this = io_this.as_mut().unwrap();
             let mut data = this.data.lock();
 
@@ -311,13 +312,17 @@ pub(crate) mod driver {
                     debug_assert!(table.active.contains_key(&this.id) == false);
 
                     // Reclaim the slot.
-                    table.pool.lock().1.push(this);
+                    table.pool.lock().1.push_back(this);
                 }
 
-                Poll::Ready(result)
-            } else {
+                Poll::Ready(Some(result))
+            } else if let Some(table) = this.table.upgrade() {
                 data.0.replace(cx.waker().clone());
                 Poll::Pending
+            } else {
+                // The table has been dropped, so we can't wait for the reply anymore.
+                (drop(data), io_this.take());
+                Poll::Ready(None)
             }
         }
 
@@ -339,7 +344,17 @@ pub(crate) mod driver {
 
         /// (id_gen, idle_slots)
         #[new(default)]
-        pool: Mutex<(u128, Vec<Arc<ReqSlot>>)>,
+        pool: Mutex<(u128, VecDeque<Arc<ReqSlot>>)>,
+    }
+
+    impl Drop for ReqTable {
+        fn drop(&mut self) {
+            //! This logic prevents the polling logic in [`ReqSlot`] from being permanently blocked.
+            let all_pending = std::mem::take(&mut self.active);
+            all_pending.into_iter().for_each(|(_, slot)| {
+                slot.data.lock().0.take().map(|x| x.wake());
+            });
+        }
     }
 
     impl ReqTable {
@@ -351,23 +366,30 @@ pub(crate) mod driver {
                     slots.0 += 1;
                     let id = slots.0;
 
-                    (id, slots.1.pop())
+                    (id, slots.1.pop_front())
                 };
 
                 if let Some(mut slot) = slot {
-                    let p_slot = Arc::get_mut(&mut slot).expect("logic error");
-                    p_slot.id = id;
-                    p_slot.drop_flag.store(false, Relaxed);
+                    if let Some(p_slot) = Arc::get_mut(&mut slot) {
+                        p_slot.id = id;
+                        p_slot.drop_flag.store(false, Relaxed);
 
-                    debug_assert!({
-                        let data = p_slot.data.lock();
-                        data.0.is_none() && data.1.is_none()
-                    });
+                        debug_assert!({
+                            let data = p_slot.data.lock();
+                            data.0.is_none() && data.1.is_none()
+                        });
 
-                    slot
-                } else {
-                    Arc::new(ReqSlot::new(Arc::downgrade(self), id))
+                        return slot;
+                    } else {
+                        // This is a corner case, where the remaining references in the `ReqSlot`
+                        // that were returned to the pool by the `drop_flag` have not yet been
+                        // released. This rarely happens, but it is not impossible.
+                        self.pool.lock().1.push_back(slot);
+                    }
                 }
+
+                // We couldn't find a slot in the pool, so we have to allocate a new one.
+                Arc::new(ReqSlot::new(Arc::downgrade(self), id))
             };
 
             assert!(self.active.insert(slot.id, slot.clone()).is_none());
@@ -389,7 +411,7 @@ pub(crate) mod driver {
                 //
                 // See [`ReqSlot::cancel`] routine for more details.
                 *node.data.lock() = (None, None);
-                self.pool.lock().1.push(node);
+                self.pool.lock().1.push_back(node);
             }
 
             Some(())
