@@ -162,6 +162,7 @@ pub struct HRep {
     pub all_b: u32,
 }
 
+/// The response code for the request.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Primitive)]
 pub enum RepCode {

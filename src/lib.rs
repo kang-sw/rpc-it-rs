@@ -3,14 +3,16 @@
 //! - [`transport`] Defines data transport layer.
 //! - [`rpc`] Defines RPC layer
 //!
-pub use rpc::driver::InitInfo;
-pub use rpc::Handle;
-
 pub(crate) mod raw;
 
 pub mod ext;
 pub mod rpc;
 pub mod transport;
+
+pub use raw::RepCode;
+pub use rpc::driver::InitInfo;
+pub use rpc::{Handle, Inbound, ReplyWait, WeakHandle};
+pub use transport::{AsyncFrameRead, AsyncFrameWrite};
 
 pub mod alias {
     use lockfree_object_pool::{LinearObjectPool, LinearOwnedReusable, LinearReusable};

@@ -19,6 +19,10 @@ pub struct ReplyWait {
 impl Drop for ReplyWait {
     fn drop(&mut self) {
         if let Some(slot) = self.slot.take() {
+            // If we'd polled the future, it would have been taken already.
+            //
+            // This routine is only called when the future is dropped without being polled
+            // or when the future is dropped(aborted) before getting any reply.
             slot.cancel();
         }
     }
@@ -313,7 +317,7 @@ pub(crate) mod driver {
 
                 Poll::Ready(result)
             } else {
-                assert!(data.0.replace(cx.waker().clone()).is_none());
+                data.0.replace(cx.waker().clone());
                 Poll::Pending
             }
         }
@@ -472,6 +476,12 @@ pub(crate) mod driver {
 
     impl Drop for Request {
         fn drop(&mut self) {
+            //! In the `rpc-it` library, all data transmission is based on direct transmission
+            //! polling of the low-level [`crate::AsyncFrameWrite`] handler.
+            //!
+            //! No I/O operations that rely on `async` or blocking can be performed within
+            //! the `Drop` handler, so handling of unprocessed request responses is handed off
+            //! to worker tasks.
             self._take_body()
                 .upgrade()
                 .map(|x| x.tx_aborts.send(self.req_id()));
