@@ -39,6 +39,13 @@ impl std::future::Future for ReplyWait {
     }
 }
 
+#[cfg(feature = "futures")]
+impl futures::future::FusedFuture for ReplyWait {
+    fn is_terminated(&self) -> bool {
+        self.slot.is_none()
+    }
+}
+
 /* ------------------------------------------------------------------------------------------ */
 /*                                         RPC HANDLE                                         */
 /* ------------------------------------------------------------------------------------------ */
@@ -47,7 +54,7 @@ impl std::future::Future for ReplyWait {
 ///
 #[derive(Clone)]
 pub struct Handle {
-    body: Arc<driver::Body>,
+    body: Arc<driver::Instance>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -114,7 +121,7 @@ impl Handle {
 /* ----------------------------------------- Weak Handle ---------------------------------------- */
 #[derive(Clone)]
 pub struct WeakHandle {
-    w_driver: Weak<driver::Body>,
+    w_driver: Weak<driver::Instance>,
 }
 
 impl WeakHandle {
@@ -159,7 +166,7 @@ pub(crate) mod driver {
     /* ------------------------------------------------------------------------------------------ */
 
     /// Commonly used reused payload type alias.
-    pub type Buffer = PoolPtr<Vec<u8>>;
+    pub type BufferPtr = PoolPtr<Vec<u8>>;
 
     /// Driver exit result type
     #[derive(thiserror::Error, Debug)]
@@ -204,7 +211,7 @@ pub(crate) mod driver {
 
             let reqs = Arc::new(ReqTable::new());
 
-            let d = Body {
+            let d = Instance {
                 rx_inbound,
                 tx_aborts,
                 write: AsyncMutex::new(Box::into_pin(self.write)),
@@ -226,7 +233,7 @@ pub(crate) mod driver {
     /// Sending cancellation handling for cancelled request handlers issued by the `Drop`
     /// routine is also performed by the driver.
     async fn run_driver(
-        weak_body: Weak<Body>,
+        weak_body: Weak<Instance>,
         tx_inbound: flume::Sender<super::Inbound>,
         rx_aborts: flume::Receiver<u128>,
         read: Pin<Box<dyn AsyncFrameRead>>,
@@ -249,7 +256,7 @@ pub(crate) mod driver {
 
     pub struct Reply {
         head: raw::HRep,
-        data: Buffer,
+        data: BufferPtr,
     }
 
     impl ReqSlot {
@@ -422,9 +429,9 @@ pub(crate) mod driver {
     /// Contains route to the RPC endpoint, and received payload
     pub struct Request {
         head: raw::HReq,
-        data: Buffer,
+        data: BufferPtr,
 
-        w_body: Weak<Body>,
+        w_body: Weak<Instance>,
     }
 
     impl std::fmt::Debug for Request {
@@ -468,14 +475,22 @@ pub(crate) mod driver {
 
         pub async fn error(
             mut self,
+            errc: raw::RepCode,
+            payload: impl IntoIterator<Item = &[u8]>,
+        ) -> std::io::Result<()> {
+            Self::_reply(self._take_body(), errc, payload).await
+        }
+
+        pub async fn user_error(
+            mut self,
             payload: impl IntoIterator<Item = &[u8]>,
         ) -> std::io::Result<()> {
             Self::_reply(self._take_body(), raw::RepCode::UserError, payload).await
         }
 
-        pub async fn error_with<T: std::fmt::Display>(self, error: T) -> std::io::Result<()> {
+        pub async fn user_error_by<T: std::fmt::Display>(self, error: T) -> std::io::Result<()> {
             let e = format!("{}", error);
-            self.error([e.as_bytes()]).await
+            self.user_error([e.as_bytes()]).await
         }
 
         pub async fn error_no_route(mut self) -> std::io::Result<()> {
@@ -483,14 +498,14 @@ pub(crate) mod driver {
         }
 
         async fn _reply(
-            body: Weak<Body>,
+            body: Weak<Instance>,
             errc: raw::RepCode,
             payload: impl IntoIterator<Item = &[u8]>,
         ) -> std::io::Result<()> {
             todo!()
         }
 
-        fn _take_body(&mut self) -> Weak<Body> {
+        fn _take_body(&mut self) -> Weak<Instance> {
             replace(&mut self.w_body, default())
         }
     }
@@ -512,7 +527,7 @@ pub(crate) mod driver {
     /* ------------------------------------- Notify Handling ------------------------------------ */
     pub struct Notify {
         head: raw::HNoti,
-        data: Buffer,
+        data: BufferPtr,
     }
 
     impl std::fmt::Debug for Notify {
@@ -545,16 +560,16 @@ pub(crate) mod driver {
     }
 
     /* ------------------------------------------------------------------------------------------ */
-    /*                                     RPC DRIVER INSTANCE                                    */
+    /*                                        WRITER LOGIC                                        */
     /* ------------------------------------------------------------------------------------------ */
 
     /// Handles write operation to the underlying transport layer
-    pub(crate) struct Body {
+    pub(crate) struct Instance {
         pub rx_inbound: flume::Receiver<super::Inbound>,
         tx_aborts: flume::Sender<u128>,
         write: AsyncMutex<Pin<Box<dyn AsyncFrameWrite>>>,
         reqs: Arc<ReqTable>,
     }
 
-    impl Body {}
+    impl Instance {}
 }

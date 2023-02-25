@@ -295,14 +295,27 @@ pub enum RepCode {
     Okay = 0,
 
     /// Request is canceled by not handling reply structure.
+    ///
+    /// Payload likely to be empty.
     Aborted = 1,
 
     /// There was no route to handle the request.
+    ///
+    /// Payload may contain the route that was requested.
     NoRoute = 2,
-
-    /// User returned error. Payload may contain user defined error context.
-    UserError = 3,
 
     /// Unkown error.
     Unkown = 4,
+
+    /// User returned error. Payload may contain user defined error context.
+    UserError = 100,
+
+    /// User error - invalid data format
+    ParseFailed = 101,
+
+    /// User error - invalid argument received
+    InvalidArgument = 102,
+
+    /// User error - invalid state
+    InvalidState = 103,
 }
