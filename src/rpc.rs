@@ -132,11 +132,10 @@ pub(crate) mod driver {
     use std::{
         ffi::CStr,
         mem::replace,
-        ops::AddAssign,
         pin::Pin,
         sync::{
             atomic::{
-                AtomicBool, AtomicU8,
+                AtomicBool,
                 Ordering::{AcqRel, Relaxed},
             },
             Arc, Weak,
@@ -232,7 +231,7 @@ pub(crate) mod driver {
         read: Pin<Box<dyn AsyncFrameRead>>,
         req_table: Arc<ReqTable>,
     ) -> Result<(), Error> {
-        // TODO: Payload allocators for various size request ... (small < 256, medium < 16k, large)
+        // TODO: Payload allocators for various sized request ... (small < 256, medium < 16k, large)
 
         todo!()
     }
@@ -413,24 +412,29 @@ pub(crate) mod driver {
     }
 
     impl Request {
-        pub fn route(&self) -> &str {
-            todo!()
+        pub fn route(&self) -> &[u8] {
+            &self.data[self.head.route()]
         }
 
-        pub fn route_cstr(&self) -> &CStr {
-            todo!()
+        pub fn route_cstr(&self) -> Result<&CStr, impl std::error::Error> {
+            CStr::from_bytes_with_nul(&self.data[self.head.route_c()])
         }
 
         pub fn payload(&self) -> &[u8] {
-            todo!()
+            // Null byte from both ends is excluded.
+            &self.data[self.head.payload()]
         }
 
-        pub fn payload_with_nul(&self) -> &[u8] {
-            todo!()
+        pub unsafe fn payload_cstr_unchecked(&self) -> &CStr {
+            //! In this function, the last byte is guaranteed to be NULL, but there is no
+            //! guarantee that there are no NULL bytes in the middle. To avoid unnecessarily
+            //! iterating over all the bytes, the function is marked as unsafe and does not
+            //! perform any verification logic.
+            CStr::from_bytes_with_nul_unchecked(&self.data[self.head.payload_c()])
         }
 
         pub fn req_id(&self) -> u128 {
-            todo!()
+            raw::retrieve_req_id(&self.data[self.head.req_id()])
         }
 
         pub async fn reply(
@@ -453,12 +457,7 @@ pub(crate) mod driver {
         }
 
         pub async fn error_no_route(mut self) -> std::io::Result<()> {
-            Self::_reply(
-                self._take_body(),
-                raw::RepCode::NoRoute,
-                [self.route().as_bytes()],
-            )
-            .await
+            Self::_reply(self._take_body(), raw::RepCode::NoRoute, [self.route()]).await
         }
 
         async fn _reply(
@@ -501,20 +500,25 @@ pub(crate) mod driver {
     }
 
     impl Notify {
-        pub fn route(&self) -> &str {
-            todo!()
+        pub fn route(&self) -> &[u8] {
+            &self.data[self.head.route()]
         }
 
-        pub fn route_cstr(&self) -> &CStr {
-            todo!()
+        pub fn route_cstr(&self) -> Result<&CStr, impl std::error::Error> {
+            CStr::from_bytes_with_nul(&self.data[self.head.route_c()])
         }
 
         pub fn payload(&self) -> &[u8] {
-            todo!()
+            // Null byte from both ends is excluded.
+            &self.data[self.head.payload()]
         }
 
-        pub fn payload_with_nul(&self) -> &[u8] {
-            todo!()
+        pub unsafe fn payload_cstr_unchecked(&self) -> &CStr {
+            //! In this function, the last byte is guaranteed to be NULL, but there is no
+            //! guarantee that there are no NULL bytes in the middle. To avoid unnecessarily
+            //! iterating over all the bytes, the function is marked as unsafe and does not
+            //! perform any verification logic.
+            CStr::from_bytes_with_nul_unchecked(&self.data[self.head.payload_c()])
         }
     }
 
