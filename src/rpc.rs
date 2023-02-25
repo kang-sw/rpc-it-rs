@@ -285,7 +285,7 @@ pub(crate) mod driver {
                 *self.data.lock() = (None, None);
                 table.pool.lock().1.push(self);
             } else {
-                // We're dealing with edge cases. Because `try_set_reply` has been called,
+                // We're dealing with corner cases. Because `try_set_reply` has been called,
                 // this entity has already been removed from the `active` table, but `drop_flag`
                 // appears to be `false` because `set_reply` is still being called.
                 //
@@ -383,7 +383,7 @@ pub(crate) mod driver {
             node.set_reply(result);
 
             if node.drop_flag.swap(true, AcqRel) == true {
-                // We're dealing with edge cases. This is when the `future` object is cancelled
+                // We're dealing with corner cases. This is when the `future` object is cancelled
                 // between pulling the value from the `active` table and setting the `reply`.
                 // It is the responsibility of this routine to execute the cleanup logic of the
                 // cancelled object.
