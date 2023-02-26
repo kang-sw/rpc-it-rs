@@ -16,11 +16,13 @@ pub use transport::{AsyncFrameRead, AsyncFrameWrite};
 
 pub mod consts {
     pub const SMALL_PAYLOAD_SLICE_COUNT: usize = 16;
+
+    pub const BUFSIZE_SMALL: usize = 128;
+    pub const BUFSIZE_LARGE: usize = 4096;
 }
 
 pub mod alias {
     use lockfree_object_pool::{LinearObjectPool, LinearOwnedReusable, LinearReusable};
-    use std::sync::Arc;
 
     pub type PoolPtr<T> = LinearOwnedReusable<T>;
     pub type PoolRef<'a, T> = LinearReusable<'a, T>;

@@ -1,3 +1,4 @@
+use derive_more::From;
 use smallvec::SmallVec;
 
 use crate::{
@@ -22,7 +23,7 @@ pub type SmallPayloadVec<'a> = SmallVec<[IoSlice<'a>; SMALL_PAYLOAD_SLICE_COUNT]
 /* ------------------------------------------------------------------------------------------ */
 /*                                          RPC TYPES                                         */
 /* ------------------------------------------------------------------------------------------ */
-#[derive(Debug)]
+#[derive(Debug, From)]
 pub enum Inbound {
     Request(driver::Request),
     Notify(driver::Notify),
@@ -252,7 +253,6 @@ pub(crate) mod driver {
         ffi::CStr,
         io::IoSlice,
         mem::{replace, size_of},
-        num::NonZeroUsize,
         pin::Pin,
         sync::{
             atomic::{
@@ -265,13 +265,14 @@ pub(crate) mod driver {
     };
 
     use dashmap::DashMap;
-    use derive_more::{Deref, From};
+    use derive_more::From;
     use derive_new::new;
     use futures_util::{select, FutureExt};
     use parking_lot::Mutex;
 
     use crate::{
         alias::{default, AsyncMutex, Pool, PoolPtr},
+        consts::{BUFSIZE_LARGE, BUFSIZE_SMALL},
         raw,
         transport::{self, AsyncFrameRead, AsyncFrameWrite},
         Handle,
@@ -297,6 +298,9 @@ pub(crate) mod driver {
 
         #[error("invalid identifier {actual:?}, expected {expected:?}")]
         InvalidIdent { expected: [u8; 4], actual: [u8; 4] },
+
+        #[error("Failed to parse header: {0}")]
+        UnkownType(#[from] raw::ParseError),
     }
 
     /* ----------------------------------------- Builder ---------------------------------------- */
@@ -321,7 +325,7 @@ pub(crate) mod driver {
         ///
         /// The default setting performs pooling for buffers smaller than 128 bytes and 4096 bytes,
         /// and always frees memory for buffers larger than that.
-        #[builder(default=vec![128,  4096])]
+        #[builder(default=vec![BUFSIZE_SMALL, BUFSIZE_LARGE])]
         buffer_size_levels: Vec<usize>,
 
         /// If a buffer larger than this value is allocated, it will be shrunk to the size
@@ -368,7 +372,10 @@ pub(crate) mod driver {
                 .map(|x| {
                     (
                         x,
-                        Pool::new(move || Vec::with_capacity(x), |x| unsafe { x.set_len(0) }),
+                        Arc::new(Pool::new(
+                            move || Vec::with_capacity(x),
+                            |x| unsafe { x.set_len(0) },
+                        )),
                     )
                 })
                 .collect();
@@ -376,13 +383,13 @@ pub(crate) mod driver {
             // Setup fallback allocation
             allocs.push((
                 usize::MAX,
-                Pool::new(
+                Arc::new(Pool::new(
                     || Vec::new(),
                     move |x| unsafe {
                         x.set_len(0);
                         x.shrink_to(self.largest_buffer_shrink_size);
                     },
-                ),
+                )),
             ));
 
             (
@@ -414,6 +421,7 @@ pub(crate) mod driver {
         pub async fn run(mut self) -> Result<(), Error> {
             let mut task_inbound = Box::pin(Self::read_ops(
                 &mut *self.read,
+                &self.weak_body,
                 &self.tx_inbound,
                 &self.req_table,
                 &self.allocs,
@@ -422,12 +430,7 @@ pub(crate) mod driver {
 
             let result = loop {
                 select! {
-                    result = &mut task_inbound => {
-                        match result {
-                            Ok(_) => break Ok(()),
-                            Err(e) => break Err(e.into())
-                        }
-                    }
+                    result = &mut task_inbound => break result,
 
                     abort = self.rx_aborts.recv_async() => {
                         match (abort, self.weak_body.upgrade() ) {
@@ -455,21 +458,113 @@ pub(crate) mod driver {
 
         pub async fn read_ops(
             read: &mut dyn AsyncFrameRead,
+            weak_body: &Weak<Instance>,
             tx: &flume::Sender<super::Inbound>,
             req_table: &Arc<ReqTable>,
             allocs: &VarSizePool,
-        ) -> std::io::Result<()> {
-            todo!()
+        ) -> Result<(), Error> {
+            use raw::*;
+            use transport::util::read_all;
+
+            let mut hbuf: RawHeadBuf = default();
+
+            loop {
+                read_all(read, &mut hbuf).await?;
+                let head = RawHead::from_bytes(hbuf).ok_or(Error::InvalidIdent {
+                    expected: IDENT,
+                    actual: std::array::from_fn(|i| hbuf[i]),
+                })?;
+
+                match head.parse()? {
+                    Head::Noti(head) => {
+                        let mut data = allocs.allocate(head.all_b as usize);
+                        read_all(read, &mut data[..]).await?;
+
+                        tx.send(Notify { head, data }.into())
+                            .map_err(|_| Error::Disposed)?;
+                    }
+
+                    Head::Req(head) => {
+                        let mut data = allocs.allocate(head.all_b as usize);
+                        read_all(read, &mut data[..]).await?;
+
+                        tx.send(
+                            Request {
+                                head,
+                                data,
+                                w_body: weak_body.clone(),
+                            }
+                            .into(),
+                        )
+                        .map_err(|_| Error::Disposed)?;
+                    }
+
+                    Head::Rep(head) => {
+                        let mut data = allocs.allocate(head.all_b as usize);
+                        read_all(read, &mut data[..]).await?;
+
+                        let rep = Reply { head, data };
+                        let id = rep.req_id();
+
+                        // Just don't handle the error, as user simply dropped the
+                        // `ReplyWait` object.
+                        req_table.try_set_reply(id, rep);
+                    }
+                }
+            }
         }
     }
 
     /* -------------------------------- Memory Allocator Utility -------------------------------- */
-    #[derive(From, Deref)]
-    pub struct VarSizePool(Vec<(usize, Pool<Vec<u8>>)>);
+    #[derive(From)]
+    pub struct VarSizePool(Vec<(usize, Arc<Pool<Vec<u8>>>)>);
 
     impl VarSizePool {
         pub fn allocate(&self, len: usize) -> BufferPtr {
-            todo!()
+            let e = self
+                .0
+                .binary_search_by_key(&len, |x| x.0)
+                .expect("logic error");
+
+            let (_, pool) = &self.0[e];
+            let mut buf = pool.pull_owned();
+
+            unsafe {
+                buf.set_len(0);
+                buf.reserve(len);
+                buf.set_len(len);
+            }
+
+            buf
+        }
+    }
+
+    /* ------------------------------------- Reply Structure ------------------------------------ */
+    pub struct Reply {
+        head: raw::HRep,
+        data: BufferPtr,
+    }
+
+    impl Reply {
+        pub fn errc(&self) -> crate::RepCode {
+            self.head.errc
+        }
+
+        pub fn req_id(&self) -> u128 {
+            raw::retrieve_req_id(&self.data[self.head.req_id()])
+        }
+
+        pub fn payload(&self) -> &[u8] {
+            // Null byte from both ends is excluded.
+            &self.data[self.head.payload()]
+        }
+
+        pub unsafe fn payload_cstr_unchecked(&self) -> &CStr {
+            //! In this function, the last byte is guaranteed to be NULL, but there is no
+            //! guarantee that there are no NULL bytes in the middle. To avoid unnecessarily
+            //! iterating over all the bytes, the function is marked as unsafe and does not
+            //! perform any verification logic.
+            CStr::from_bytes_with_nul_unchecked(&self.data[self.head.payload_c()])
         }
     }
 
@@ -482,12 +577,6 @@ pub(crate) mod driver {
         drop_flag: AtomicBool,
         data: Mutex<(Option<std::task::Waker>, Option<Reply>)>,
     }
-
-    pub struct Reply {
-        head: raw::HRep,
-        data: BufferPtr,
-    }
-
     impl ReqSlot {
         pub fn new(table: Weak<ReqTable>, id: u128) -> Self {
             Self {
@@ -552,7 +641,8 @@ pub(crate) mod driver {
                 }
 
                 Poll::Ready(Some(result))
-            } else if let Some(table) = this.table.upgrade() {
+            } else if let Some(_table) = this.table.upgrade() {
+                // As long as the table instance is alive, we'll be notified for any event ...
                 data.0.replace(cx.waker().clone());
                 Poll::Pending
             } else {

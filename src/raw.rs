@@ -115,30 +115,39 @@ impl RawHead {
         }
     }
 
-    pub fn parse(&self) -> Option<Head> {
+    pub fn parse(&self) -> Result<Head, ParseError> {
         let t = (self.b0 >> 29) & 0x7;
         let n = (self.b0 >> 20) & 0x1ff;
         let m = (self.b0 >> 16) & 0xf;
         let e = (self.b0 >> 10) & 0x3f;
 
         match t {
-            0 => Some(Head::Noti(HNoti {
+            0 => Ok(Head::Noti(HNoti {
                 route: n as u16,
                 all_b: self.p,
             })),
-            1 => Some(Head::Req(HReq {
+            1 => Ok(Head::Req(HReq {
                 route: n as u16,
                 req_id: m as u8,
                 all_b: self.p,
             })),
-            2 => Some(Head::Rep(HRep {
-                errc: RepCode::from_u8(e as u8)?,
+            2 => Ok(Head::Rep(HRep {
+                errc: RepCode::from_u8(e as u8).ok_or(ParseError::InvalidErrCode(e as u8))?,
                 req_id: m as u8,
                 all_b: self.p,
             })),
-            _ => None,
+            ty => Err(ParseError::InvalidType(ty as u8)),
         }
     }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ParseError {
+    #[error("invalid message type: {0}")]
+    InvalidType(u8),
+
+    #[error("invalid error code: {0}")]
+    InvalidErrCode(u8),
 }
 
 /* ---------------------------------------------------------------------------------------------- */

@@ -17,7 +17,7 @@ pub trait AsyncFrameWrite: Send + Sync + Unpin {
     /// Flush the underlying transport layer.
     fn poll_flush(
         self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         std::task::Poll::Ready(Ok(()))
     }
@@ -25,7 +25,7 @@ pub trait AsyncFrameWrite: Send + Sync + Unpin {
     /// Shutdown the underlying transport layer.
     fn poll_shutdown(
         self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         std::task::Poll::Ready(Ok(()))
     }
