@@ -58,6 +58,11 @@ pub struct RawHead {
 pub type RawHeadBuf = [u8; std::mem::size_of::<RawHead>()];
 
 impl RawHead {
+    fn is_le() -> bool {
+        const ENDIAN_CHECK: *const i32 = &1 as *const i32;
+        unsafe { *(ENDIAN_CHECK as *const u8) == 1 }
+    }
+
     pub fn from_bytes(mut value: RawHeadBuf) -> Option<Self> {
         // Check identifier
         if value[0..4] != IDENT {
@@ -65,8 +70,7 @@ impl RawHead {
         }
 
         // Rearranges frames received in network byte order to system byte order, if necessary.
-        const ENDIAN_CHECK: i32 = 1;
-        if unsafe { *(ENDIAN_CHECK as *const i8) == 1 } {
+        if Self::is_le() {
             value[4..8].reverse();
             value[8..12].reverse();
         }
@@ -78,8 +82,7 @@ impl RawHead {
         let mut value: RawHeadBuf = unsafe { std::mem::transmute_copy(self) };
 
         // Rearranges frames received in network byte order to system byte order, if necessary.
-        const ENDIAN_CHECK: i32 = 1;
-        if unsafe { *(ENDIAN_CHECK as *const i8) == 1 } {
+        if Self::is_le() {
             value[4..8].reverse();
             value[8..12].reverse();
         }
@@ -185,11 +188,11 @@ impl HNoti {
     }
 
     pub fn payload(&self) -> Range<usize> {
-        self.n() + 1..self.p()
+        self.n() + 1..self.p() - 1
     }
 
     pub fn payload_c(&self) -> Range<usize> {
-        self.n() + 1..self.p() + 1
+        self.n() + 1..self.p()
     }
 }
 
@@ -223,11 +226,11 @@ impl HReq {
     }
 
     pub fn payload(&self) -> Range<usize> {
-        self.m() + self.n() + 1..self.p()
+        self.m() + self.n() + 1..self.p() - 1
     }
 
     pub fn payload_c(&self) -> Range<usize> {
-        self.m() + self.n() + 1..self.p() + 1
+        self.m() + self.n() + 1..self.p()
     }
 
     pub fn req_id(&self) -> Range<usize> {
@@ -253,11 +256,11 @@ impl HRep {
     }
 
     pub fn payload(&self) -> Range<usize> {
-        self.m()..self.p()
+        self.m()..self.p() - 1
     }
 
     pub fn payload_c(&self) -> Range<usize> {
-        self.m()..self.p() + 1
+        self.m()..self.p()
     }
 
     pub fn req_id(&self) -> Range<usize> {

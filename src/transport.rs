@@ -8,11 +8,28 @@ use std::{io::IoSlice, pin::Pin};
 /// layer.
 ///
 pub trait AsyncFrameWrite: Send + Sync + Unpin {
-    fn poll_write_vec(
+    /// Called before writing a message
+    fn poll_start_write(
+        self: Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    /// Called until flushing all message
+    fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         bufs: &[IoSlice<'_>],
     ) -> std::task::Poll<std::io::Result<usize>>;
+
+    /// Called after writing single message
+    fn poll_end_write(
+        self: Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
 
     /// Flush the underlying transport layer.
     fn poll_flush(
@@ -56,8 +73,10 @@ pub mod util {
     ) -> std::io::Result<usize> {
         let mut total_written = 0;
 
+        poll_fn(|cx| Pin::new(&mut *this).poll_start_write(cx)).await?;
+
         while bufs.is_empty() == false {
-            let mut n = poll_fn(|cx| Pin::new(&mut *this).poll_write_vec(cx, bufs)).await?;
+            let mut n = poll_fn(|cx| Pin::new(&mut *this).poll_write(cx, bufs)).await?;
             total_written += n;
 
             // HACK: following logic should be replaced with IoSlice::advance when it is stabilized.
@@ -82,6 +101,7 @@ pub mod util {
             }
         }
 
+        poll_fn(|cx| Pin::new(&mut *this).poll_end_write(cx)).await?;
         Ok(total_written)
     }
 

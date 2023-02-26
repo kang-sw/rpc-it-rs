@@ -521,12 +521,12 @@ pub(crate) mod driver {
 
     impl VarSizePool {
         pub fn allocate(&self, len: usize) -> BufferPtr {
-            let e = self
+            let idx = self
                 .0
                 .binary_search_by_key(&len, |x| x.0)
-                .expect("logic error");
+                .unwrap_or_else(|x| x);
 
-            let (_, pool) = &self.0[e];
+            let (_, pool) = &self.0[idx];
             let mut buf = pool.pull_owned();
 
             unsafe {

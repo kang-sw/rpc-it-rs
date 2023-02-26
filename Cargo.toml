@@ -8,11 +8,14 @@ description = "RPC library for my own demand."
 license = "MIT"
 exclude = ["doc/"]
 
+# --------------------------------------------- Deps --------------------------------------------- #
 [dependencies]
 derive_more = "0.99"
 derive-new = "0.5"
 enum-primitive-derive = "0.2"
 num-traits = "0.2"
+
+paste = "1"
 
 anyhow = "1"
 thiserror = "1"
@@ -27,14 +30,35 @@ typed-builder = "0.12"
 
 smallvec = "1"
 
-
+# ----------------------------------------- Optional Deps ---------------------------------------- #
 futures-util = "0.3"
 futures = { version = "0.3", optional = true }
 
-tokio = { version = "1", features = [
+tokio = { version = "1", default-features = false, optional = true, features = [
     "io-util",
-], default-features = false, optional = true }
+] }
 
+tokio-full = { package = "tokio", version = "1", optional = true, features = [
+    "full",
+] }
+
+# ------------------------------------------- Dev Deps ------------------------------------------- #
+
+# ------------------------------------------- Features ------------------------------------------- #
 [features]
 futures = ["dep:futures"]
 tokio = ["dep:tokio"]
+tokio-full = ["dep:tokio-full"]
+
+# ------------------------------------------------------------------------------------------------ #
+#                                           TEST SECTION                                           #
+# ------------------------------------------------------------------------------------------------ #
+[[example]]
+name = "tcp"
+path = "examples/tcp.rs"
+required-features = ["tokio-full"]
+
+[[test]]
+name = "ops"
+path = "tests/ops.rs"
+required-features = ["tokio-full"]
