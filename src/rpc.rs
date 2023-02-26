@@ -40,6 +40,13 @@ impl std::future::Future for ReplyWait {
     }
 }
 
+#[cfg(feature = "futures")]
+impl futures::future::FusedFuture for ReplyWait {
+    fn is_terminated(&self) -> bool {
+        self.slot.is_none()
+    }
+}
+
 /* ------------------------------------------------------------------------------------------ */
 /*                                         RPC HANDLE                                         */
 /* ------------------------------------------------------------------------------------------ */
