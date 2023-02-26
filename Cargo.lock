@@ -293,6 +293,7 @@ dependencies = [
  "lockfree-object-pool",
  "num-traits",
  "parking_lot",
+ "smallvec",
  "thiserror",
  "typed-builder",
 ]

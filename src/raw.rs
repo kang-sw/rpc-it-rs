@@ -5,6 +5,7 @@ use num_traits::FromPrimitive;
 
 /// Every message starts with this header
 pub const IDENT: [u8; 4] = [b'+', b'@', b'C', b'|'];
+pub const MAX_ROUTE_LEN: usize = 1 << 9;
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                       RAW MESSAGE HEADER                                       */

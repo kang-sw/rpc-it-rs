@@ -1,5 +1,22 @@
+use smallvec::{smallvec, SmallVec};
+
+use crate::{
+    alias::default,
+    raw::{self, MAX_ROUTE_LEN},
+    transport,
+};
+
 use self::driver::ReqSlot;
-use std::sync::{Arc, Weak};
+use std::{
+    future::poll_fn,
+    io::IoSlice,
+    mem::size_of,
+    pin::Pin,
+    sync::{Arc, Weak},
+};
+
+/// Magic number: Determine the maximum number of payload arrays to stack.
+pub type SmallPayloadVec<'a> = SmallVec<[IoSlice<'a>; 16]>;
 
 /* ------------------------------------------------------------------------------------------ */
 /*                                          RPC TYPES                                         */
@@ -100,21 +117,102 @@ impl Handle {
         self.body.rx_inbound.recv().ok()
     }
 
+    /// Flush all queued write requests. This is simply a function that forwards flush requests
+    /// to the internal transport layer.
+    pub async fn flush(&self) -> std::io::Result<()> {
+        let mut write = self.body.write.lock().await;
+        poll_fn(|cx| Pin::new(&mut **write).poll_flush(cx)).await
+    }
+
     /// Send a request to the remote end, and returns awaitable reply.
     ///
     /// You can emulate timeout behavior by dropping returned future.
-    pub async fn request(
+    pub async fn request<T: AsRef<[u8]> + 'static>(
         &self,
         route: &str,
-        payload: impl IntoIterator,
-    ) -> std::io::Result<ReplyWait> {
-        todo!()
+        payload: impl IntoIterator<Item = &T>,
+    ) -> std::io::Result<(usize, ReplyWait)> {
+        assert!(route.len() <= MAX_ROUTE_LEN);
+
+        // Try allocate reply slot first
+        let slot = self.body.reqs.alloc();
+        let id = slot.id;
+
+        // Making this let slot canceled automatically on write error.
+        let wait = ReplyWait { slot: Some(slot) };
+
+        // Create notification header
+        let header_buf;
+        let mut id_buf: [u8; size_of::<u128>()] = default();
+        let id_buf = raw::store_req_id(id, &mut id_buf);
+
+        // Naively assume that the payload array is small enough to fit in stack.
+        //  - First element is reserved for header.
+        //  - Second element is reserved for route.
+        //  - Third element is zero.
+        let mut b = SmallPayloadVec::new();
+        b.extend(
+            [&[], id_buf, route.as_bytes(), &[0u8]]
+                .iter()
+                .map(|x| IoSlice::new(x)),
+        );
+        b.extend(payload.into_iter().map(|x| IoSlice::new(x.as_ref())));
+        b.push(IoSlice::new(&[0u8][..]));
+
+        // Write header
+        let total_len = b[1..].iter().map(|x| x.len()).sum::<usize>();
+        let header = raw::Head::Req(raw::HReq {
+            route: route.len() as u16,
+            all_b: total_len as u32,
+            req_id: id_buf.len() as u8,
+        });
+        header_buf = raw::RawHead::new(header).to_bytes();
+        b[0] = IoSlice::new(&header_buf);
+
+        // Write to transport
+        let mut write = self.body.write.lock().await;
+        let nw = transport::util::write_vectored_all(&mut **write, &mut b).await?;
+
+        Ok((nw, wait))
     }
 
     /// Send a notify to the remote end. This will return after writing all payload to underlying
     /// transport.
-    pub async fn notify(&self, route: &str, payload: impl IntoIterator) -> std::io::Result<()> {
-        todo!()
+    pub async fn notify<T: AsRef<[u8]> + 'static>(
+        &self,
+        route: &str,
+        payload: impl IntoIterator<Item = &T>,
+    ) -> std::io::Result<usize> {
+        assert!(route.len() <= MAX_ROUTE_LEN);
+
+        // Create notification header
+        let header_buf;
+
+        // Naively assume that the payload array is small enough to fit in stack.
+        //  - First element is reserved for header.
+        //  - Second element is reserved for route.
+        //  - Third element is zero.
+        let mut b = SmallPayloadVec::new();
+        b.extend(
+            [&[], route.as_bytes(), &[0u8]]
+                .iter()
+                .map(|x| IoSlice::new(x)),
+        );
+        b.extend(payload.into_iter().map(|x| IoSlice::new(x.as_ref())));
+        b.push(IoSlice::new(&[0u8][..]));
+
+        // Write header
+        let total_len = b[1..].iter().map(|x| x.len()).sum::<usize>();
+        let header = raw::Head::Noti(raw::HNoti {
+            route: route.len() as u16,
+            all_b: total_len as u32,
+        });
+        header_buf = raw::RawHead::new(header).to_bytes();
+        b[0] = IoSlice::new(&header_buf);
+
+        // Write to transport
+        let mut write = self.body.write.lock().await;
+        transport::util::write_vectored_all(&mut **write, &mut b).await
     }
 }
 
@@ -248,7 +346,7 @@ pub(crate) mod driver {
     /// Reusable instance of RPC slot.
     pub(crate) struct ReqSlot {
         table: Weak<ReqTable>,
-        id: u128,
+        pub id: u128,
 
         drop_flag: AtomicBool,
         data: Mutex<(Option<std::task::Waker>, Option<Reply>)>,
@@ -566,10 +664,9 @@ pub(crate) mod driver {
     /// Handles write operation to the underlying transport layer
     pub(crate) struct Instance {
         pub rx_inbound: flume::Receiver<super::Inbound>,
-        tx_aborts: flume::Sender<u128>,
-        write: AsyncMutex<Pin<Box<dyn AsyncFrameWrite>>>,
-        reqs: Arc<ReqTable>,
-    }
+        pub write: AsyncMutex<Pin<Box<dyn AsyncFrameWrite>>>,
+        pub reqs: Arc<ReqTable>,
 
-    impl Instance {}
+        tx_aborts: flume::Sender<u128>,
+    }
 }

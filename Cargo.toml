@@ -24,3 +24,5 @@ async-mutex = "1.4"
 parking_lot = "0.12"
 
 typed-builder = "0.12"
+
+smallvec = "1"
