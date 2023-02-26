@@ -15,9 +15,9 @@ macro_rules! mt_trait {
 }
 
 // TODO: Websocket support
-#[cfg(any(feature = "tokio", feature = "tokio-full"))]
+#[cfg(any(feature = "tokio", feature = "dev-tokio-full"))]
 pub mod ext_tokio {
-    #[cfg(feature = "tokio-full")]
+    #[cfg(feature = "dev-tokio-full")]
     use tokio_full as tokio;
 
     use std::{pin::Pin, task::Poll};
