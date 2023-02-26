@@ -351,9 +351,14 @@ pub(crate) mod driver {
         /// Number of maximum buffered notifies/requests that can be queued in buffer.
         /// If this limit is reached, the driver will discard further requests from client.
         ///
-        /// Specifying zero here(default) will make the notify buffer unbounded.
-        #[builder(default = 0)]
+        /// Specifying maximum here(default) will make the notify buffer unbounded.
+        #[builder(default = usize::MAX)]
         inbound_channel_size: usize,
+
+        /// If this flag is set, when the inbound channel is fulfilled, the driver will
+        /// be blocked until any of the inbound message are processed.
+        #[builder(default = false)]
+        block_on_full_inbound: bool,
 
         /// Set the buffer pooling steps. Buffers larger than the largest buffer size will be
         /// shrunk back to the size specified by `largest_buffer_shrink_size` at the end of use.
@@ -382,8 +387,10 @@ pub(crate) mod driver {
             super::Handle,
             impl std::future::Future<Output = Result<(), Error>>,
         ) {
-            let (tx_inbound, rx_inbound) = flume::bounded(self.inbound_channel_size);
             let (tx_aborts, rx_aborts) = flume::unbounded();
+            let (tx_inbound, rx_inbound) = (self.inbound_channel_size == usize::MAX)
+                .then(|| flume::unbounded())
+                .unwrap_or_else(|| flume::bounded(self.inbound_channel_size));
 
             let reqs = Arc::new(ReqTable::new());
 
@@ -429,7 +436,16 @@ pub(crate) mod driver {
 
             (
                 h,
-                Driver::new(weak, tx_inbound, rx_aborts, read, reqs, allocs.into()).run(),
+                Driver::new(
+                    weak,
+                    tx_inbound,
+                    rx_aborts,
+                    read,
+                    reqs,
+                    allocs.into(),
+                    self.block_on_full_inbound,
+                )
+                .run(),
             )
         }
     }
@@ -450,6 +466,7 @@ pub(crate) mod driver {
         read: Pin<Box<dyn AsyncFrameRead>>,
         req_table: Arc<ReqTable>,
         allocs: VarSizePool,
+        block_on_full: bool,
     }
 
     impl Driver {
@@ -460,6 +477,7 @@ pub(crate) mod driver {
                 &self.tx_inbound,
                 &self.req_table,
                 &self.allocs,
+                self.block_on_full,
             ))
             .fuse();
 
@@ -497,6 +515,7 @@ pub(crate) mod driver {
             tx: &flume::Sender<super::Inbound>,
             req_table: &Arc<ReqTable>,
             allocs: &VarSizePool,
+            block_on_full: bool,
         ) -> Result<(), Error> {
             use raw::*;
             use transport::util::read_all;
@@ -516,9 +535,15 @@ pub(crate) mod driver {
                         read_all(read, &mut data[..]).await?;
                         data.push(0);
 
-                        match tx.try_send(Notify { head, data }.into()) {
-                            Ok(_) | Err(TrySendError::Full(_)) => (), // Discard if channel is full
-                            Err(TrySendError::Disconnected(_)) => break Err(Error::Disposed),
+                        let msg = Notify { head, data }.into();
+
+                        if block_on_full {
+                            tx.send_async(msg).await.map_err(|_| Error::Disposed)?;
+                        } else {
+                            match tx.try_send(msg) {
+                                Ok(_) | Err(TrySendError::Full(_)) => (), // Discard if channel is full
+                                Err(TrySendError::Disconnected(_)) => break Err(Error::Disposed),
+                            }
                         }
                     }
 
@@ -527,16 +552,20 @@ pub(crate) mod driver {
                         read_all(read, &mut data[..]).await?;
                         data.push(0);
 
-                        match tx.try_send(
-                            Request {
-                                head,
-                                data,
-                                w_body: weak_body.clone(),
+                        let msg = Request {
+                            head,
+                            data,
+                            w_body: weak_body.clone(),
+                        }
+                        .into();
+
+                        if block_on_full {
+                            tx.send_async(msg).await.map_err(|_| Error::Disposed)?;
+                        } else {
+                            match tx.try_send(msg) {
+                                Ok(_) | Err(TrySendError::Full(_)) => (), // Discard if channel is full
+                                Err(TrySendError::Disconnected(_)) => break Err(Error::Disposed),
                             }
-                            .into(),
-                        ) {
-                            Ok(_) | Err(TrySendError::Full(_)) => (), // Discard if channel is full
-                            Err(TrySendError::Disconnected(_)) => break Err(Error::Disposed),
                         }
                     }
 
