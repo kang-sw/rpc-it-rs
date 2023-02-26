@@ -301,6 +301,7 @@ pub(crate) mod driver {
     use dashmap::DashMap;
     use derive_more::From;
     use derive_new::new;
+    use flume::TrySendError;
     use futures_util::{select, FutureExt};
     use parking_lot::Mutex;
 
@@ -515,8 +516,10 @@ pub(crate) mod driver {
                         read_all(read, &mut data[..]).await?;
                         data.push(0);
 
-                        tx.send(Notify { head, data }.into())
-                            .map_err(|_| Error::Disposed)?;
+                        match tx.try_send(Notify { head, data }.into()) {
+                            Ok(_) | Err(TrySendError::Full(_)) => (), // Discard if channel is full
+                            Err(TrySendError::Disconnected(_)) => break Err(Error::Disposed),
+                        }
                     }
 
                     Head::Req(head) => {
@@ -524,15 +527,17 @@ pub(crate) mod driver {
                         read_all(read, &mut data[..]).await?;
                         data.push(0);
 
-                        tx.send(
+                        match tx.try_send(
                             Request {
                                 head,
                                 data,
                                 w_body: weak_body.clone(),
                             }
                             .into(),
-                        )
-                        .map_err(|_| Error::Disposed)?;
+                        ) {
+                            Ok(_) | Err(TrySendError::Full(_)) => (), // Discard if channel is full
+                            Err(TrySendError::Disconnected(_)) => break Err(Error::Disposed),
+                        }
                     }
 
                     Head::Rep(head) => {
