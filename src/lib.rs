@@ -5,7 +5,9 @@
 //!
 pub(crate) mod raw;
 
-pub mod ext;
+mod ext;
+pub use ext::*; // As all internal modules are prefixed with `ext_`, this is safe.
+
 pub mod rpc;
 pub mod transport;
 

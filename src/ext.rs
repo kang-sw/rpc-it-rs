@@ -1,3 +1,4 @@
+#[allow(unused)]
 macro_rules! mt_trait {
     ( $trait_name: ty) => {
         paste::paste! {

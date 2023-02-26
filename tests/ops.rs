@@ -1,9 +1,7 @@
 use futures::{future::join_all, AsyncReadExt};
 use rpc_it::{
-    ext::{
-        ext_futures,
-        ext_tokio::{ReadAdapter, WriteAdapter},
-    },
+    ext_futures,
+    ext_tokio::{ReadAdapter, WriteAdapter},
     Inbound,
 };
 use tokio_full as tokio;
