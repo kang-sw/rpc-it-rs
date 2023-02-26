@@ -40,9 +40,9 @@ pub const MAX_ROUTE_LEN: usize = 1 << 9;
 ///     BYTE [8, 12): p: length of all payload length to read. Max 4GB allowed.
 ///
 ///     PAYLOAD:
-///         NOTI: [0..n) route [n) 0 [n+1..p) payload [p] 0
-///         REQ: [0..m) request_id [m..m+n] route [m+n] 0 [n+m+1..p) payload [p] 0
-///         REP: [0..m] request id, [m..p) payload [p] 0
+///         NOTI: [0..n) route [n) 0 [n+1..p) payload
+///         REQ: [0..m) request_id [m..m+n] route [m+n] 0 [n+m+1..p) payload
+///         REP: [0..m] request id, [m..p) payload
 ///
 /// ```
 #[repr(C)]
@@ -188,11 +188,11 @@ impl HNoti {
     }
 
     pub fn payload(&self) -> Range<usize> {
-        self.n() + 1..self.p() - 1
+        self.n() + 1..self.p()
     }
 
     pub fn payload_c(&self) -> Range<usize> {
-        self.n() + 1..self.p()
+        self.n() + 1..self.p() + 1
     }
 }
 
@@ -218,23 +218,23 @@ impl HReq {
     }
 
     pub fn route(&self) -> Range<usize> {
-        self.m()..self.n()
+        self.m()..self.m() + self.n()
     }
 
     pub fn route_c(&self) -> Range<usize> {
-        self.m()..self.n() + 1
+        self.m()..self.m() + self.n() + 1
     }
 
     pub fn payload(&self) -> Range<usize> {
-        self.m() + self.n() + 1..self.p() - 1
-    }
-
-    pub fn payload_c(&self) -> Range<usize> {
         self.m() + self.n() + 1..self.p()
     }
 
+    pub fn payload_c(&self) -> Range<usize> {
+        self.m() + self.n() + 1..self.p() + 1
+    }
+
     pub fn req_id(&self) -> Range<usize> {
-        0..self.m() + 1
+        0..self.m()
     }
 }
 
@@ -256,11 +256,11 @@ impl HRep {
     }
 
     pub fn payload(&self) -> Range<usize> {
-        self.m()..self.p() - 1
+        self.m()..self.p()
     }
 
     pub fn payload_c(&self) -> Range<usize> {
-        self.m()..self.p()
+        self.m()..self.p() + 1
     }
 
     pub fn req_id(&self) -> Range<usize> {
@@ -302,7 +302,7 @@ fn test_endian() {
 /* ---------------------------------------------------------------------------------------------- */
 /// The response code for the request.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Primitive)]
+#[derive(Clone, Copy, Debug, Primitive, PartialEq, Eq)]
 pub enum RepCode {
     /// Successful.
     Okay = 0,

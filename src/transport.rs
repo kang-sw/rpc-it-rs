@@ -114,8 +114,15 @@ pub mod util {
 
         while total_read != until {
             let n = poll_fn(|cx| Pin::new(&mut *this).poll_read(cx, buf)).await?;
-            total_read += n;
 
+            if n == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "unexpected EOF",
+                ));
+            }
+
+            total_read += n;
             buf = &mut buf[n..];
         }
 

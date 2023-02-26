@@ -36,7 +36,7 @@ pub struct ReplyWait {
 }
 
 impl ReplyWait {
-    pub fn id(&self) -> u128 {
+    pub fn request_id(&self) -> u128 {
         self.slot.as_ref().unwrap().id
     }
 }
@@ -138,13 +138,43 @@ impl Handle {
         poll_fn(|cx| Pin::new(&mut **write).poll_shutdown(cx)).await
     }
 
+    /// Number of pending requests.
+    pub fn pending_requests(&self) -> usize {
+        self.body.reqs.pending_requests()
+    }
+
+    /// Send a request to the remote end, and returns awaitable reply.
+    pub async fn request<'a, T: AsRef<[u8]> + 'a + ?Sized>(
+        &self,
+        route: &str,
+        payload: impl IntoIterator<Item = &'a T>,
+    ) -> std::io::Result<ReplyWait> {
+        let (_, wait) = self
+            .request_n_bytes(route, &mut payload.into_iter().map(|x| x.as_ref()))
+            .await?;
+        Ok(wait)
+    }
+
+    /// Send a notify to the remote end. This will return after writing all payload to underlying
+    /// transport.
+    pub async fn notify<'a, T: AsRef<[u8]> + 'a + ?Sized>(
+        &self,
+        route: &str,
+        payload: impl IntoIterator<Item = &'a T>,
+    ) -> std::io::Result<usize> {
+        self._notify(route, &mut payload.into_iter().map(|x| x.as_ref()))
+            .await
+    }
+
     /// Send a request to the remote end, and returns awaitable reply.
     ///
     /// You can emulate timeout behavior by dropping returned future.
-    pub async fn request<T: AsRef<[u8]> + 'static>(
+    ///
+    /// This version returns the number of bytes written.
+    pub async fn request_n_bytes(
         &self,
         route: &str,
-        payload: impl IntoIterator<Item = &T>,
+        payload: &mut impl Iterator<Item = &[u8]>,
     ) -> std::io::Result<(usize, ReplyWait)> {
         assert!(route.len() <= MAX_ROUTE_LEN);
 
@@ -170,8 +200,11 @@ impl Handle {
                 .iter()
                 .map(|x| IoSlice::new(x)),
         );
-        b.extend(payload.into_iter().map(|x| IoSlice::new(x.as_ref())));
-        b.push(IoSlice::new(&[0u8][..]));
+        b.extend(
+            payload
+                .filter(|x| x.is_empty() == false)
+                .map(|x| IoSlice::new(x.as_ref())),
+        );
 
         // Write header
         let total_len = b[1..].iter().map(|x| x.len()).sum::<usize>();
@@ -190,12 +223,10 @@ impl Handle {
         Ok((nw, wait))
     }
 
-    /// Send a notify to the remote end. This will return after writing all payload to underlying
-    /// transport.
-    pub async fn notify<T: AsRef<[u8]> + 'static>(
+    async fn _notify(
         &self,
         route: &str,
-        payload: impl IntoIterator<Item = &T>,
+        payload: &mut impl Iterator<Item = &[u8]>,
     ) -> std::io::Result<usize> {
         assert!(route.len() <= MAX_ROUTE_LEN);
 
@@ -212,8 +243,11 @@ impl Handle {
                 .iter()
                 .map(|x| IoSlice::new(x)),
         );
-        b.extend(payload.into_iter().map(|x| IoSlice::new(x.as_ref())));
-        b.push(IoSlice::new(&[0u8][..]));
+        b.extend(
+            payload
+                .filter(|x| x.is_empty() == false)
+                .map(|x| IoSlice::new(x.as_ref())),
+        );
 
         // Write header
         let total_len = b[1..].iter().map(|x| x.len()).sum::<usize>();
@@ -435,7 +469,7 @@ pub(crate) mod driver {
                     abort = self.rx_aborts.recv_async() => {
                         match (abort, self.weak_body.upgrade() ) {
                             (Ok(id), Some(body)) => {
-                                body.write_reply(id, crate::RepCode::Aborted, []).await?;
+                                body.write_reply(id, crate::RepCode::Aborted, &mut <[&[u8]; 0]>::default().into_iter()).await?;
                             }
                             _ => {
                                 // Means `Instance` has been disposed.
@@ -479,6 +513,7 @@ pub(crate) mod driver {
                     Head::Noti(head) => {
                         let mut data = allocs.allocate(head.all_b as usize);
                         read_all(read, &mut data[..]).await?;
+                        data.push(0);
 
                         tx.send(Notify { head, data }.into())
                             .map_err(|_| Error::Disposed)?;
@@ -487,6 +522,7 @@ pub(crate) mod driver {
                     Head::Req(head) => {
                         let mut data = allocs.allocate(head.all_b as usize);
                         read_all(read, &mut data[..]).await?;
+                        data.push(0);
 
                         tx.send(
                             Request {
@@ -502,9 +538,10 @@ pub(crate) mod driver {
                     Head::Rep(head) => {
                         let mut data = allocs.allocate(head.all_b as usize);
                         read_all(read, &mut data[..]).await?;
+                        data.push(0);
 
                         let rep = Reply { head, data };
-                        let id = rep.req_id();
+                        let id = rep.request_id();
 
                         // Just don't handle the error, as user simply dropped the
                         // `ReplyWait` object.
@@ -523,7 +560,7 @@ pub(crate) mod driver {
         pub fn allocate(&self, len: usize) -> BufferPtr {
             let idx = self
                 .0
-                .binary_search_by_key(&len, |x| x.0)
+                .binary_search_by_key(&(len + 1), |x| x.0)
                 .unwrap_or_else(|x| x);
 
             let (_, pool) = &self.0[idx];
@@ -531,7 +568,7 @@ pub(crate) mod driver {
 
             unsafe {
                 buf.set_len(0);
-                buf.reserve(len);
+                buf.reserve(len + 1); // for null byte
                 buf.set_len(len);
             }
 
@@ -550,7 +587,7 @@ pub(crate) mod driver {
             self.head.errc
         }
 
-        pub fn req_id(&self) -> u128 {
+        pub fn request_id(&self) -> u128 {
             raw::retrieve_req_id(&self.data[self.head.req_id()])
         }
 
@@ -684,8 +721,12 @@ pub(crate) mod driver {
     }
 
     impl ReqTable {
+        pub fn pending_requests(&self) -> usize {
+            self.active.len()
+        }
+
         pub fn alloc(self: &Arc<ReqTable>) -> Arc<ReqSlot> {
-            let slot = {
+            let slot = 'outer: {
                 let (id, slot) = {
                     let mut slots = self.pool.lock();
 
@@ -705,7 +746,7 @@ pub(crate) mod driver {
                             data.0.is_none() && data.1.is_none()
                         });
 
-                        return slot;
+                        break 'outer slot;
                     } else {
                         // This is a corner case, where the remaining references in the `ReqSlot`
                         // that were returned to the pool by the `drop_flag` have not yet been
@@ -781,38 +822,38 @@ pub(crate) mod driver {
             CStr::from_bytes_with_nul_unchecked(&self.data[self.head.payload_c()])
         }
 
-        pub fn req_id(&self) -> u128 {
+        pub fn request_id(&self) -> u128 {
             raw::retrieve_req_id(&self.data[self.head.req_id()])
         }
 
-        pub async fn reply(
+        pub async fn reply<'a, T: AsRef<[u8]> + ?Sized + 'a>(
             mut self,
-            payload: impl IntoIterator<Item = &[u8]>,
+            payload: impl IntoIterator<Item = &'a T>,
         ) -> std::io::Result<usize> {
             Self::_reply(
                 self._take_body(),
-                self.req_id(),
+                self.request_id(),
                 raw::RepCode::Okay,
                 payload,
             )
             .await
         }
 
-        pub async fn error(
+        pub async fn error<'a, T: AsRef<[u8]> + ?Sized + 'a>(
             mut self,
             errc: raw::RepCode,
-            payload: impl IntoIterator<Item = &[u8]>,
+            payload: impl IntoIterator<Item = &'a T>,
         ) -> std::io::Result<usize> {
-            Self::_reply(self._take_body(), self.req_id(), errc, payload).await
+            Self::_reply(self._take_body(), self.request_id(), errc, payload).await
         }
 
-        pub async fn user_error(
+        pub async fn user_error<'a, T: AsRef<[u8]> + ?Sized + 'a>(
             mut self,
-            payload: impl IntoIterator<Item = &[u8]>,
+            payload: impl IntoIterator<Item = &'a T>,
         ) -> std::io::Result<usize> {
             Self::_reply(
                 self._take_body(),
-                self.req_id(),
+                self.request_id(),
                 raw::RepCode::UserError,
                 payload,
             )
@@ -827,18 +868,18 @@ pub(crate) mod driver {
         pub async fn error_no_route(mut self) -> std::io::Result<usize> {
             Self::_reply(
                 self._take_body(),
-                self.req_id(),
+                self.request_id(),
                 raw::RepCode::NoRoute,
                 [self.route()],
             )
             .await
         }
 
-        async fn _reply(
+        async fn _reply<'a, T: AsRef<[u8]> + 'a + ?Sized>(
             body: Weak<Instance>,
             id: u128,
             errc: raw::RepCode,
-            payload: impl IntoIterator<Item = &[u8]>,
+            payload: impl IntoIterator<Item = &'a T>,
         ) -> std::io::Result<usize> {
             let body = body.upgrade().ok_or_else(|| {
                 std::io::Error::new(
@@ -847,7 +888,8 @@ pub(crate) mod driver {
                 )
             })?;
 
-            body.write_reply(id, errc, payload).await
+            body.write_reply(id, errc, &mut payload.into_iter().map(|x| x.as_ref()))
+                .await
         }
 
         fn _take_body(&mut self) -> Weak<Instance> {
@@ -865,7 +907,7 @@ pub(crate) mod driver {
             //! to worker tasks.
             self._take_body()
                 .upgrade()
-                .map(|x| x.tx_aborts.send(self.req_id()));
+                .map(|x| x.tx_aborts.send(self.request_id()));
         }
     }
 
@@ -922,7 +964,7 @@ pub(crate) mod driver {
             &self,
             id: u128,
             errc: raw::RepCode,
-            payload: impl IntoIterator<Item = &[u8]>,
+            payload: &mut impl Iterator<Item = &[u8]>,
         ) -> std::io::Result<usize> {
             let head_buf;
             let mut id_buf: [u8; size_of::<u128>()] = default();
@@ -930,7 +972,11 @@ pub(crate) mod driver {
 
             let mut b = SmallPayloadVec::new();
             b.extend([&[], id_buf].iter().map(|x| IoSlice::new(x)));
-            b.extend(payload.into_iter().map(|x| IoSlice::new(x)));
+            b.extend(
+                payload
+                    .filter(|x| x.is_empty() == false)
+                    .map(|x| IoSlice::new(x.as_ref())),
+            );
 
             let total_bytes: usize = b.iter().map(|x| x.len()).sum();
             let head = raw::HRep {

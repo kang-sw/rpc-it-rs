@@ -1,7 +1,3 @@
-// TODO: futures AsyncWrite / AsyncRead support
-
-// TODO: TOKIO AsyncWrite / AsyncRead support, TOKIO Tcp support
-
 macro_rules! mt_trait {
     ( $trait_name: ty) => {
         paste::paste! {
@@ -58,8 +54,9 @@ pub mod ext_tokio {
         ) -> Poll<std::io::Result<usize>> {
             let mut buf = ReadBuf::new(buf);
 
-            match (Pin::new(self.0.adapt())).poll_read(cx, &mut buf)? {
-                Poll::Ready(_) => Poll::Ready(Ok(buf.filled().len())),
+            match (Pin::new(self.0.adapt())).poll_read(cx, &mut buf) {
+                Poll::Ready(Ok(_)) => Poll::Ready(Ok(buf.filled().len())),
+                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
                 Poll::Pending => Poll::Pending,
             }
         }
@@ -139,17 +136,4 @@ pub mod ext_futures {
             Pin::new(self.0.adapt()).poll_close(cx)
         }
     }
-}
-
-#[test]
-fn foo() {
-    trait G {
-        fn g_method(&self) {}
-    }
-    trait R {}
-
-    impl G for dyn R {}
-
-    let s: &dyn R = todo!();
-    s.g_method();
 }

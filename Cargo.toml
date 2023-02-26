@@ -48,7 +48,7 @@ tokio-full = { package = "tokio", version = "1", optional = true, features = [
 [features]
 futures = ["dep:futures"]
 tokio = ["dep:tokio"]
-tokio-full = ["dep:tokio-full"]
+dev-tokio-full = ["dep:tokio-full"]
 
 # ------------------------------------------------------------------------------------------------ #
 #                                           TEST SECTION                                           #
@@ -56,9 +56,9 @@ tokio-full = ["dep:tokio-full"]
 [[example]]
 name = "tcp"
 path = "examples/tcp.rs"
-required-features = ["tokio-full"]
+required-features = ["dev-tokio-full"]
 
 [[test]]
 name = "ops"
 path = "tests/ops.rs"
-required-features = ["tokio-full"]
+required-features = ["dev-tokio-full"]
