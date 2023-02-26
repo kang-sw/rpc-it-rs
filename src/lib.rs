@@ -14,13 +14,17 @@ pub use rpc::driver::InitInfo;
 pub use rpc::{Handle, Inbound, ReplyWait, WeakHandle};
 pub use transport::{AsyncFrameRead, AsyncFrameWrite};
 
+pub mod consts {
+    pub const SMALL_PAYLOAD_SLICE_COUNT: usize = 16;
+}
+
 pub mod alias {
     use lockfree_object_pool::{LinearObjectPool, LinearOwnedReusable, LinearReusable};
     use std::sync::Arc;
 
     pub type PoolPtr<T> = LinearOwnedReusable<T>;
     pub type PoolRef<'a, T> = LinearReusable<'a, T>;
-    pub type Pool<T> = Arc<LinearObjectPool<T>>;
+    pub type Pool<T> = LinearObjectPool<T>;
 
     pub(crate) type AsyncMutex<T> = async_mutex::Mutex<T>;
 

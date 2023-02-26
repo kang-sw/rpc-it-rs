@@ -26,3 +26,15 @@ parking_lot = "0.12"
 typed-builder = "0.12"
 
 smallvec = "1"
+
+
+futures-util = "0.3"
+futures = { version = "0.3", optional = true }
+
+tokio = { version = "1", features = [
+    "io-util",
+], default-features = false, optional = true }
+
+[features]
+futures = ["dep:futures"]
+tokio = ["dep:tokio"]

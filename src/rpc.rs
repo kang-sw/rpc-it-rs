@@ -2,6 +2,7 @@ use smallvec::SmallVec;
 
 use crate::{
     alias::default,
+    consts::SMALL_PAYLOAD_SLICE_COUNT,
     raw::{self, MAX_ROUTE_LEN},
     transport,
 };
@@ -16,7 +17,7 @@ use std::{
 };
 
 /// Magic number: Determine the maximum number of payload arrays to stack.
-pub type SmallPayloadVec<'a> = SmallVec<[IoSlice<'a>; 16]>;
+pub type SmallPayloadVec<'a> = SmallVec<[IoSlice<'a>; SMALL_PAYLOAD_SLICE_COUNT]>;
 
 /* ------------------------------------------------------------------------------------------ */
 /*                                          RPC TYPES                                         */
@@ -128,6 +129,12 @@ impl Handle {
     pub async fn flush(&self) -> std::io::Result<()> {
         let mut write = self.body.write.lock().await;
         poll_fn(|cx| Pin::new(&mut **write).poll_flush(cx)).await
+    }
+
+    /// Shutdown underlying write stream.
+    pub async fn shutdown(&self) -> std::io::Result<()> {
+        let mut write = self.body.write.lock().await;
+        poll_fn(|cx| Pin::new(&mut **write).poll_shutdown(cx)).await
     }
 
     /// Send a request to the remote end, and returns awaitable reply.
@@ -245,6 +252,7 @@ pub(crate) mod driver {
         ffi::CStr,
         io::IoSlice,
         mem::{replace, size_of},
+        num::NonZeroUsize,
         pin::Pin,
         sync::{
             atomic::{
@@ -257,13 +265,16 @@ pub(crate) mod driver {
     };
 
     use dashmap::DashMap;
+    use derive_more::{Deref, From};
     use derive_new::new;
+    use futures_util::{select, FutureExt};
     use parking_lot::Mutex;
 
     use crate::{
-        alias::{default, AsyncMutex, PoolPtr},
+        alias::{default, AsyncMutex, Pool, PoolPtr},
         raw,
         transport::{self, AsyncFrameRead, AsyncFrameWrite},
+        Handle,
     };
 
     use super::SmallPayloadVec;
@@ -281,7 +292,10 @@ pub(crate) mod driver {
         #[error("io error: {0}")]
         IoError(#[from] std::io::Error),
 
-        #[error("Invalid identifier {actual:?}, expected {expected:?}")]
+        #[error("driver is disposed")]
+        Disposed,
+
+        #[error("invalid identifier {actual:?}, expected {expected:?}")]
         InvalidIdent { expected: [u8; 4], actual: [u8; 4] },
     }
 
@@ -301,10 +315,26 @@ pub(crate) mod driver {
         /// Specifying zero here(default) will make the notify buffer unbounded.
         #[builder(default = 0)]
         inbound_channel_size: usize,
+
+        /// Set the buffer pooling steps. Buffers larger than the largest buffer size will be
+        /// shrunk back to the size specified by `largest_buffer_shrink_size` at the end of use.
+        ///
+        /// The default setting performs pooling for buffers smaller than 128 bytes and 4096 bytes,
+        /// and always frees memory for buffers larger than that.
+        #[builder(default=vec![128,  4096])]
+        buffer_size_levels: Vec<usize>,
+
+        /// If a buffer larger than this value is allocated, it will be shrunk to the size
+        /// specified by this value when the buffer is checked into the pool. Default value '0'
+        /// clears buffer allocation every time.
+        ///
+        /// To disable this feature, set this value to usize::MAX.
+        #[builder(default = 0)]
+        largest_buffer_shrink_size: usize,
     }
 
     /* ------------------------------------------------------------------------------------------ */
-    /*                                         DRIVER LOOP                                        */
+    /*                                         DRIVER TASK                                        */
     /* ------------------------------------------------------------------------------------------ */
     impl InitInfo {
         pub fn start(
@@ -329,26 +359,118 @@ pub(crate) mod driver {
             let weak = Arc::downgrade(&h.body);
             let read = Box::into_pin(self.read);
 
-            (h, run_driver(weak, tx_inbound, rx_aborts, read, reqs))
+            let mut buffer_sizes = self.buffer_size_levels;
+            buffer_sizes.sort();
+            buffer_sizes.dedup();
+
+            let mut allocs: Vec<_> = buffer_sizes
+                .into_iter()
+                .map(|x| {
+                    (
+                        x,
+                        Pool::new(move || Vec::with_capacity(x), |x| unsafe { x.set_len(0) }),
+                    )
+                })
+                .collect();
+
+            // Setup fallback allocation
+            allocs.push((
+                usize::MAX,
+                Pool::new(
+                    || Vec::new(),
+                    move |x| unsafe {
+                        x.set_len(0);
+                        x.shrink_to(self.largest_buffer_shrink_size);
+                    },
+                ),
+            ));
+
+            (
+                h,
+                Driver::new(weak, tx_inbound, rx_aborts, read, reqs, allocs.into()).run(),
+            )
         }
     }
 
+    /* ---------------------------------- Driver Implementation --------------------------------- */
     /// Receive data from the remote end. For the `notify` and `request` types, create a
     /// receive object, push it to the channel, and route the `reply` type to the entity
     /// waiting for a response as appropriate.
     ///
     /// Sending cancellation handling for cancelled request handlers issued by the `Drop`
     /// routine is also performed by the driver.
-    async fn run_driver(
+    ///
+    #[derive(derive_new::new)]
+    struct Driver {
         weak_body: Weak<Instance>,
         tx_inbound: flume::Sender<super::Inbound>,
         rx_aborts: flume::Receiver<u128>,
         read: Pin<Box<dyn AsyncFrameRead>>,
         req_table: Arc<ReqTable>,
-    ) -> Result<(), Error> {
-        // TODO: Payload allocators for various sized request ... (small < 256, medium < 16k, large)
+        allocs: VarSizePool,
+    }
 
-        todo!()
+    impl Driver {
+        pub async fn run(mut self) -> Result<(), Error> {
+            let mut task_inbound = Box::pin(Self::read_ops(
+                &mut *self.read,
+                &self.tx_inbound,
+                &self.req_table,
+                &self.allocs,
+            ))
+            .fuse();
+
+            let result = loop {
+                select! {
+                    result = &mut task_inbound => {
+                        match result {
+                            Ok(_) => break Ok(()),
+                            Err(e) => break Err(e.into())
+                        }
+                    }
+
+                    abort = self.rx_aborts.recv_async() => {
+                        match (abort, self.weak_body.upgrade() ) {
+                            (Ok(id), Some(body)) => {
+                                body.write_reply(id, crate::RepCode::Aborted, []).await?;
+                            }
+                            _ => {
+                                // Means `Instance` has been disposed.
+                                break Err(Error::Disposed)
+                            }
+                        }
+                    }
+                };
+            };
+
+            // Just try to shutdown the connection, if possible.
+            if let Some(body) = self.weak_body.upgrade() {
+                // It's okay to fail this operation, as we might be exitting
+                // due to previous shutdown.
+                Handle { body }.shutdown().await.ok();
+            }
+
+            result
+        }
+
+        pub async fn read_ops(
+            read: &mut dyn AsyncFrameRead,
+            tx: &flume::Sender<super::Inbound>,
+            req_table: &Arc<ReqTable>,
+            allocs: &VarSizePool,
+        ) -> std::io::Result<()> {
+            todo!()
+        }
+    }
+
+    /* -------------------------------- Memory Allocator Utility -------------------------------- */
+    #[derive(From, Deref)]
+    pub struct VarSizePool(Vec<(usize, Pool<Vec<u8>>)>);
+
+    impl VarSizePool {
+        pub fn allocate(&self, len: usize) -> BufferPtr {
+            todo!()
+        }
     }
 
     /* -------------------------------- Request - Reply Handling -------------------------------- */
@@ -635,25 +757,7 @@ pub(crate) mod driver {
                 )
             })?;
 
-            let head_buf;
-            let mut id_buf: [u8; size_of::<u128>()] = default();
-            let id_buf = raw::store_req_id(id, &mut id_buf);
-
-            let mut b = SmallPayloadVec::new();
-            b.extend([&[], id_buf].iter().map(|x| IoSlice::new(x)));
-            b.extend(payload.into_iter().map(|x| IoSlice::new(x)));
-
-            let total_bytes: usize = b.iter().map(|x| x.len()).sum();
-            let head = raw::HRep {
-                all_b: total_bytes as u32,
-                errc,
-                req_id: id_buf.len() as u8,
-            };
-            head_buf = raw::RawHead::new(head.into()).to_bytes();
-            b[0] = IoSlice::new(&head_buf);
-
-            let mut write = body.write.lock().await;
-            transport::util::write_vectored_all(&mut **write, &mut b).await
+            body.write_reply(id, errc, payload).await
         }
 
         fn _take_body(&mut self) -> Weak<Instance> {
@@ -721,5 +825,34 @@ pub(crate) mod driver {
         pub reqs: Arc<ReqTable>,
 
         tx_aborts: flume::Sender<u128>,
+    }
+
+    impl Instance {
+        pub async fn write_reply(
+            &self,
+            id: u128,
+            errc: raw::RepCode,
+            payload: impl IntoIterator<Item = &[u8]>,
+        ) -> std::io::Result<usize> {
+            let head_buf;
+            let mut id_buf: [u8; size_of::<u128>()] = default();
+            let id_buf = raw::store_req_id(id, &mut id_buf);
+
+            let mut b = SmallPayloadVec::new();
+            b.extend([&[], id_buf].iter().map(|x| IoSlice::new(x)));
+            b.extend(payload.into_iter().map(|x| IoSlice::new(x)));
+
+            let total_bytes: usize = b.iter().map(|x| x.len()).sum();
+            let head = raw::HRep {
+                all_b: total_bytes as u32,
+                errc,
+                req_id: id_buf.len() as u8,
+            };
+            head_buf = raw::RawHead::new(head.into()).to_bytes();
+            b[0] = IoSlice::new(&head_buf);
+
+            let mut write = self.write.lock().await;
+            transport::util::write_vectored_all(&mut **write, &mut b).await
+        }
     }
 }
