@@ -1,4 +1,4 @@
-use smallvec::{smallvec, SmallVec};
+use smallvec::SmallVec;
 
 use crate::{
     alias::default,
@@ -31,6 +31,12 @@ pub enum Inbound {
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ReplyWait {
     slot: Option<Arc<ReqSlot>>,
+}
+
+impl ReplyWait {
+    pub fn id(&self) -> u128 {
+        self.slot.as_ref().unwrap().id
+    }
 }
 
 impl Drop for ReplyWait {
@@ -237,7 +243,8 @@ pub(crate) mod driver {
     use std::{
         collections::VecDeque,
         ffi::CStr,
-        mem::replace,
+        io::IoSlice,
+        mem::{replace, size_of},
         pin::Pin,
         sync::{
             atomic::{
@@ -256,8 +263,10 @@ pub(crate) mod driver {
     use crate::{
         alias::{default, AsyncMutex, PoolPtr},
         raw,
-        transport::{AsyncFrameRead, AsyncFrameWrite},
+        transport::{self, AsyncFrameRead, AsyncFrameWrite},
     };
+
+    use super::SmallPayloadVec;
 
     /* ------------------------------------------------------------------------------------------ */
     /*                                            TYPES                                           */
@@ -567,40 +576,84 @@ pub(crate) mod driver {
         pub async fn reply(
             mut self,
             payload: impl IntoIterator<Item = &[u8]>,
-        ) -> std::io::Result<()> {
-            Self::_reply(self._take_body(), raw::RepCode::Okay, payload).await
+        ) -> std::io::Result<usize> {
+            Self::_reply(
+                self._take_body(),
+                self.req_id(),
+                raw::RepCode::Okay,
+                payload,
+            )
+            .await
         }
 
         pub async fn error(
             mut self,
             errc: raw::RepCode,
             payload: impl IntoIterator<Item = &[u8]>,
-        ) -> std::io::Result<()> {
-            Self::_reply(self._take_body(), errc, payload).await
+        ) -> std::io::Result<usize> {
+            Self::_reply(self._take_body(), self.req_id(), errc, payload).await
         }
 
         pub async fn user_error(
             mut self,
             payload: impl IntoIterator<Item = &[u8]>,
-        ) -> std::io::Result<()> {
-            Self::_reply(self._take_body(), raw::RepCode::UserError, payload).await
+        ) -> std::io::Result<usize> {
+            Self::_reply(
+                self._take_body(),
+                self.req_id(),
+                raw::RepCode::UserError,
+                payload,
+            )
+            .await
         }
 
-        pub async fn user_error_by<T: std::fmt::Display>(self, error: T) -> std::io::Result<()> {
+        pub async fn user_error_by<T: std::fmt::Display>(self, error: T) -> std::io::Result<usize> {
             let e = format!("{}", error);
             self.user_error([e.as_bytes()]).await
         }
 
-        pub async fn error_no_route(mut self) -> std::io::Result<()> {
-            Self::_reply(self._take_body(), raw::RepCode::NoRoute, [self.route()]).await
+        pub async fn error_no_route(mut self) -> std::io::Result<usize> {
+            Self::_reply(
+                self._take_body(),
+                self.req_id(),
+                raw::RepCode::NoRoute,
+                [self.route()],
+            )
+            .await
         }
 
         async fn _reply(
             body: Weak<Instance>,
+            id: u128,
             errc: raw::RepCode,
             payload: impl IntoIterator<Item = &[u8]>,
-        ) -> std::io::Result<()> {
-            todo!()
+        ) -> std::io::Result<usize> {
+            let body = body.upgrade().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "underlying instance has been dropped",
+                )
+            })?;
+
+            let head_buf;
+            let mut id_buf: [u8; size_of::<u128>()] = default();
+            let id_buf = raw::store_req_id(id, &mut id_buf);
+
+            let mut b = SmallPayloadVec::new();
+            b.extend([&[], id_buf].iter().map(|x| IoSlice::new(x)));
+            b.extend(payload.into_iter().map(|x| IoSlice::new(x)));
+
+            let total_bytes: usize = b.iter().map(|x| x.len()).sum();
+            let head = raw::HRep {
+                all_b: total_bytes as u32,
+                errc,
+                req_id: id_buf.len() as u8,
+            };
+            head_buf = raw::RawHead::new(head.into()).to_bytes();
+            b[0] = IoSlice::new(&head_buf);
+
+            let mut write = body.write.lock().await;
+            transport::util::write_vectored_all(&mut **write, &mut b).await
         }
 
         fn _take_body(&mut self) -> Weak<Instance> {
