@@ -35,7 +35,7 @@ pub const MAX_ROUTE_LEN: usize = 1 << 9;
 ///                 bit 16..20) m: length of request id, max 16 byte allowed.
 ///             REP:
 ///                 bit 16..20) m: length of request id, max 16 byte allowed.
-///                 bit 10..16) e: error code
+///                 bit 8 ..16) e: error code
 ///             
 ///     BYTE [8, 12): p: length of all payload length to read. Max 4GB allowed.
 ///
@@ -112,7 +112,7 @@ impl RawHead {
                 all_b: p,
             }) => Self {
                 ident: IDENT,
-                b0: 2 << 29 | (m as u32 & 0xf) << 16 | (e as u32 & 0x3f) << 10,
+                b0: 2 << 29 | (m as u32 & 0xf) << 16 | (e as u32 & 0xff) << 8,
                 p,
             },
         }
@@ -122,7 +122,7 @@ impl RawHead {
         let t = (self.b0 >> 29) & 0x7;
         let n = (self.b0 >> 20) & 0x1ff;
         let m = (self.b0 >> 16) & 0xf;
-        let e = (self.b0 >> 10) & 0x3f;
+        let e = (self.b0 >> 8) & 0xff;
 
         match t {
             0 => Ok(Head::Noti(HNoti {
