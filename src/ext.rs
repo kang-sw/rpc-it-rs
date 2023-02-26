@@ -14,7 +14,6 @@ macro_rules! mt_trait {
     };
 }
 
-// TODO: Websocket support
 #[cfg(any(feature = "tokio", feature = "dev-tokio-full"))]
 pub mod ext_tokio {
     #[cfg(feature = "dev-tokio-full")]
@@ -99,6 +98,18 @@ pub mod ext_futures {
     /* ------------------------------------------------------------------------------------------ */
     pub struct ReadAdapter<T>(pub T);
     pub struct WriteAdapter<T>(pub T);
+
+    impl<T: MtAsyncRead> ReadAdapter<T> {
+        pub fn boxed(stream: T) -> Box<Self> {
+            Self(stream).into()
+        }
+    }
+
+    impl<T: MtAsyncWrite> WriteAdapter<T> {
+        pub fn boxed(stream: T) -> Box<Self> {
+            Self(stream).into()
+        }
+    }
 
     mt_trait!(AsyncRead);
     mt_trait!(AsyncWrite);

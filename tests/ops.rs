@@ -1,9 +1,16 @@
-use futures::future::join_all;
+use futures::{future::join_all, AsyncReadExt};
 use rpc_it::{
-    ext::ext_tokio::{ReadAdapter, WriteAdapter},
+    ext::{
+        ext_futures,
+        ext_tokio::{ReadAdapter, WriteAdapter},
+    },
     Inbound,
 };
 use tokio_full as tokio;
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                           TEST CASES                                           */
+/* ---------------------------------------------------------------------------------------------- */
 
 async fn test_basic_cases(server: rpc_it::Handle, client: rpc_it::Handle) {
     /* --------------------------------------- C->S Notify -------------------------------------- */
@@ -76,6 +83,18 @@ async fn test_basic_cases(server: rpc_it::Handle, client: rpc_it::Handle) {
     assert_eq!(server.pending_requests(), 0);
 }
 
+/* ---------------------------------------------------------------------------------------------- */
+/*                                           BENCHMARKS                                           */
+/* ---------------------------------------------------------------------------------------------- */
+
+async fn _benchmark(_server: rpc_it::Handle, _client: rpc_it::Handle, _case: usize) {
+    todo!()
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                         TRANSPORT LAYER                                        */
+/* ---------------------------------------------------------------------------------------------- */
+
 #[tokio::test]
 async fn tokio_basic_cases() {
     let svc = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
@@ -103,9 +122,42 @@ async fn tokio_basic_cases() {
     let tasks = tokio::spawn(join_all([client_task, server_task]));
 
     /* ---------------------------------------- Test It! ---------------------------------------- */
-    test_basic_cases(server.clone(), client.clone()).await;
+    tokio::spawn(test_basic_cases(server.clone(), client.clone()))
+        .await
+        .ok();
 
     // Assure all tasks drop after dropping all handles.
+    drop((server, client));
+    let _ = tasks.await;
+}
+
+#[tokio::test]
+async fn inmemory_basic_cases() {
+    let (s, c) = futures_ringbuf::Endpoint::pair(1924, 2440);
+    let ((s_r, s_w), (c_r, c_w)) = (s.split(), c.split());
+
+    let (client, client_task) = rpc_it::InitInfo::builder()
+        .write(ext_futures::WriteAdapter::boxed(s_w))
+        .read(ext_futures::ReadAdapter::boxed(s_r))
+        .build()
+        .start();
+
+    let (server, server_task) = rpc_it::InitInfo::builder()
+        .write(ext_futures::WriteAdapter::boxed(c_w))
+        .read(ext_futures::ReadAdapter::boxed(c_r))
+        .build()
+        .start();
+
+    let tasks = tokio::spawn(join_all([client_task, server_task]));
+
+    /* ---------------------------------------- Test It! ---------------------------------------- */
+    tokio::spawn(test_basic_cases(server.clone(), client.clone()))
+        .await
+        .ok();
+
+    // Won't be closed automatically.
+    server.shutdown().await.ok();
+
     drop((server, client));
     let _ = tasks.await;
 }

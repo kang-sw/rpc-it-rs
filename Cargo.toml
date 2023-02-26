@@ -1,6 +1,6 @@
 [package]
 name = "rpc-it"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 repository = "https://github.com/kang-sw/rpc-it-rs"
 authors = ["kang-sw <ki6080@gmail.com>"]
@@ -43,6 +43,8 @@ tokio-full = { package = "tokio", version = "1", optional = true, features = [
 ] }
 
 # ------------------------------------------- Dev Deps ------------------------------------------- #
+[dev-dependencies]
+futures_ringbuf = "0.3"
 
 # ------------------------------------------- Features ------------------------------------------- #
 [features]
