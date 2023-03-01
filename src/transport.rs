@@ -12,6 +12,7 @@ pub trait AsyncFrameWrite: Send + Sync + Unpin {
     fn poll_start_write(
         self: Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
+        _frame_size: usize,
     ) -> std::task::Poll<std::io::Result<()>> {
         std::task::Poll::Ready(Ok(()))
     }
@@ -67,13 +68,22 @@ pub mod util {
 
     use crate::{AsyncFrameRead, AsyncFrameWrite};
 
+    pub async fn write_all_slices<const N: usize>(
+        this: &mut dyn AsyncFrameWrite,
+        bufs: &[&[u8]; N],
+    ) -> std::io::Result<usize> {
+        let mut bufs: [_; N] = std::array::from_fn(|i| std::io::IoSlice::new(bufs[i]));
+        write_vectored_all(this, &mut bufs).await
+    }
+
     pub async fn write_vectored_all(
         this: &mut dyn AsyncFrameWrite,
         mut bufs: &'_ mut [IoSlice<'_>],
     ) -> std::io::Result<usize> {
         let mut total_written = 0;
+        let n_total = bufs.iter().map(|x| x.len()).sum();
 
-        poll_fn(|cx| Pin::new(&mut *this).poll_start_write(cx)).await?;
+        poll_fn(|cx| Pin::new(&mut *this).poll_start_write(cx, n_total)).await?;
 
         while bufs.is_empty() == false {
             let mut n = poll_fn(|cx| Pin::new(&mut *this).poll_write(cx, bufs)).await?;

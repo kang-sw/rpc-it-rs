@@ -60,7 +60,7 @@ async fn main() {
             .unwrap();
 
         // Oops, the request seems discarded by client.
-        assert_eq!(rep.errc(), rpc_it::RepCode::Aborted);
+        assert_eq!(rep.errc(), rpc_it::ReplyCode::Aborted);
         assert_eq!(rep.payload(), b"");
 
         // Send another request, but this time client may reply.
@@ -74,7 +74,7 @@ async fn main() {
         // Unless the connection is broken, reply always returns a value regardless of the
         // reply code.
         let reply = rep_wait.await.unwrap();
-        assert_eq!(reply.errc(), rpc_it::RepCode::NoRoute);
+        assert_eq!(reply.errc(), rpc_it::ReplyCode::NoRoute);
         assert_eq!(reply.payload(), b"awaited-reply");
 
         // The request id is the same as the reply id.
@@ -125,7 +125,7 @@ async fn main() {
 
         // The reply is expected to be sent by server.
         let rep = rep_wait.await.unwrap();
-        assert_eq!(rep.errc(), rpc_it::RepCode::Okay);
+        assert_eq!(rep.errc(), rpc_it::ReplyCode::Okay);
         assert_eq!(rep.payload(), b"okay, goodbye");
     };
 

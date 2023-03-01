@@ -4,7 +4,7 @@ use enum_primitive_derive::Primitive;
 use num_traits::FromPrimitive;
 
 /// Every message starts with this header
-pub const MAX_ROUTE_LEN: usize = 1 << 9;
+pub const MAX_ROUTE_LEN: usize = 1 << 10;
 pub const PKT_TYPE_OFFSET: usize = 30;
 pub const PKT_TYPE_MASK: u32 = 0b11;
 pub const ROUTE_LEN_MASK: u32 = 0x3ff;
@@ -110,7 +110,7 @@ impl RawHead {
                 n_all: self.p,
             })),
             2 => Ok(Head::Rep(HRep {
-                errc: RepCode::from_u8(e as u8).ok_or(ParseError::InvalidErrCode(e as u8))?,
+                errc: ReplyCode::from_u8(e as u8).ok_or(ParseError::InvalidErrCode(e as u8))?,
                 n_req_id: m as u8,
                 n_all: self.p,
             })),
@@ -216,7 +216,7 @@ impl HReq {
 /* --------------------------------------------- -- --------------------------------------------- */
 #[derive(Clone, Copy, Debug)]
 pub struct HRep {
-    pub errc: RepCode,
+    pub errc: ReplyCode,
     pub n_req_id: u8,
     pub n_all: u32,
 }
@@ -286,7 +286,7 @@ fn test_endian() {
 /// The response code for the request.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Primitive, PartialEq, Eq)]
-pub enum RepCode {
+pub enum ReplyCode {
     /// Successful.
     Okay = 0,
 

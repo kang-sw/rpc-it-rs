@@ -4,14 +4,15 @@ use smallvec::SmallVec;
 use crate::{
     alias::default,
     consts::SMALL_PAYLOAD_SLICE_COUNT,
-    raw::{self, IdType, ID_MAX_LEN, MAX_ROUTE_LEN},
-    transport,
+    raw::{self, IdType, RawHeadBuf, ID_MAX_LEN, MAX_ROUTE_LEN},
+    transport, PooledBuffer, VecPool,
 };
 
-use self::driver::ReqSlot;
+use self::driver::{ReqSlot, SendMsg};
 use std::{
     future::poll_fn,
     io::IoSlice,
+    mem::size_of,
     pin::Pin,
     sync::{Arc, Weak},
 };
@@ -137,6 +138,14 @@ impl Handle {
         poll_fn(|cx| Pin::new(&mut **write).poll_shutdown(cx)).await
     }
 
+    pub fn post_flush(&self) -> Option<()> {
+        self.body.tx_send_msg.send(SendMsg::Flush).ok()
+    }
+
+    pub fn post_shutdown(&self) -> Option<()> {
+        self.body.tx_send_msg.send(SendMsg::Shutdown).ok()
+    }
+
     /// Number of pending requests.
     pub fn pending_requests(&self) -> usize {
         self.body.reqs.pending_requests()
@@ -149,7 +158,7 @@ impl Handle {
         payload: impl IntoIterator<Item = &'a T>,
     ) -> std::io::Result<ReplyWait> {
         let (_, wait) = self
-            .request_n_bytes(route, &mut payload.into_iter().map(|x| x.as_ref()))
+            ._request(route, &mut payload.into_iter().map(|x| x.as_ref()))
             .await?;
         Ok(wait)
     }
@@ -160,9 +169,10 @@ impl Handle {
         &self,
         route: &str,
         payload: impl IntoIterator<Item = &'a T>,
-    ) -> std::io::Result<usize> {
+    ) -> std::io::Result<()> {
         self._notify(route, &mut payload.into_iter().map(|x| x.as_ref()))
             .await
+            .map(|_| ())
     }
 
     /// Send a request to the remote end, and returns awaitable reply.
@@ -170,7 +180,7 @@ impl Handle {
     /// You can emulate timeout behavior by dropping returned future.
     ///
     /// This version returns the number of bytes written.
-    pub async fn request_n_bytes(
+    async fn _request(
         &self,
         route: &str,
         payload: &mut impl Iterator<Item = &[u8]>,
@@ -220,6 +230,79 @@ impl Handle {
         let nw = transport::util::write_vectored_all(&mut **write, &mut b).await?;
 
         Ok((nw, wait))
+    }
+
+    /// The non-blocking version of the notify function. Instead of waiting for the returned future
+    /// object to send the message immediately, it pools a new buffer to generate the header and
+    /// requests a separate write driver task to send it.
+    ///
+    /// Because it pushes a buffer into the channel and immediately returns it, we don't know
+    /// if the send operation itself was successful or not.
+    ///
+    /// If the transmission fails because the driver channel is closed, return the buffer you passed in.
+    pub fn post_notify(&self, route: &str, payload: Option<PooledBuffer>) -> Option<()> {
+        assert!(route.len() <= MAX_ROUTE_LEN);
+
+        let head_len = route.len() + 1 + size_of::<RawHeadBuf>();
+        let payload_len = payload.as_ref().map(|x| x.len()).unwrap_or(0);
+        let total_len = head_len + payload_len - size_of::<RawHeadBuf>();
+
+        let mut head_buf = self.body.alloc.checkout(head_len);
+        let head = raw::RawHead::new(raw::Head::Noti(raw::HNoti {
+            n_all: total_len.try_into().expect("Payload too large!"),
+            n_route: route.len() as u16,
+        }));
+
+        head_buf.extend_from_slice(&head.to_bytes());
+        head_buf.extend_from_slice(route.as_bytes());
+        head_buf.push(0);
+
+        self.body.tx_send_msg.send((head_buf, payload).into()).ok()
+    }
+
+    /// The request version of the send-notify function.
+    pub fn post_request(&self, route: &str, payload: Option<PooledBuffer>) -> Option<ReplyWait> {
+        assert!(route.len() <= MAX_ROUTE_LEN);
+        // Try allocate reply slot first
+        let slot = self.body.reqs.alloc();
+        let id = slot.id;
+
+        // Making this let slot canceled automatically on write error.
+        let wait = ReplyWait { slot: Some(slot) };
+
+        // Create notification header
+        let mut id_buf: [u8; ID_MAX_LEN] = default();
+        let id_buf = raw::store_req_id(id, &mut id_buf);
+
+        let head_len = id_buf.len() + route.len() + 1 + size_of::<RawHeadBuf>();
+        let payload_len = payload.as_ref().map(|x| x.len()).unwrap_or(0);
+        let total_len = head_len + payload_len - size_of::<RawHeadBuf>();
+
+        // Write header
+        let mut head_buf = self.body.alloc.checkout(head_len);
+        let head = raw::RawHead::new(raw::Head::Req(raw::HReq {
+            n_route: route.len() as u16,
+            n_all: total_len.try_into().expect("Payload too large!"),
+            n_req_id: id_buf.len() as u8,
+        }));
+
+        head_buf.extend_from_slice(&head.to_bytes());
+        head_buf.extend_from_slice(id_buf);
+        head_buf.extend_from_slice(route.as_bytes());
+        head_buf.push(0);
+
+        self.body
+            .tx_send_msg
+            .send((head_buf, payload).into())
+            .ok()?;
+
+        Some(wait)
+    }
+
+    /// Pool an empty buffer from the driver's internal allocator. It is recommended that you
+    /// do not write values to the buffer beyond the capacity you pass.
+    pub fn pool(&self) -> &Arc<VecPool> {
+        &self.body.alloc
     }
 
     async fn _notify(
@@ -284,6 +367,7 @@ pub(crate) mod driver {
     use std::{
         collections::VecDeque,
         ffi::CStr,
+        future::poll_fn,
         io::IoSlice,
         mem::replace,
         pin::Pin,
@@ -306,8 +390,8 @@ pub(crate) mod driver {
         alias::{default, AsyncMutex, Pool, PoolPtr},
         consts::{BUFSIZE_LARGE, BUFSIZE_SMALL},
         raw::{self, IdType, ID_MAX_LEN},
-        transport::{self, AsyncFrameRead, AsyncFrameWrite},
-        Handle,
+        transport::{self, util::write_all_slices, AsyncFrameRead, AsyncFrameWrite},
+        Handle, ReplyCode,
     };
 
     use super::SmallPayloadVec;
@@ -317,7 +401,7 @@ pub(crate) mod driver {
     /* ------------------------------------------------------------------------------------------ */
 
     /// Commonly used reused payload type alias.
-    pub type BufferPtr = PoolPtr<Vec<u8>>;
+    pub type PooledBuffer = PoolPtr<Vec<u8>>;
 
     /// Driver exit result type
     #[derive(thiserror::Error, Debug)]
@@ -330,6 +414,15 @@ pub(crate) mod driver {
 
         #[error("Failed to parse header: {0}")]
         UnkownType(#[from] raw::ParseError),
+    }
+
+    /// The type of message generated by the nullblocking call.
+    #[derive(derive_more::From)]
+    pub(crate) enum SendMsg {
+        Payload2(PooledBuffer, Option<PooledBuffer>),
+        Reply(IdType, ReplyCode, Option<PooledBuffer>),
+        Flush,
+        Shutdown,
     }
 
     /* ----------------------------------------- Builder ---------------------------------------- */
@@ -383,19 +476,21 @@ pub(crate) mod driver {
             impl std::future::Future<Output = Result<(), Error>>,
         ) {
             let (tx_write_req, rx_write_req) = flume::unbounded();
-            let (tx_aborts, rx_aborts) = flume::unbounded();
             let (tx_inbound, rx_inbound) = (self.inbound_channel_size == usize::MAX)
                 .then(|| flume::unbounded())
                 .unwrap_or_else(|| flume::bounded(self.inbound_channel_size));
-
             let reqs = Arc::new(ReqTable::new());
+            let alloc = Arc::new(VecPool::new(
+                &self.buffer_size_levels,
+                self.largest_buffer_shrink_size,
+            ));
 
             let d = Instance {
                 rx_inbound,
-                tx_aborts,
-                tx_write_req,
+                tx_send_msg: tx_write_req,
                 write: AsyncMutex::new(Box::into_pin(self.write)),
                 reqs: reqs.clone(),
+                alloc: alloc.clone(),
             };
 
             let h = super::Handle { body: Arc::new(d) };
@@ -409,13 +504,12 @@ pub(crate) mod driver {
                     tx_inbound: tx_inbound,
                     read: read,
                     req_table: reqs,
-                    allocs: VecPool::new(&self.buffer_size_levels, self.largest_buffer_shrink_size),
+                    allocs: alloc,
                     block_on_full: self.block_on_full_inbound,
                 }
                 .run(),
                 WriteOps {
-                    rx_aborts: rx_aborts,
-                    rx_write_req,
+                    rx_send_msg: rx_write_req,
                     weak_body: weak,
                 }
                 .run(),
@@ -437,7 +531,7 @@ pub(crate) mod driver {
         tx_inbound: flume::Sender<super::Inbound>,
         read: Pin<Box<dyn AsyncFrameRead>>,
         req_table: Arc<ReqTable>,
-        allocs: VecPool,
+        allocs: Arc<VecPool>,
         block_on_full: bool,
     }
 
@@ -482,7 +576,7 @@ pub(crate) mod driver {
 
                 match head.parse()? {
                     Head::Noti(head) => {
-                        let mut data = allocs.checkout_1(head.n_all as usize);
+                        let mut data = allocs.checkout_len(head.n_all as usize);
                         read_all(read, &mut data[..]).await?;
                         data.push(0);
 
@@ -499,7 +593,7 @@ pub(crate) mod driver {
                     }
 
                     Head::Req(head) => {
-                        let mut data = allocs.checkout_1(head.n_all as usize);
+                        let mut data = allocs.checkout_len(head.n_all as usize);
                         read_all(read, &mut data[..]).await?;
                         data.push(0);
 
@@ -521,7 +615,7 @@ pub(crate) mod driver {
                     }
 
                     Head::Rep(head) => {
-                        let mut data = allocs.checkout_1(head.n_all as usize);
+                        let mut data = allocs.checkout_len(head.n_all as usize);
                         read_all(read, &mut data[..]).await?;
                         data.push(0);
 
@@ -540,34 +634,58 @@ pub(crate) mod driver {
     /* ---------------------------------------- Write Ops --------------------------------------- */
     struct WriteOps {
         weak_body: Weak<Instance>,
-        rx_aborts: flume::Receiver<IdType>,
 
         /// Simple payload write request
-        rx_write_req: flume::Receiver<BufferPtr>,
+        rx_send_msg: flume::Receiver<SendMsg>,
     }
 
     impl WriteOps {
         pub async fn run(self) -> Result<(), Error> {
-            let send_abort = async {
-                loop {
-                    match (self.rx_aborts.recv_async().await, self.weak_body.upgrade()) {
-                        (Ok(id), Some(body)) => {
-                            body.write_reply(
-                                id,
-                                crate::RepCode::Aborted,
-                                &mut <[&[u8]; 0]>::default().into_iter(),
-                            )
-                            .await?;
-                        }
-                        _ => {
-                            // Means `Instance` has been disposed.
-                            return Err::<(), Error>(Error::Disposed);
-                        }
-                    }
+            loop {
+                let msg = self
+                    .rx_send_msg
+                    .recv_async()
+                    .await
+                    .map_err(|_| Error::Disposed)?;
+
+                let inst = self.weak_body.upgrade().ok_or(Error::Disposed)?;
+                Self::handle_once(&inst, msg).await?;
+
+                // Just not to upgrade() again and again ...
+                while let Ok(msg) = self.rx_send_msg.try_recv() {
+                    Self::handle_once(&inst, msg).await?;
+                }
+            }
+        }
+
+        async fn handle_once(inst: &Instance, msg: SendMsg) -> Result<(), Error> {
+            match msg {
+                SendMsg::Payload2(p1, Some(p2)) => {
+                    write_all_slices(&mut **inst.write.lock().await, &[&p1[..], &p2[..]]).await?;
+                }
+
+                SendMsg::Payload2(p1, None) => {
+                    write_all_slices(&mut **inst.write.lock().await, &[&p1[..]]).await?;
+                }
+
+                SendMsg::Reply(id, errc, payl) => {
+                    let mut iter = payl.iter().map(|x| &x[..]);
+                    inst.write_reply(id, errc, &mut iter).await?;
+                }
+
+                SendMsg::Flush => {
+                    let mut write = inst.write.lock().await;
+                    poll_fn(|cx| Pin::new(&mut **write).poll_flush(cx)).await?;
+                }
+
+                SendMsg::Shutdown => {
+                    let mut write = inst.write.lock().await;
+                    poll_fn(|cx| Pin::new(&mut **write).poll_shutdown(cx)).await?;
+
+                    Err(Error::Disposed)?;
                 }
             };
 
-            let _ = futures_util::join!(send_abort);
             Ok(())
         }
     }
@@ -580,12 +698,15 @@ pub(crate) mod driver {
             let mut allocs: Vec<_> = mem_levels
                 .into_iter()
                 .copied()
-                .map(|x| {
+                .map(|cap| {
                     (
-                        x,
+                        cap,
                         Arc::new(Pool::new(
-                            move || Vec::with_capacity(x),
-                            |x| unsafe { x.set_len(0) },
+                            move || Vec::with_capacity(cap),
+                            move |x| unsafe {
+                                x.set_len(0);
+                                x.shrink_to(cap);
+                            },
                         )),
                     )
                 })
@@ -609,37 +730,48 @@ pub(crate) mod driver {
             Self(allocs)
         }
 
-        pub fn checkout(&self, capacity: usize) -> BufferPtr {
+        pub fn checkout_copied<'a, T: AsRef<[u8]> + ?Sized + 'a>(
+            &self,
+            slices: &[&'a T],
+        ) -> PooledBuffer {
+            let total = slices.iter().map(|x| x.as_ref().len()).sum();
+            let mut buf = self.checkout(total);
+
+            for slice in slices {
+                buf.extend_from_slice(slice.as_ref());
+            }
+
+            buf
+        }
+
+        pub fn checkout(&self, capacity: usize) -> PooledBuffer {
             let mut buf = self._pull(capacity);
+            debug_assert!(buf.is_empty());
 
-            unsafe {
-                buf.set_len(0);
-                buf.reserve(capacity); // for null byte
-            }
-
+            buf.reserve(capacity);
             buf
         }
 
-        pub fn checkout_1(&self, len: usize) -> BufferPtr {
+        fn checkout_len(&self, len: usize) -> PooledBuffer {
             let mut buf = self._pull(len + 1);
+            debug_assert!(buf.is_empty());
 
             unsafe {
-                buf.set_len(0);
-                buf.reserve(len + 1); // for null byte
+                buf.reserve(len + 1);
                 buf.set_len(len);
-            }
+            }; // for null byte
 
             buf
         }
 
-        fn _pull(&self, len: usize) -> BufferPtr {
+        fn _pull(&self, len: usize) -> PooledBuffer {
             let idx = self
                 .0
                 .binary_search_by_key(&len, |x| x.0)
                 .unwrap_or_else(|x| x);
 
             let (_, pool) = &self.0[idx];
-            let mut buf = pool.pull_owned();
+            let buf = pool.pull_owned();
 
             buf
         }
@@ -648,11 +780,11 @@ pub(crate) mod driver {
     /* ------------------------------------- Reply Structure ------------------------------------ */
     pub struct Reply {
         head: raw::HRep,
-        data: BufferPtr,
+        data: PooledBuffer,
     }
 
     impl Reply {
-        pub fn errc(&self) -> crate::RepCode {
+        pub fn errc(&self) -> crate::ReplyCode {
             self.head.errc
         }
 
@@ -776,7 +908,7 @@ pub(crate) mod driver {
 
         /// (id_gen, idle_slots)
         #[new(default)]
-        pool: Mutex<(IdType, VecDeque<Arc<ReqSlot>>)>,
+        pub pool: Mutex<(IdType, VecDeque<Arc<ReqSlot>>)>,
     }
 
     impl Drop for ReqTable {
@@ -857,7 +989,7 @@ pub(crate) mod driver {
     /// Contains route to the RPC endpoint, and received payload
     pub struct Request {
         head: raw::HReq,
-        data: BufferPtr,
+        data: PooledBuffer,
 
         w_body: Weak<Instance>,
     }
@@ -894,6 +1026,25 @@ pub(crate) mod driver {
             raw::retrieve_req_id(&self.data[self.head.req_id()])
         }
 
+        pub fn handle(&self) -> Option<Handle> {
+            self.w_body.upgrade().map(|body| Handle { body })
+        }
+
+        pub fn post_reply(self, payload: Option<PooledBuffer>) -> Option<()> {
+            self.post_error(raw::ReplyCode::Okay, payload)
+        }
+
+        pub fn post_error(
+            mut self,
+            errc: raw::ReplyCode,
+            payload: Option<PooledBuffer>,
+        ) -> Option<()> {
+            let body = self._take_body().upgrade()?;
+            let id = self.request_id();
+
+            body.tx_send_msg.send((id, errc, payload).into()).ok()
+        }
+
         pub async fn reply<'a, T: AsRef<[u8]> + ?Sized + 'a>(
             mut self,
             payload: impl IntoIterator<Item = &'a T>,
@@ -901,7 +1052,7 @@ pub(crate) mod driver {
             Self::_reply(
                 self._take_body(),
                 self.request_id(),
-                raw::RepCode::Okay,
+                raw::ReplyCode::Okay,
                 payload,
             )
             .await
@@ -909,7 +1060,7 @@ pub(crate) mod driver {
 
         pub async fn error<'a, T: AsRef<[u8]> + ?Sized + 'a>(
             mut self,
-            errc: raw::RepCode,
+            errc: raw::ReplyCode,
             payload: impl IntoIterator<Item = &'a T>,
         ) -> std::io::Result<usize> {
             Self::_reply(self._take_body(), self.request_id(), errc, payload).await
@@ -922,7 +1073,7 @@ pub(crate) mod driver {
             Self::_reply(
                 self._take_body(),
                 self.request_id(),
-                raw::RepCode::UserError,
+                raw::ReplyCode::UserError,
                 payload,
             )
             .await
@@ -937,7 +1088,7 @@ pub(crate) mod driver {
             Self::_reply(
                 self._take_body(),
                 self.request_id(),
-                raw::RepCode::NoRoute,
+                raw::ReplyCode::NoRoute,
                 [self.route()],
             )
             .await
@@ -946,7 +1097,7 @@ pub(crate) mod driver {
         async fn _reply<'a, T: AsRef<[u8]> + 'a + ?Sized>(
             body: Weak<Instance>,
             id: IdType,
-            errc: raw::RepCode,
+            errc: raw::ReplyCode,
             payload: impl IntoIterator<Item = &'a T>,
         ) -> std::io::Result<usize> {
             let body = body.upgrade().ok_or_else(|| {
@@ -973,16 +1124,17 @@ pub(crate) mod driver {
             //! No I/O operations that rely on `async` or blocking can be performed within
             //! the `Drop` handler, so handling of unprocessed request responses is handed off
             //! to worker tasks.
-            self._take_body()
-                .upgrade()
-                .map(|x| x.tx_aborts.send(self.request_id()));
+            self._take_body().upgrade().map(|x| {
+                x.tx_send_msg
+                    .send((self.request_id(), raw::ReplyCode::Aborted, None).into())
+            });
         }
     }
 
     /* ------------------------------------- Notify Handling ------------------------------------ */
     pub struct Notify {
         head: raw::HNoti,
-        data: BufferPtr,
+        data: PooledBuffer,
     }
 
     impl std::fmt::Debug for Notify {
@@ -1023,16 +1175,16 @@ pub(crate) mod driver {
         pub rx_inbound: flume::Receiver<super::Inbound>,
         pub write: AsyncMutex<Pin<Box<dyn AsyncFrameWrite>>>,
         pub reqs: Arc<ReqTable>,
+        pub alloc: Arc<VecPool>,
 
-        tx_write_req: flume::Sender<BufferPtr>,
-        tx_aborts: flume::Sender<IdType>,
+        pub tx_send_msg: flume::Sender<SendMsg>,
     }
 
     impl Instance {
         pub async fn write_reply(
             &self,
             id: IdType,
-            errc: raw::RepCode,
+            errc: raw::ReplyCode,
             payload: &mut impl Iterator<Item = &[u8]>,
         ) -> std::io::Result<usize> {
             let head_buf;

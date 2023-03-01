@@ -11,8 +11,8 @@ pub use ext::*; // As all internal modules are prefixed with `ext_`, this is saf
 pub mod rpc;
 pub mod transport;
 
-pub use raw::{RepCode, MAX_ROUTE_LEN};
-pub use rpc::driver::{InitInfo, Notify, Reply, Request, VecPool};
+pub use raw::{ReplyCode, MAX_ROUTE_LEN};
+pub use rpc::driver::{InitInfo, Notify, PooledBuffer, Reply, Request, VecPool};
 pub use rpc::{Handle, Inbound, ReplyWait, WeakHandle};
 pub use transport::{AsyncFrameRead, AsyncFrameWrite};
 
