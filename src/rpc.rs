@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 use crate::{
     alias::default,
     consts::SMALL_PAYLOAD_SLICE_COUNT,
-    raw::{self, MAX_ROUTE_LEN},
+    raw::{self, IdType, ID_MAX_LEN, MAX_ROUTE_LEN},
     transport,
 };
 
@@ -36,7 +36,7 @@ pub struct ReplyWait {
 }
 
 impl ReplyWait {
-    pub fn request_id(&self) -> u128 {
+    pub fn request_id(&self) -> IdType {
         self.slot.as_ref().unwrap().id
     }
 }
@@ -187,7 +187,7 @@ impl Handle {
 
         // Create notification header
         let header_buf;
-        let mut id_buf: [u8; size_of::<u128>()] = default();
+        let mut id_buf: [u8; ID_MAX_LEN] = default();
         let id_buf = raw::store_req_id(id, &mut id_buf);
 
         // Naively assume that the payload array is small enough to fit in stack.
@@ -209,9 +209,9 @@ impl Handle {
         // Write header
         let total_len = b[1..].iter().map(|x| x.len()).sum::<usize>();
         let header = raw::Head::Req(raw::HReq {
-            route: route.len() as u16,
-            all_b: total_len as u32,
-            req_id: id_buf.len() as u8,
+            n_route: route.len() as u16,
+            n_all: total_len as u32,
+            n_req_id: id_buf.len() as u8,
         });
         header_buf = raw::RawHead::new(header).to_bytes();
         b[0] = IoSlice::new(&header_buf);
@@ -252,8 +252,8 @@ impl Handle {
         // Write header
         let total_len = b[1..].iter().map(|x| x.len()).sum::<usize>();
         let header = raw::Head::Noti(raw::HNoti {
-            route: route.len() as u16,
-            all_b: total_len as u32,
+            n_route: route.len() as u16,
+            n_all: total_len as u32,
         });
         header_buf = raw::RawHead::new(header).to_bytes();
         b[0] = IoSlice::new(&header_buf);
@@ -308,7 +308,7 @@ pub(crate) mod driver {
     use crate::{
         alias::{default, AsyncMutex, Pool, PoolPtr},
         consts::{BUFSIZE_LARGE, BUFSIZE_SMALL},
-        raw,
+        raw::{self, IdType, ID_MAX_LEN},
         transport::{self, AsyncFrameRead, AsyncFrameWrite},
         Handle,
     };
@@ -330,9 +330,6 @@ pub(crate) mod driver {
 
         #[error("driver is disposed")]
         Disposed,
-
-        #[error("invalid identifier {actual:?}, expected {expected:?}")]
-        InvalidIdent { expected: [u8; 4], actual: [u8; 4] },
 
         #[error("Failed to parse header: {0}")]
         UnkownType(#[from] raw::ParseError),
@@ -462,7 +459,7 @@ pub(crate) mod driver {
     struct Driver {
         weak_body: Weak<Instance>,
         tx_inbound: flume::Sender<super::Inbound>,
-        rx_aborts: flume::Receiver<u128>,
+        rx_aborts: flume::Receiver<IdType>,
         read: Pin<Box<dyn AsyncFrameRead>>,
         req_table: Arc<ReqTable>,
         allocs: VarSizePool,
@@ -524,14 +521,11 @@ pub(crate) mod driver {
 
             loop {
                 read_all(read, &mut hbuf).await?;
-                let head = RawHead::from_bytes(hbuf).ok_or(Error::InvalidIdent {
-                    expected: IDENT,
-                    actual: std::array::from_fn(|i| hbuf[i]),
-                })?;
+                let head = RawHead::from_bytes(hbuf);
 
                 match head.parse()? {
                     Head::Noti(head) => {
-                        let mut data = allocs.allocate(head.all_b as usize);
+                        let mut data = allocs.allocate(head.n_all as usize);
                         read_all(read, &mut data[..]).await?;
                         data.push(0);
 
@@ -548,7 +542,7 @@ pub(crate) mod driver {
                     }
 
                     Head::Req(head) => {
-                        let mut data = allocs.allocate(head.all_b as usize);
+                        let mut data = allocs.allocate(head.n_all as usize);
                         read_all(read, &mut data[..]).await?;
                         data.push(0);
 
@@ -570,7 +564,7 @@ pub(crate) mod driver {
                     }
 
                     Head::Rep(head) => {
-                        let mut data = allocs.allocate(head.all_b as usize);
+                        let mut data = allocs.allocate(head.n_all as usize);
                         read_all(read, &mut data[..]).await?;
                         data.push(0);
 
@@ -621,7 +615,7 @@ pub(crate) mod driver {
             self.head.errc
         }
 
-        pub fn request_id(&self) -> u128 {
+        pub fn request_id(&self) -> IdType {
             raw::retrieve_req_id(&self.data[self.head.req_id()])
         }
 
@@ -643,13 +637,13 @@ pub(crate) mod driver {
     /// Reusable instance of RPC slot.
     pub(crate) struct ReqSlot {
         table: Weak<ReqTable>,
-        pub id: u128,
+        pub id: IdType,
 
         drop_flag: AtomicBool,
         data: Mutex<(Option<std::task::Waker>, Option<Reply>)>,
     }
     impl ReqSlot {
-        pub fn new(table: Weak<ReqTable>, id: u128) -> Self {
+        pub fn new(table: Weak<ReqTable>, id: IdType) -> Self {
             Self {
                 table,
                 id,
@@ -737,11 +731,11 @@ pub(crate) mod driver {
     #[derive(new)]
     pub(crate) struct ReqTable {
         #[new(default)]
-        active: DashMap<u128, Arc<ReqSlot>>,
+        active: DashMap<IdType, Arc<ReqSlot>>,
 
         /// (id_gen, idle_slots)
         #[new(default)]
-        pool: Mutex<(u128, VecDeque<Arc<ReqSlot>>)>,
+        pool: Mutex<(IdType, VecDeque<Arc<ReqSlot>>)>,
     }
 
     impl Drop for ReqTable {
@@ -763,11 +757,10 @@ pub(crate) mod driver {
             let slot = 'outer: {
                 let (id, slot) = {
                     let mut slots = self.pool.lock();
+                    let (id_gen, slots) = &mut *slots;
 
-                    slots.0 += 1;
-                    let id = slots.0;
-
-                    (id, slots.1.pop_front())
+                    *id_gen = id_gen.wrapping_add(1);
+                    (*id_gen, slots.pop_front())
                 };
 
                 if let Some(mut slot) = slot {
@@ -797,7 +790,7 @@ pub(crate) mod driver {
             slot
         }
 
-        pub fn try_set_reply(&self, id: u128, result: Reply) -> Option<()> {
+        pub fn try_set_reply(&self, id: IdType, result: Reply) -> Option<()> {
             let Some((org_id, node)) = self.active.remove(&id) else { return None };
             debug_assert_eq!(org_id, id, "dumb logic error");
             debug_assert_eq!(node.id, id, "dumb logic error");
@@ -856,7 +849,7 @@ pub(crate) mod driver {
             CStr::from_bytes_with_nul_unchecked(&self.data[self.head.payload_c()])
         }
 
-        pub fn request_id(&self) -> u128 {
+        pub fn request_id(&self) -> IdType {
             raw::retrieve_req_id(&self.data[self.head.req_id()])
         }
 
@@ -911,7 +904,7 @@ pub(crate) mod driver {
 
         async fn _reply<'a, T: AsRef<[u8]> + 'a + ?Sized>(
             body: Weak<Instance>,
-            id: u128,
+            id: IdType,
             errc: raw::RepCode,
             payload: impl IntoIterator<Item = &'a T>,
         ) -> std::io::Result<usize> {
@@ -990,18 +983,18 @@ pub(crate) mod driver {
         pub write: AsyncMutex<Pin<Box<dyn AsyncFrameWrite>>>,
         pub reqs: Arc<ReqTable>,
 
-        tx_aborts: flume::Sender<u128>,
+        tx_aborts: flume::Sender<IdType>,
     }
 
     impl Instance {
         pub async fn write_reply(
             &self,
-            id: u128,
+            id: IdType,
             errc: raw::RepCode,
             payload: &mut impl Iterator<Item = &[u8]>,
         ) -> std::io::Result<usize> {
             let head_buf;
-            let mut id_buf: [u8; size_of::<u128>()] = default();
+            let mut id_buf: [u8; ID_MAX_LEN] = default();
             let id_buf = raw::store_req_id(id, &mut id_buf);
 
             let mut b = SmallPayloadVec::new();
@@ -1014,9 +1007,9 @@ pub(crate) mod driver {
 
             let total_bytes: usize = b.iter().map(|x| x.len()).sum();
             let head = raw::HRep {
-                all_b: total_bytes as u32,
+                n_all: total_bytes as u32,
                 errc,
-                req_id: id_buf.len() as u8,
+                n_req_id: id_buf.len() as u8,
             };
             head_buf = raw::RawHead::new(head.into()).to_bytes();
             b[0] = IoSlice::new(&head_buf);
