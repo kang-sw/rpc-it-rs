@@ -12,7 +12,6 @@ use self::driver::ReqSlot;
 use std::{
     future::poll_fn,
     io::IoSlice,
-    mem::size_of,
     pin::Pin,
     sync::{Arc, Weak},
 };
@@ -286,7 +285,7 @@ pub(crate) mod driver {
         collections::VecDeque,
         ffi::CStr,
         io::IoSlice,
-        mem::{replace, size_of},
+        mem::replace,
         pin::Pin,
         sync::{
             atomic::{

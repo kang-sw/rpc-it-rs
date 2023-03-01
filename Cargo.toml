@@ -50,10 +50,17 @@ futures_ringbuf = "0.3"
 
 # ------------------------------------------- Features ------------------------------------------- #
 [features]
-futures = ["dep:futures"]
-tokio = ["dep:tokio"]
-dev-tokio-full = ["dep:tokio-full"]
+# Replace internal key type from u64 to u128.
 id-128bit = []
+
+# Enable futures support
+futures = ["dep:futures"]
+
+# Enable tokio support
+tokio = ["dep:tokio"]
+
+# For test ... don't use this flag!
+dev-tokio-full = ["dep:tokio-full"]
 
 # ------------------------------------------------------------------------------------------------ #
 #                                            TEST SETUPS                                           #
