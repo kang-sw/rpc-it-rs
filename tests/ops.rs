@@ -1,9 +1,10 @@
-use futures::{future::join_all, AsyncReadExt};
+use futures::AsyncReadExt;
 use rpc_it::{
     ext_futures,
     ext_tokio::{ReadAdapter, WriteAdapter},
     Inbound,
 };
+use tokio::join;
 use tokio_full as tokio;
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -105,19 +106,19 @@ async fn tokio_basic_cases() {
     let (c_read, c_write) = client.into_split();
     let (s_read, s_write) = server.0.into_split();
 
-    let (client, client_task) = rpc_it::InitInfo::builder()
+    let (client, ct1, ct2) = rpc_it::InitInfo::builder()
         .write(WriteAdapter::boxed(c_write))
         .read(ReadAdapter::boxed(c_read))
         .build()
         .start();
 
-    let (server, server_task) = rpc_it::InitInfo::builder()
+    let (server, st1, st2) = rpc_it::InitInfo::builder()
         .write(WriteAdapter::boxed(s_write))
         .read(ReadAdapter::boxed(s_read))
         .build()
         .start();
 
-    let tasks = tokio::spawn(join_all([client_task, server_task]));
+    let tasks = tokio::spawn(async move { join!(ct1, ct2, st1, st2) });
 
     /* ---------------------------------------- Test It! ---------------------------------------- */
     tokio::spawn(test_basic_cases(server.clone(), client.clone()))
@@ -134,19 +135,19 @@ async fn inmemory_basic_cases() {
     let (s, c) = futures_ringbuf::Endpoint::pair(1924, 2440);
     let ((s_r, s_w), (c_r, c_w)) = (s.split(), c.split());
 
-    let (client, client_task) = rpc_it::InitInfo::builder()
+    let (client, ct1, ct2) = rpc_it::InitInfo::builder()
         .write(ext_futures::WriteAdapter::boxed(s_w))
         .read(ext_futures::ReadAdapter::boxed(s_r))
         .build()
         .start();
 
-    let (server, server_task) = rpc_it::InitInfo::builder()
+    let (server, st1, st2) = rpc_it::InitInfo::builder()
         .write(ext_futures::WriteAdapter::boxed(c_w))
         .read(ext_futures::ReadAdapter::boxed(c_r))
         .build()
         .start();
 
-    let tasks = tokio::spawn(join_all([client_task, server_task]));
+    let tasks = tokio::spawn(async move { join!(ct1, ct2, st1, st2) });
 
     /* ---------------------------------------- Test It! ---------------------------------------- */
     tokio::spawn(test_basic_cases(server.clone(), client.clone()))

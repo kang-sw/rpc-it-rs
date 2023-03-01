@@ -10,14 +10,15 @@ async fn main() {
         let (server, _) = svc.accept().await.unwrap();
         let (s_read, s_write) = server.into_split();
 
-        let (server, server_task) = rpc_it::InitInfo::builder()
+        let (server, server_task_1, server_task_2) = rpc_it::InitInfo::builder()
             .write(ext_tokio::WriteAdapter::boxed(s_write))
             .read(ext_tokio::ReadAdapter::boxed(s_read))
             .build()
             .start();
 
         // Rpc task must be spawned
-        tokio::spawn(server_task);
+        tokio::spawn(server_task_1);
+        tokio::spawn(server_task_2);
 
         server
     };
@@ -26,14 +27,15 @@ async fn main() {
         let client = tokio::net::TcpStream::connect(addr).await.unwrap();
         let (c_read, c_write) = client.into_split();
 
-        let (client, client_task) = rpc_it::InitInfo::builder()
+        let (client, client_task_1, client_task_2) = rpc_it::InitInfo::builder()
             .write(ext_tokio::WriteAdapter::boxed(c_write))
             .read(ext_tokio::ReadAdapter::boxed(c_read))
             .build()
             .start();
 
         // Rpc task must be spawned
-        tokio::spawn(client_task);
+        tokio::spawn(client_task_1);
+        tokio::spawn(client_task_2);
 
         client
     };

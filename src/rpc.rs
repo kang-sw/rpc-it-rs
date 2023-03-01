@@ -301,7 +301,6 @@ pub(crate) mod driver {
     use derive_more::From;
     use derive_new::new;
     use flume::TrySendError;
-    use futures_util::{select, FutureExt};
     use parking_lot::Mutex;
 
     use crate::{
@@ -382,7 +381,9 @@ pub(crate) mod driver {
         ) -> (
             super::Handle,
             impl std::future::Future<Output = Result<(), Error>>,
+            impl std::future::Future<Output = Result<(), Error>>,
         ) {
+            let (tx_write_req, rx_write_req) = flume::unbounded();
             let (tx_aborts, rx_aborts) = flume::unbounded();
             let (tx_inbound, rx_inbound) = (self.inbound_channel_size == usize::MAX)
                 .then(|| flume::unbounded())
@@ -393,6 +394,7 @@ pub(crate) mod driver {
             let d = Instance {
                 rx_inbound,
                 tx_aborts,
+                tx_write_req,
                 write: AsyncMutex::new(Box::into_pin(self.write)),
                 reqs: reqs.clone(),
             };
@@ -432,15 +434,20 @@ pub(crate) mod driver {
 
             (
                 h,
-                Driver::new(
-                    weak,
-                    tx_inbound,
-                    rx_aborts,
-                    read,
-                    reqs,
-                    allocs.into(),
-                    self.block_on_full_inbound,
-                )
+                ReadOps {
+                    weak_body: weak.clone(),
+                    tx_inbound: tx_inbound,
+                    read: read,
+                    req_table: reqs,
+                    allocs: allocs.into(),
+                    block_on_full: self.block_on_full_inbound,
+                }
+                .run(),
+                WriteOps {
+                    rx_aborts: rx_aborts,
+                    rx_write_req,
+                    weak_body: weak,
+                }
                 .run(),
             )
         }
@@ -455,45 +462,26 @@ pub(crate) mod driver {
     /// routine is also performed by the driver.
     ///
     #[derive(derive_new::new)]
-    struct Driver {
+    struct ReadOps {
         weak_body: Weak<Instance>,
         tx_inbound: flume::Sender<super::Inbound>,
-        rx_aborts: flume::Receiver<IdType>,
         read: Pin<Box<dyn AsyncFrameRead>>,
         req_table: Arc<ReqTable>,
         allocs: VarSizePool,
         block_on_full: bool,
     }
 
-    impl Driver {
+    impl ReadOps {
         pub async fn run(mut self) -> Result<(), Error> {
-            let mut task_inbound = Box::pin(Self::read_ops(
+            let result = Self::read_ops(
                 &mut *self.read,
                 &self.weak_body,
                 &self.tx_inbound,
                 &self.req_table,
                 &self.allocs,
                 self.block_on_full,
-            ))
-            .fuse();
-
-            let result = loop {
-                select! {
-                    result = &mut task_inbound => break result,
-
-                    abort = self.rx_aborts.recv_async() => {
-                        match (abort, self.weak_body.upgrade() ) {
-                            (Ok(id), Some(body)) => {
-                                body.write_reply(id, crate::RepCode::Aborted, &mut <[&[u8]; 0]>::default().into_iter()).await?;
-                            }
-                            _ => {
-                                // Means `Instance` has been disposed.
-                                break Err(Error::Disposed)
-                            }
-                        }
-                    }
-                };
-            };
+            )
+            .await;
 
             // Just try to shutdown the connection, if possible.
             if let Some(body) = self.weak_body.upgrade() {
@@ -579,11 +567,50 @@ pub(crate) mod driver {
         }
     }
 
+    /* ---------------------------------------- Write Ops --------------------------------------- */
+    struct WriteOps {
+        weak_body: Weak<Instance>,
+        rx_aborts: flume::Receiver<IdType>,
+
+        /// Simple payload write request
+        rx_write_req: flume::Receiver<BufferPtr>,
+    }
+
+    impl WriteOps {
+        pub async fn run(self) -> Result<(), Error> {
+            let send_abort = async {
+                loop {
+                    match (self.rx_aborts.recv_async().await, self.weak_body.upgrade()) {
+                        (Ok(id), Some(body)) => {
+                            body.write_reply(
+                                id,
+                                crate::RepCode::Aborted,
+                                &mut <[&[u8]; 0]>::default().into_iter(),
+                            )
+                            .await?;
+                        }
+                        _ => {
+                            // Means `Instance` has been disposed.
+                            return Err::<(), Error>(Error::Disposed);
+                        }
+                    }
+                }
+            };
+
+            let _ = futures_util::join!(send_abort);
+            Ok(())
+        }
+    }
+
     /* -------------------------------- Memory Allocator Utility -------------------------------- */
     #[derive(From)]
     pub struct VarSizePool(Vec<(usize, Arc<Pool<Vec<u8>>>)>);
 
     impl VarSizePool {
+        pub fn new(mem_levels: &[u8]) -> Self {
+            todo!()
+        }
+
         pub fn allocate(&self, len: usize) -> BufferPtr {
             let idx = self
                 .0
@@ -982,6 +1009,7 @@ pub(crate) mod driver {
         pub write: AsyncMutex<Pin<Box<dyn AsyncFrameWrite>>>,
         pub reqs: Arc<ReqTable>,
 
+        tx_write_req: flume::Sender<BufferPtr>,
         tx_aborts: flume::Sender<IdType>,
     }
 

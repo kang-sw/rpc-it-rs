@@ -50,7 +50,7 @@ futures_ringbuf = "0.3"
 
 # ------------------------------------------- Features ------------------------------------------- #
 [features]
-# Replace internal key type from u64 to u128.
+# Replace internal key type from u64 to u128. 
 id-128bit = []
 
 # Enable futures support
