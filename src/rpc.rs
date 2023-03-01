@@ -298,7 +298,6 @@ pub(crate) mod driver {
     };
 
     use dashmap::DashMap;
-    use derive_more::From;
     use derive_new::new;
     use flume::TrySendError;
     use parking_lot::Mutex;
@@ -403,35 +402,6 @@ pub(crate) mod driver {
             let weak = Arc::downgrade(&h.body);
             let read = Box::into_pin(self.read);
 
-            let mut buffer_sizes = self.buffer_size_levels;
-            buffer_sizes.sort();
-            buffer_sizes.dedup();
-
-            let mut allocs: Vec<_> = buffer_sizes
-                .into_iter()
-                .map(|x| {
-                    (
-                        x,
-                        Arc::new(Pool::new(
-                            move || Vec::with_capacity(x),
-                            |x| unsafe { x.set_len(0) },
-                        )),
-                    )
-                })
-                .collect();
-
-            // Setup fallback allocation
-            allocs.push((
-                usize::MAX,
-                Arc::new(Pool::new(
-                    || Vec::new(),
-                    move |x| unsafe {
-                        x.set_len(0);
-                        x.shrink_to(self.largest_buffer_shrink_size);
-                    },
-                )),
-            ));
-
             (
                 h,
                 ReadOps {
@@ -439,7 +409,7 @@ pub(crate) mod driver {
                     tx_inbound: tx_inbound,
                     read: read,
                     req_table: reqs,
-                    allocs: allocs.into(),
+                    allocs: VecPool::new(&self.buffer_size_levels, self.largest_buffer_shrink_size),
                     block_on_full: self.block_on_full_inbound,
                 }
                 .run(),
@@ -467,7 +437,7 @@ pub(crate) mod driver {
         tx_inbound: flume::Sender<super::Inbound>,
         read: Pin<Box<dyn AsyncFrameRead>>,
         req_table: Arc<ReqTable>,
-        allocs: VarSizePool,
+        allocs: VecPool,
         block_on_full: bool,
     }
 
@@ -498,7 +468,7 @@ pub(crate) mod driver {
             weak_body: &Weak<Instance>,
             tx: &flume::Sender<super::Inbound>,
             req_table: &Arc<ReqTable>,
-            allocs: &VarSizePool,
+            allocs: &VecPool,
             block_on_full: bool,
         ) -> Result<(), Error> {
             use raw::*;
@@ -512,7 +482,7 @@ pub(crate) mod driver {
 
                 match head.parse()? {
                     Head::Noti(head) => {
-                        let mut data = allocs.allocate(head.n_all as usize);
+                        let mut data = allocs.checkout_1(head.n_all as usize);
                         read_all(read, &mut data[..]).await?;
                         data.push(0);
 
@@ -529,7 +499,7 @@ pub(crate) mod driver {
                     }
 
                     Head::Req(head) => {
-                        let mut data = allocs.allocate(head.n_all as usize);
+                        let mut data = allocs.checkout_1(head.n_all as usize);
                         read_all(read, &mut data[..]).await?;
                         data.push(0);
 
@@ -551,7 +521,7 @@ pub(crate) mod driver {
                     }
 
                     Head::Rep(head) => {
-                        let mut data = allocs.allocate(head.n_all as usize);
+                        let mut data = allocs.checkout_1(head.n_all as usize);
                         read_all(read, &mut data[..]).await?;
                         data.push(0);
 
@@ -603,28 +573,73 @@ pub(crate) mod driver {
     }
 
     /* -------------------------------- Memory Allocator Utility -------------------------------- */
-    #[derive(From)]
-    pub struct VarSizePool(Vec<(usize, Arc<Pool<Vec<u8>>>)>);
+    pub struct VecPool(Vec<(usize, Arc<Pool<Vec<u8>>>)>);
 
-    impl VarSizePool {
-        pub fn new(mem_levels: &[u8]) -> Self {
-            todo!()
+    impl VecPool {
+        pub fn new(mem_levels: &[usize], largest_buffer_shrink_size: usize) -> Self {
+            let mut allocs: Vec<_> = mem_levels
+                .into_iter()
+                .copied()
+                .map(|x| {
+                    (
+                        x,
+                        Arc::new(Pool::new(
+                            move || Vec::with_capacity(x),
+                            |x| unsafe { x.set_len(0) },
+                        )),
+                    )
+                })
+                .collect();
+
+            // Must be sorted to find the correct pool.
+            allocs.sort_by_key(|x| x.0);
+
+            // Setup fallback allocation
+            allocs.push((
+                usize::MAX,
+                Arc::new(Pool::new(
+                    || Vec::new(),
+                    move |x| unsafe {
+                        x.set_len(0);
+                        x.shrink_to(largest_buffer_shrink_size);
+                    },
+                )),
+            ));
+
+            Self(allocs)
         }
 
-        pub fn allocate(&self, len: usize) -> BufferPtr {
-            let idx = self
-                .0
-                .binary_search_by_key(&(len + 1), |x| x.0)
-                .unwrap_or_else(|x| x);
+        pub fn checkout(&self, capacity: usize) -> BufferPtr {
+            let mut buf = self._pull(capacity);
 
-            let (_, pool) = &self.0[idx];
-            let mut buf = pool.pull_owned();
+            unsafe {
+                buf.set_len(0);
+                buf.reserve(capacity); // for null byte
+            }
+
+            buf
+        }
+
+        pub fn checkout_1(&self, len: usize) -> BufferPtr {
+            let mut buf = self._pull(len + 1);
 
             unsafe {
                 buf.set_len(0);
                 buf.reserve(len + 1); // for null byte
                 buf.set_len(len);
             }
+
+            buf
+        }
+
+        fn _pull(&self, len: usize) -> BufferPtr {
+            let idx = self
+                .0
+                .binary_search_by_key(&len, |x| x.0)
+                .unwrap_or_else(|x| x);
+
+            let (_, pool) = &self.0[idx];
+            let mut buf = pool.pull_owned();
 
             buf
         }
