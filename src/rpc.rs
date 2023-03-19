@@ -833,6 +833,13 @@ pub(crate) mod driver {
         data: PooledBuffer,
     }
 
+    impl RetrievePayload for Reply {
+        fn payload(&self) -> &[u8] {
+            // Null byte from both ends is excluded.
+            &self.data[self.head.payload()]
+        }
+    }
+
     impl Reply {
         pub fn errc(&self) -> crate::ReplyCode {
             self.head.errc
@@ -848,11 +855,6 @@ pub(crate) mod driver {
 
         pub fn request_id(&self) -> IdType {
             raw::retrieve_req_id(&self.data[self.head.req_id()])
-        }
-
-        pub fn payload(&self) -> &[u8] {
-            // Null byte from both ends is excluded.
-            &self.data[self.head.payload()]
         }
 
         pub unsafe fn payload_cstr_unchecked(&self) -> &CStr {
