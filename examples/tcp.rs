@@ -1,4 +1,4 @@
-use rpc_it::{ext_tokio, Inbound};
+use rpc_it::{ext_tokio, Inbound, RetrievePayload, RetrieveRoute};
 use tokio_full as tokio;
 
 #[tokio::main]

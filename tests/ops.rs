@@ -2,7 +2,7 @@ use futures::AsyncReadExt;
 use rpc_it::{
     ext_futures,
     ext_tokio::{ReadAdapter, WriteAdapter},
-    Inbound,
+    Inbound, RetrievePayload, RetrieveRoute,
 };
 use tokio::join;
 use tokio_full as tokio;

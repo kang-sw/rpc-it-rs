@@ -14,6 +14,7 @@ pub mod transport;
 pub use raw::{ReplyCode, MAX_ROUTE_LEN};
 pub use rpc::driver::{InitInfo, Notify, PooledBuffer, Reply, Request, VecPool};
 pub use rpc::{Handle, Inbound, ReplyWait, WeakHandle};
+pub use traits::{RetrievePayload, RetrieveRoute};
 pub use transport::{AsyncFrameRead, AsyncFrameWrite};
 
 pub mod consts {
@@ -34,5 +35,29 @@ pub mod alias {
 
     pub(crate) fn default<T: Default>() -> T {
         Default::default()
+    }
+}
+
+pub mod traits {
+    use std::ffi::CStr;
+
+    pub trait RetrievePayload {
+        fn payload(&self) -> &[u8];
+    }
+
+    pub trait RetrieveRoute {
+        fn route(&self) -> &[u8];
+        fn route_str(&self) -> Option<&str> {
+            std::str::from_utf8(self.route()).ok()
+        }
+        unsafe fn route_cstr(&self) -> Option<&CStr> {
+            let route = self.route();
+            if route.is_empty() {
+                return None;
+            }
+
+            let cs = CStr::from_ptr(route.as_ptr() as *const _);
+            (cs.to_bytes().len() <= route.len()).then(|| cs)
+        }
     }
 }

@@ -5,6 +5,7 @@ use crate::{
     alias::default,
     consts::SMALL_PAYLOAD_SLICE_COUNT,
     raw::{self, IdType, RawHeadBuf, ID_MAX_LEN, MAX_ROUTE_LEN},
+    traits::{RetrievePayload, RetrieveRoute},
     transport, PooledBuffer, VecPool,
 };
 
@@ -27,6 +28,24 @@ pub type SmallPayloadVec<'a> = SmallVec<[IoSlice<'a>; SMALL_PAYLOAD_SLICE_COUNT]
 pub enum Inbound {
     Request(driver::Request),
     Notify(driver::Notify),
+}
+
+impl RetrievePayload for Inbound {
+    fn payload(&self) -> &[u8] {
+        match self {
+            Inbound::Request(req) => req.payload(),
+            Inbound::Notify(notify) => notify.payload(),
+        }
+    }
+}
+
+impl RetrieveRoute for Inbound {
+    fn route(&self) -> &[u8] {
+        match self {
+            Inbound::Request(req) => req.route(),
+            Inbound::Notify(notify) => notify.route(),
+        }
+    }
 }
 
 /* ------------------------------------- Reply Handler Type ------------------------------------- */
@@ -391,7 +410,7 @@ pub(crate) mod driver {
         consts::{BUFSIZE_LARGE, BUFSIZE_SMALL},
         raw::{self, IdType, ID_MAX_LEN},
         transport::{self, util::write_all_slices, AsyncFrameRead, AsyncFrameWrite},
-        Handle, ReplyCode,
+        Handle, ReplyCode, RetrievePayload, RetrieveRoute,
     };
 
     use super::SmallPayloadVec;
@@ -1000,20 +1019,20 @@ pub(crate) mod driver {
         }
     }
 
-    impl Request {
-        pub fn route(&self) -> &[u8] {
-            &self.data[self.head.route()]
-        }
-
-        pub fn route_cstr(&self) -> Result<&CStr, impl std::error::Error> {
-            CStr::from_bytes_with_nul(&self.data[self.head.route_c()])
-        }
-
-        pub fn payload(&self) -> &[u8] {
+    impl RetrievePayload for Request {
+        fn payload(&self) -> &[u8] {
             // Null byte from both ends is excluded.
             &self.data[self.head.payload()]
         }
+    }
 
+    impl RetrieveRoute for Request {
+        fn route(&self) -> &[u8] {
+            &self.data[self.head.route()]
+        }
+    }
+
+    impl Request {
         pub unsafe fn payload_cstr_unchecked(&self) -> &CStr {
             //! In this function, the last byte is guaranteed to be NULL, but there is no
             //! guarantee that there are no NULL bytes in the middle. To avoid unnecessarily
@@ -1143,20 +1162,20 @@ pub(crate) mod driver {
         }
     }
 
-    impl Notify {
-        pub fn route(&self) -> &[u8] {
-            &self.data[self.head.route()]
-        }
-
-        pub fn route_cstr(&self) -> Result<&CStr, impl std::error::Error> {
-            CStr::from_bytes_with_nul(&self.data[self.head.route_c()])
-        }
-
-        pub fn payload(&self) -> &[u8] {
+    impl RetrievePayload for Notify {
+        fn payload(&self) -> &[u8] {
             // Null byte from both ends is excluded.
             &self.data[self.head.payload()]
         }
+    }
 
+    impl RetrieveRoute for Notify {
+        fn route(&self) -> &[u8] {
+            &self.data[self.head.route()]
+        }
+    }
+
+    impl Notify {
         pub unsafe fn payload_cstr_unchecked(&self) -> &CStr {
             //! In this function, the last byte is guaranteed to be NULL, but there is no
             //! guarantee that there are no NULL bytes in the middle. To avoid unnecessarily
