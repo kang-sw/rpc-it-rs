@@ -58,6 +58,10 @@ impl ReplyWait {
     pub fn request_id(&self) -> IdType {
         self.slot.as_ref().unwrap().id
     }
+
+    pub fn try_recv(&mut self) -> Result<driver::Reply, TryRecvError> {
+        ReqSlot::try_recv_reply(&mut self.slot)
+    }
 }
 
 impl Drop for ReplyWait {
@@ -906,6 +910,36 @@ pub(crate) mod driver {
                 // The table has been dropped, so we can't wait for the reply anymore.
                 (drop(data), io_this.take());
                 Poll::Ready(None)
+            }
+        }
+
+        pub fn try_recv_reply(
+            io_this: &mut Option<Arc<ReqSlot>>,
+        ) -> Result<Reply, super::TryRecvError> {
+            let this = io_this.as_mut().unwrap();
+            let mut data = this.data.lock();
+
+            if let Some(result) = data.1.take() {
+                drop(data);
+
+                let this = io_this.take().unwrap(); // Let it drop.
+                if let Some(table) = this.table.upgrade() {
+                    // At this point, set_reply has already been called, so this entity cannot
+                    // exist in the `active` map of the owner table.
+                    debug_assert!(table.active.contains_key(&this.id) == false);
+
+                    // Reclaim the slot.
+                    table.pool.lock().1.push_back(this);
+                }
+
+                Ok(result)
+            } else if let Some(_table) = this.table.upgrade() {
+                // As long as the table instance is alive, we'll be notified for any event ...
+                Err(super::TryRecvError::Empty)
+            } else {
+                // The table has been dropped, so we can't wait for the reply anymore.
+                (drop(data), io_this.take());
+                Err(super::TryRecvError::Closed)
             }
         }
 

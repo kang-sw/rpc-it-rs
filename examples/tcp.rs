@@ -118,13 +118,21 @@ async fn main() {
         req.error_no_route().await.unwrap();
 
         // Send a request with reply.
-        let rep_wait = client
+        let mut rep_wait = client
             .request("goodbye", [&b"please reply"[..]])
             .await
             .unwrap();
 
+        let rep = loop {
+            let Ok(rep) = rep_wait.try_recv() else {
+                tokio::task::yield_now().await;
+                continue;
+            };
+
+            break rep;
+        };
+
         // The reply is expected to be sent by server.
-        let rep = rep_wait.await.unwrap();
         assert_eq!(rep.errc(), rpc_it::ReplyCode::Okay);
         assert_eq!(rep.payload(), b"okay, goodbye");
     };
