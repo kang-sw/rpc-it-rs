@@ -811,6 +811,14 @@ pub(crate) mod driver {
             self.head.errc
         }
 
+        pub fn result(self) -> Result<Reply, ReplyError> {
+            if self.head.errc == crate::ReplyCode::Okay {
+                Ok(self)
+            } else {
+                Err(ReplyError(self))
+            }
+        }
+
         pub fn request_id(&self) -> IdType {
             raw::retrieve_req_id(&self.data[self.head.req_id()])
         }
@@ -828,6 +836,35 @@ pub(crate) mod driver {
             CStr::from_bytes_with_nul_unchecked(&self.data[self.head.payload_c()])
         }
     }
+
+    #[derive(derive_more::Deref, derive_more::DerefMut)]
+    pub struct ReplyError(Reply);
+
+    impl std::fmt::Display for ReplyError {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            <Self as std::fmt::Debug>::fmt(self, f)
+        }
+    }
+
+    impl std::fmt::Debug for ReplyError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let mut dbg = f.debug_struct("ReplyError");
+            dbg.field("error_code", &self.0.errc());
+
+            if let Ok(str) = std::str::from_utf8(self.payload()) {
+                dbg.field("payload", &str);
+            } else {
+                dbg.field(
+                    "payload",
+                    &format!("<binary ({} bytes)>", self.payload().len()),
+                );
+            }
+
+            dbg.finish()
+        }
+    }
+
+    impl std::error::Error for ReplyError {}
 
     /* -------------------------------- Request - Reply Handling -------------------------------- */
     /// Reusable instance of RPC slot.
