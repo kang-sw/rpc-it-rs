@@ -407,6 +407,7 @@ pub(crate) mod driver {
     use dashmap::DashMap;
     use derive_new::new;
     use flume::TrySendError;
+    use futures_util::{select, FutureExt};
     use parking_lot::Mutex;
 
     use crate::{
@@ -517,6 +518,7 @@ pub(crate) mod driver {
             let h = super::Handle { body: Arc::new(d) };
             let weak = Arc::downgrade(&h.body);
             let read = Box::into_pin(self.read);
+            let (tx_close, rx_close) = flume::bounded(0);
 
             (
                 h,
@@ -527,11 +529,13 @@ pub(crate) mod driver {
                     req_table: reqs,
                     allocs: alloc,
                     block_on_full: self.block_on_full_inbound,
+                    rx_signal_close: rx_close,
                 }
                 .run(),
                 WriteOps {
                     rx_send_msg: rx_write_req,
                     weak_body: weak,
+                    tx_signal_close: tx_close,
                 }
                 .run(),
             )
@@ -554,6 +558,7 @@ pub(crate) mod driver {
         req_table: Arc<ReqTable>,
         allocs: Arc<VecPool>,
         block_on_full: bool,
+        rx_signal_close: flume::Receiver<()>,
     }
 
     impl ReadOps {
@@ -565,16 +570,19 @@ pub(crate) mod driver {
                 &self.req_table,
                 &self.allocs,
                 self.block_on_full,
+                &self.rx_signal_close,
             )
             .await;
 
             // Just try to shutdown the connection, if possible.
             if let Some(body) = self.weak_body.upgrade() {
+                // log::debug!("{:?}) read-ops weak_body alive -> shutting down", self.weak_body);
                 // It's okay to fail this operation, as we might be exitting
                 // due to previous shutdown.
                 Handle { body }.shutdown().await.ok();
             }
 
+            // log::debug!("{:?}) read-ops shutdown", self.weak_body);
             result
         }
 
@@ -585,17 +593,25 @@ pub(crate) mod driver {
             req_table: &Arc<ReqTable>,
             allocs: &VecPool,
             block_on_full: bool,
+            rx_signal_close: &flume::Receiver<()>,
         ) -> Result<(), Error> {
             use raw::*;
             use transport::util::read_all;
 
             let mut hbuf: RawHeadBuf = default();
+            let mut rx_signal_close = rx_signal_close.recv_async();
 
             loop {
-                read_all(read, &mut hbuf).await?;
-                let head = RawHead::from_bytes(hbuf);
+                select! {
+                    _ = &mut rx_signal_close => {
+                        // log::debug!("{:?}) read-ops rx_signal_close -> shutting down", weak_body);
+                        break Ok(());
+                    }
 
-                match head.parse()? {
+                    _ = read_all(read, &mut hbuf).fuse() => (),
+                }
+
+                match RawHead::from_bytes(hbuf).parse()? {
                     Head::Noti(head) => {
                         let mut data = allocs.checkout_len(head.n_all as usize);
                         read_all(read, &mut data[..]).await?;
@@ -655,13 +671,26 @@ pub(crate) mod driver {
     /* ---------------------------------------- Write Ops --------------------------------------- */
     struct WriteOps {
         weak_body: Weak<Instance>,
+        tx_signal_close: flume::Sender<()>,
 
         /// Simple payload write request
         rx_send_msg: flume::Receiver<SendMsg>,
     }
 
     impl WriteOps {
-        pub async fn run(self) -> Result<(), Error> {
+        pub async fn run(mut self) -> Result<(), Error> {
+            let result = match self.__run().await {
+                Ok(()) | Err(Error::Disposed) => Ok(()),
+                Err(e) => Err(e),
+            };
+
+            // Just try to shutdown the connection, if possible.
+            let _ = self.tx_signal_close.send_async(()).await;
+
+            result
+        }
+
+        async fn __run(&mut self) -> Result<(), Error> {
             loop {
                 let msg = self
                     .rx_send_msg
@@ -1284,6 +1313,13 @@ pub(crate) mod driver {
 
             let mut write = self.write.lock().await;
             transport::util::write_vectored_all(&mut **write, &mut b).await
+        }
+    }
+
+    impl Drop for Instance {
+        fn drop(&mut self) {
+            // log::debug!("{:p} dropping instance ... trying to send shutdown", (self as *mut _));
+            let _ = self.tx_send_msg.try_send(SendMsg::Shutdown);
         }
     }
 }
