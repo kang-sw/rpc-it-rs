@@ -158,9 +158,9 @@ impl HNoti {
         0..self.n()
     }
 
-    pub fn route_c(&self) -> Range<usize> {
-        0..self.n() + 1
-    }
+    // pub fn route_c(&self) -> Range<usize> {
+    //     0..self.n() + 1
+    // }
 
     pub fn payload(&self) -> Range<usize> {
         self.n() + 1..self.p()
@@ -196,9 +196,9 @@ impl HReq {
         self.m()..self.m() + self.n()
     }
 
-    pub fn route_c(&self) -> Range<usize> {
-        self.m()..self.m() + self.n() + 1
-    }
+    // pub fn route_c(&self) -> Range<usize> {
+    //     self.m()..self.m() + self.n() + 1
+    // }
 
     pub fn payload(&self) -> Range<usize> {
         self.m() + self.n() + 1..self.p()
