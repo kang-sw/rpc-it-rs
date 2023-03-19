@@ -503,10 +503,8 @@ pub(crate) mod driver {
                 .then(|| flume::unbounded())
                 .unwrap_or_else(|| flume::bounded(self.inbound_channel_size));
             let reqs = Arc::new(ReqTable::new());
-            let alloc = Arc::new(VecPool::new(
-                &self.buffer_size_levels,
-                self.largest_buffer_shrink_size,
-            ));
+            let alloc =
+                Arc::new(VecPool::new(&self.buffer_size_levels, self.largest_buffer_shrink_size));
 
             let d = Instance {
                 rx_inbound,
@@ -524,8 +522,8 @@ pub(crate) mod driver {
                 h,
                 ReadOps {
                     weak_body: weak.clone(),
-                    tx_inbound: tx_inbound,
-                    read: read,
+                    tx_inbound,
+                    read,
                     req_table: reqs,
                     allocs: alloc,
                     block_on_full: self.block_on_full_inbound,
@@ -854,10 +852,7 @@ pub(crate) mod driver {
             if let Ok(str) = std::str::from_utf8(self.payload()) {
                 dbg.field("payload", &str);
             } else {
-                dbg.field(
-                    "payload",
-                    &format!("<binary ({} bytes)>", self.payload().len()),
-                );
+                dbg.field("payload", &format!("<binary ({} bytes)>", self.payload().len()));
             }
 
             dbg.finish()
@@ -1139,13 +1134,7 @@ pub(crate) mod driver {
             mut self,
             payload: impl IntoIterator<Item = &'a T>,
         ) -> std::io::Result<usize> {
-            Self::_reply(
-                self._take_body(),
-                self.request_id(),
-                raw::ReplyCode::Okay,
-                payload,
-            )
-            .await
+            Self::_reply(self._take_body(), self.request_id(), raw::ReplyCode::Okay, payload).await
         }
 
         pub async fn error<'a, T: AsRef<[u8]> + ?Sized + 'a>(
@@ -1160,13 +1149,8 @@ pub(crate) mod driver {
             mut self,
             payload: impl IntoIterator<Item = &'a T>,
         ) -> std::io::Result<usize> {
-            Self::_reply(
-                self._take_body(),
-                self.request_id(),
-                raw::ReplyCode::UserError,
-                payload,
-            )
-            .await
+            Self::_reply(self._take_body(), self.request_id(), raw::ReplyCode::UserError, payload)
+                .await
         }
 
         pub async fn user_error_by<T: std::fmt::Display>(self, error: T) -> std::io::Result<usize> {
