@@ -1,63 +1,77 @@
-//! # Components
+//! # API Design
 //!
-//! - [`transport`] Defines data transport layer.
-//! - [`rpc`] Defines RPC layer
+//! ## Request
+//! ``` plain
+//! let result: MyResponseType = rpc.request("my_method/name?key1=value1", MyRequestType { ... }).await;
+//! ```
 //!
-pub(crate) mod raw;
+//! ## Notify
+//! ```plain
+//! ```
+//!
+//! ## Response
+//! ``` plain
+//! let rx_request = rpc_builder.route::<MyRequestType, MyResponseType>("my_method/<name>");
+//!
+//! let mut req = rx_request.recv().await?;
+//! let client = req.client();
+//! let name = req.path("name")?;
+//! if let Some(age) = req.query("age") {
+//!     // ...
+//! }
+//!
+//! req.reply(MyResponseType { ... }).await?;
+//! ```
+//!
 
-mod ext;
-pub use ext::*; // As all internal modules are prefixed with `ext_`, this is safe.
+pub mod server {
+    use std::marker::PhantomData;
 
-pub mod rpc;
-pub mod transport;
+    pub struct Service {}
 
-pub use raw::{ReplyCode, MAX_ROUTE_LEN};
-pub use rpc::driver::{InitInfo, Notify, PooledBuffer, Reply, ReplyError, Request, VecPool};
-pub use rpc::{Handle, Inbound, ReplyWait, WeakHandle};
-pub use traits::{RetrievePayload, RetrieveRoute};
-pub use transport::{AsyncFrameRead, AsyncFrameWrite};
-
-pub mod consts {
-    pub const SMALL_PAYLOAD_SLICE_COUNT: usize = 16;
-
-    pub const BUFSIZE_SMALL: usize = 128;
-    pub const BUFSIZE_LARGE: usize = 4096;
-}
-
-pub mod alias {
-    use lockfree_object_pool::{LinearObjectPool, LinearOwnedReusable, LinearReusable};
-
-    pub type PoolPtr<T> = LinearOwnedReusable<T>;
-    pub type PoolRef<'a, T> = LinearReusable<'a, T>;
-    pub type Pool<T> = LinearObjectPool<T>;
-
-    pub(crate) type AsyncMutex<T> = async_mutex::Mutex<T>;
-
-    pub(crate) fn default<T: Default>() -> T {
-        Default::default()
-    }
-}
-
-pub mod traits {
-    use std::ffi::CStr;
-
-    pub trait RetrievePayload {
-        fn payload(&self) -> &[u8];
-    }
-
-    pub trait RetrieveRoute {
-        fn route(&self) -> &[u8];
-        fn route_str(&self) -> Option<&str> {
-            std::str::from_utf8(self.route()).ok()
+    impl Service {
+        pub fn route<Req, Rep>(
+            &mut self,
+            route_rule: &str,
+        ) -> Result<RequestReceiver<Req, Rep>, RouteError> {
+            todo!()
         }
-        unsafe fn route_cstr(&self) -> Option<&CStr> {
-            let route = self.route();
-            if route.is_empty() {
-                return None;
-            }
 
-            let cs = CStr::from_ptr(route.as_ptr() as *const _);
-            (cs.to_bytes().len() <= route.len()).then(|| cs)
+        pub fn merge(&mut self, other: Self) -> Result<(), MergeError> {
+            todo!()
         }
     }
+
+    pub struct RequestReceiver<Req, Rep> {
+        _0: PhantomData<(Req, Rep)>,
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum RouteError {
+        #[error("invalid url: {0}")]
+        InvalidUrl(String),
+
+        #[error("duplicate url: {0}")]
+        DuplicateUrl(String),
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum MergeError {}
+}
+
+pub mod client {
+    pub struct Rpc {}
+
+    impl Rpc {
+        pub async fn request<Req, Rep>(&self, url: &str, param: &Req) -> Result<Rep, RequestError> {
+            todo!()
+        }
+
+        pub async fn notify<T>(&self, url: &str, param: &T) -> Result<(), NotifyError> {
+            todo!()
+        }
+    }
+
+    pub enum RequestError {}
+    pub enum NotifyError {}
 }
