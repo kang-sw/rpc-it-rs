@@ -13,6 +13,7 @@ exclude = ["doc/"]
 thiserror = "1"
 serde = "1.0"
 erased-serde = "0.3"
+async-lock = "2.7.0"
 
 [features]
 tokio = []
