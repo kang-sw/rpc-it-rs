@@ -20,6 +20,11 @@ pub trait AsyncWriteFrame: Send + Sync + 'static {
         cx: &mut Context<'_>,
         buffer: &[u8],
     ) -> Poll<Result<(), std::io::Error>>;
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        let _ = cx;
+        Poll::Ready(Ok(()))
+    }
 }
 
 /// Asynchronously reads data frame from underlying transport. This doesn't need to be
@@ -38,6 +43,11 @@ pub trait AsyncReadFrame: Send + 'static {
         cx: &mut Context<'_>,
         write: &mut dyn std::io::Write,
     ) -> Poll<Result<usize, std::io::Error>>;
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        let _ = cx;
+        Poll::Ready(Ok(()))
+    }
 }
 
 /// Asynchronously reads data stream from underlying transport.
@@ -57,4 +67,9 @@ pub trait AsyncRead: Send + 'static {
         cx: &mut Context<'_>,
         buffer: &mut [u8],
     ) -> Poll<Result<usize, std::io::Error>>;
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+        let _ = cx;
+        Poll::Ready(Ok(()))
+    }
 }

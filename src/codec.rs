@@ -32,6 +32,13 @@ pub enum FramingError {
     Recoverable(usize),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum RequestIdType {
+    U64,
+    Bytes,
+    Utf8String,
+}
+
 /// Parses/Encodes data frame.
 ///
 /// This is a trait that encodes/decodes data frame into underlying RPC protocol, and generally
@@ -50,6 +57,13 @@ pub trait Codec: Send + Sync + 'static {
 
     /// Encodes request frame
     ///
+    /// It should internally generate appropriate request ID, and provide deterministic hash of the
+    /// internally generated request ID. This generated ID will be fed to [`Codec::decode_inbound`]
+    /// to match the response to the request.
+    ///
+    /// The generated request ID doesn't need to be deterministic to the req_id_seqn, but only
+    /// returned hash matters.
+    ///
     /// # Returns
     ///
     /// Should return for deterministic hash of the request ID.
@@ -58,11 +72,11 @@ pub trait Codec: Send + Sync + 'static {
     fn encode_request(
         &self,
         method: &str,
-        req_id: &[u8],
+        req_id_hint: u64,
         params: &dyn Serialize,
         write: &mut dyn std::io::Write,
     ) -> Result<u64, EncodeError> {
-        let _ = (method, req_id, params, write);
+        let _ = (method, req_id_hint, params, write);
         Err(EncodeError::UnsupportedFeature("Request is not supported by this codec".into()))
     }
 
@@ -79,6 +93,8 @@ pub trait Codec: Send + Sync + 'static {
 
     /// Decodes inbound frame, and identifies the frame type.
     ///
+    /// If `Response` is received, the deterministic hash should be calculated from the request ID.
+    ///
     /// # Returns
     ///
     /// Returns the frame type, and the range of the frame.
@@ -94,7 +110,7 @@ pub trait Codec: Send + Sync + 'static {
     fn decode_payload<'a>(
         &self,
         payload: &'a [u8],
-        decode: &mut dyn FnMut(&mut dyn Deserializer<'a>) -> erased_serde::Error,
+        decode: &mut dyn FnMut(&mut dyn Deserializer<'a>) -> Result<(), erased_serde::Error>,
     ) -> Result<(), DecodeError> {
         let _ = (payload, decode);
         Err(DecodeError::UnsupportedFeature("This codec is write-only.".into()))
