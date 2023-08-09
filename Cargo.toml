@@ -11,6 +11,11 @@ exclude = ["doc/"]
 # --------------------------------------------- Deps --------------------------------------------- #
 [dependencies]
 thiserror = "1"
-
 serde = "1.0"
 erased-serde = "0.3"
+
+[features]
+tokio = []
+futures = []
+msgpack-rpc = []
+jsonrpc = []
