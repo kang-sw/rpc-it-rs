@@ -1,4 +1,4 @@
-use std::{fmt::Debug, num::NonZeroUsize, ops::Range, sync::Arc};
+use std::{fmt::Debug, future::Future, num::NonZeroUsize, ops::Range, sync::Arc};
 
 use crate::{
     codec::{DecodeError, FramingError},
@@ -78,7 +78,7 @@ impl<C, T, R: Debug> Debug for ConnectionBody<C, T, R> {
 }
 
 /// RPC request context. Stores request ID and response receiver context.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct RequestContext {
     // TODO: Registered request futures ...
     // TODO: Handle cancellations ...
@@ -290,35 +290,40 @@ impl From<flume::RecvError> for RecvError {
 
 // TODO: Request Builder
 //  - Create async worker task to handle receive
-#[derive(derive_setters::Setters)]
 pub struct Builder<T0, T1, C> {
-    #[setters(skip)]
     codec: C,
-    #[setters(skip)]
     write: T0,
-    #[setters(skip)]
     read: T1,
+
+    /// Required configurations
+    cfg: BuilderOtherConfig,
+}
+
+#[derive(Default)]
+struct BuilderOtherConfig {
+    enable_send_request: bool,
+    inbound_channel_cap: Option<NonZeroUsize>,
 }
 
 impl Default for Builder<(), (), ()> {
     fn default() -> Self {
-        Self { codec: (), write: (), read: () }
+        Self { codec: (), write: (), read: (), cfg: Default::default() }
     }
 }
 
 impl<T0, T1, C> Builder<T0, T1, C> {
     /// Specify codec to use
     pub fn with_codec<C1: Codec>(self, codec: C1) -> Builder<T0, T1, C1> {
-        Builder { codec, write: self.write, read: self.read }
+        Builder { codec, write: self.write, read: self.read, cfg: self.cfg }
     }
 
     /// Specify write frame to use
     pub fn with_write<T2: AsyncWriteFrame>(self, write: T2) -> Builder<T2, T1, C> {
-        Builder { codec: self.codec, write, read: self.read }
+        Builder { codec: self.codec, write, read: self.read, cfg: self.cfg }
     }
 
     pub fn with_read<T2: AsyncReadFrame>(self, read: T2) -> Builder<T0, T2, C> {
-        Builder { codec: self.codec, write: self.write, read }
+        Builder { codec: self.codec, write: self.write, read, cfg: self.cfg }
     }
 
     /// Set the read frame with stream reader and framing decoder.
@@ -426,7 +431,81 @@ impl<T0, T1, C> Builder<T0, T1, C> {
                     .map(|x| x.get())
                     .unwrap_or(FRAMING_READ_STREAM_DEFAULT_BUFFER_LENGTH),
             },
+            cfg: self.cfg,
         }
+    }
+
+    /// Enable or disable send request feature. Default is disabled.
+    pub fn with_send_request(mut self, enabled: bool) -> Self {
+        self.cfg.enable_send_request = enabled;
+        self
+    }
+
+    /// Setting zero will create unbounded channel. Default is unbounded.
+    pub fn with_inbound_channel_capacity(mut self, capacity: usize) -> Self {
+        self.cfg.inbound_channel_cap = capacity.try_into().ok();
+        self
+    }
+}
+
+impl<T0, T1, C> Builder<T0, T1, C>
+where
+    T0: AsyncWriteFrame,
+    T1: AsyncReadFrame,
+    C: Codec,
+{
+    pub fn build(self) -> Result<(Handle, impl Future), std::io::Error> {
+        let mut fut_with_request = None;
+        let mut fut_without_request = None;
+
+        let (tx_in_msg, rx_in_msg) =
+            if let Some(chan_cap) = self.cfg.inbound_channel_cap.map(|x| x.get()) {
+                flume::bounded(chan_cap)
+            } else {
+                flume::unbounded()
+            };
+
+        let conn: Arc<dyn Connection>;
+
+        if self.cfg.enable_send_request {
+            let arc = Arc::new(ConnectionBody {
+                codec: self.codec,
+                write: AsyncMutex::new(self.write),
+                reqs: RequestContext::default(),
+            });
+
+            let w_conn = Arc::downgrade(&arc);
+            let task = async move {
+                // TODO: RPC driver with request support
+            };
+
+            fut_with_request = Some(task);
+            conn = arc;
+        } else {
+            let arc = Arc::new(ConnectionBody {
+                codec: self.codec,
+                write: AsyncMutex::new(self.write),
+                reqs: (),
+            });
+
+            let w_conn = Arc::downgrade(&arc);
+            let task = async move {
+                // TODO: RPC driver without request support
+            };
+
+            fut_without_request = Some(task);
+            conn = arc;
+        }
+
+        Ok((Handle(SendHandle(conn), Receiver(rx_in_msg)), async move {
+            if let Some(fut) = fut_with_request {
+                fut.await;
+            } else if let Some(fut) = fut_without_request {
+                fut.await;
+            } else {
+                unreachable!()
+            }
+        }))
     }
 }
 
