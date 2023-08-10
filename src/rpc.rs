@@ -300,17 +300,19 @@ pub struct Builder<T0, T1, C> {
     read: T1,
 }
 
-impl Builder<(), (), ()> {
-    pub fn new() -> Self {
+impl Default for Builder<(), (), ()> {
+    fn default() -> Self {
         Self { codec: (), write: (), read: () }
     }
 }
 
 impl<T0, T1, C> Builder<T0, T1, C> {
+    /// Specify codec to use
     pub fn with_codec<C1: Codec>(self, codec: C1) -> Builder<T0, T1, C1> {
         Builder { codec, write: self.write, read: self.read }
     }
 
+    /// Specify write frame to use
     pub fn with_write<T2: AsyncWriteFrame>(self, write: T2) -> Builder<T2, T1, C> {
         Builder { codec: self.codec, write, read: self.read }
     }
