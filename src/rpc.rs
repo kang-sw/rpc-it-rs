@@ -1,7 +1,7 @@
-use std::{fmt::Debug, ops::Range, sync::Arc};
+use std::{fmt::Debug, num::NonZeroUsize, ops::Range, sync::Arc};
 
 use crate::{
-    codec::DecodeError,
+    codec::{DecodeError, FramingError},
     prelude::{Codec, Framing},
     transport::{AsyncRead, AsyncReadFrame, AsyncWriteFrame},
 };
@@ -9,6 +9,11 @@ use crate::{
 use async_lock::Mutex as AsyncMutex;
 use bytes::{Bytes, BytesMut};
 use smallvec::SmallVec;
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                            CONSTANTS                                           */
+/* ---------------------------------------------------------------------------------------------- */
+const FRAMING_READ_STREAM_DEFAULT_BUFFER_LENGTH: usize = 1024;
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                          BACKED TRAIT                                          */
@@ -314,11 +319,18 @@ impl<T0, T1, C> Builder<T0, T1, C> {
         Builder { codec: self.codec, write: self.write, read }
     }
 
+    /// Set the read frame with stream reader and framing decoder.
+    ///
+    /// # Parameters
+    ///
+    /// - `fallback_buffer_size`: When the framing decoder does not provide the next buffer size,
+    ///   this value is used to pre-allocate the buffer for the next [`AsyncReadFrame::poll_read`]
+    ///   call.
     pub fn with_read_stream<T2: AsyncRead, F: Framing>(
         self,
         read: T2,
         framing: F,
-        initial_buffer_capacity: usize,
+        fallback_buffer_size: Option<NonZeroUsize>,
     ) -> Builder<T0, impl AsyncReadFrame, C> {
         use std::pin::Pin;
         use std::task::{Context, Poll};
@@ -326,7 +338,8 @@ impl<T0, T1, C> Builder<T0, T1, C> {
         struct FramingReader<T, F> {
             reader: T,
             framing: F,
-            buffer: BytesMut,
+            cursor: usize,
+            fb_n_buf: usize,
         }
 
         impl<T, F> AsyncReadFrame for FramingReader<T, F>
@@ -337,10 +350,66 @@ impl<T0, T1, C> Builder<T0, T1, C> {
             fn poll_read(
                 self: Pin<&mut Self>,
                 cx: &mut Context<'_>,
+                buf: &mut BytesMut,
             ) -> Poll<Result<Bytes, std::io::Error>> {
                 let this = self.get_mut();
 
-                todo!()
+                loop {
+                    // Reading as many as possible is almostly desireable.
+                    let buflen = this
+                        .framing
+                        .next_buffer_size()
+                        .map(|x| x.get())
+                        .unwrap_or_default()
+                        .max(this.fb_n_buf);
+                    let margin_now = buf.len() - this.cursor;
+                    let n_alloc_more = buflen.saturating_sub(margin_now);
+                    buf.reserve(n_alloc_more);
+
+                    // SAFETY: We don't use the `unread` bytes
+                    unsafe { buf.set_len(buf.capacity()) };
+                    let buffer = &mut buf.as_mut()[this.cursor..];
+
+                    let Poll::Ready(read_len) = Pin::new(&mut this.reader).poll_read(cx, buffer)? else {
+                        break Poll::Pending;
+                    };
+
+                    debug_assert!(
+                        read_len <= buflen,
+                        "It returned larger length than requested buffer size"
+                    );
+
+                    this.cursor += read_len;
+                    match this.framing.advance(&buf[..this.cursor]) {
+                        Ok(Some(x)) => {
+                            debug_assert!(x.valid_data_end <= x.next_frame_start);
+                            debug_assert!(x.next_frame_start <= this.cursor);
+
+                            this.cursor -= x.next_frame_start;
+
+                            let mut frame = buf.split_to(x.next_frame_start);
+                            break Poll::Ready(Ok(frame.split_off(x.valid_data_end).into()));
+                        }
+
+                        // Just poll once more, until it retunrs 'Pending' ...
+                        Ok(None) => continue,
+
+                        Err(FramingError::Broken(why)) => {
+                            return Poll::Ready(Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                why,
+                            )))
+                        }
+
+                        Err(FramingError::Recoverable(num_discard_bytes)) => {
+                            debug_assert!(num_discard_bytes <= this.cursor);
+
+                            let _ = buf.split_to(num_discard_bytes);
+                            this.cursor -= num_discard_bytes;
+                            continue;
+                        }
+                    }
+                }
             }
         }
 
@@ -350,7 +419,10 @@ impl<T0, T1, C> Builder<T0, T1, C> {
             read: FramingReader {
                 reader: read,
                 framing,
-                buffer: BytesMut::with_capacity(initial_buffer_capacity),
+                cursor: 0,
+                fb_n_buf: fallback_buffer_size
+                    .map(|x| x.get())
+                    .unwrap_or(FRAMING_READ_STREAM_DEFAULT_BUFFER_LENGTH),
             },
         }
     }

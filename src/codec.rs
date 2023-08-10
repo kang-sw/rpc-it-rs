@@ -2,7 +2,7 @@
 //!
 //! [`Codec`] is a trait that encodes/decodes data frame into underlying RPC protocol.
 
-use std::{borrow::Cow, ops::Range};
+use std::{borrow::Cow, num::NonZeroUsize, ops::Range};
 
 use erased_serde::{Deserializer, Serialize};
 
@@ -13,20 +13,29 @@ pub trait Framing: Send + Sync + 'static + Unpin {
     ///
     /// # Returns
     ///
-    /// - `Ok(Some(Range))` if a frame is found. The range is the range of the frame from the
-    ///   beginning of the input buffer. After returning valid range, from the next
-    ///   [`Self::advance`] call the buffer should be sliced from the end of the range.
+    /// - `Ok(Some(Range))` if a frame is found. Returns the range, represents `(valid_data_end,
+    ///   next_frame_start)` respectively.
     /// - `Ok(None)` if a frame is not found. The buffer should be kept as-is, and the next
-    ///   [`Self::advance`] call should be called with the same buffer, but extended with more
-    ///   data from the underlying transport.
+    ///   [`Self::advance`] call should be called with the same buffer, but extended with more data
+    ///   from the underlying transport.
     /// - `Err(...)` if any error occurs during framing.
-    fn advance(&mut self, buffer: &[u8]) -> Result<Option<Range<usize>>, FramingError>;
+    fn advance(&mut self, buffer: &[u8]) -> Result<Option<FramingAdvanceResult>, FramingError>;
+
+    /// Returns hint for the next buffer size. This is used to pre-allocate the buffer for the
+    /// next [`Self::advance`] call.
+    fn next_buffer_size(&self) -> Option<NonZeroUsize>;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FramingAdvanceResult {
+    pub valid_data_end: usize,
+    pub next_frame_start: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum FramingError {
     #[error("Broken buffer. The connection should be closed. Context: {0}")]
-    BrokenBuffer(Cow<'static, str>),
+    Broken(Cow<'static, str>),
 
     #[error("Error occurred, but internal state can be restored after {0} bytes")]
     Recoverable(usize),
