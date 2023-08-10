@@ -1,46 +1,72 @@
-use std::{ops::Range, sync::Arc};
+use std::{fmt::Debug, ops::Range, sync::Arc};
 
-use crate::{codec::DecodeError, prelude::Codec};
+use crate::{
+    codec::DecodeError,
+    prelude::{Codec, Framing},
+    transport::{AsyncRead, AsyncReadFrame, AsyncWriteFrame},
+};
 
 use async_lock::Mutex as AsyncMutex;
+use bytes::{Bytes, BytesMut};
 use smallvec::SmallVec;
 
+/* ---------------------------------------------------------------------------------------------- */
+/*                                          BACKED TRAIT                                          */
+/* ---------------------------------------------------------------------------------------------- */
 /// Creates RPC connection from [`crate::transport::AsyncReadFrame`] and
 /// [`crate::transport::AsyncWriteFrame`], and [`crate::codec::Codec`].
 ///
 /// For unsupported features(e.g. notify from client), the codec should return
 /// [`crate::codec::EncodeError::UnsupportedFeature`] error.
-struct ConnectionBody<C, T> {
+struct ConnectionBody<C, T, R> {
     codec: C,
     write: AsyncMutex<T>,
-    reqs: RequestContext,
+    reqs: R,
 }
 
-trait Connection: Send + Sync + 'static + std::fmt::Debug {
+trait Connection: Send + Sync + 'static + Debug {
     fn codec(&self) -> &dyn Codec;
-    fn write(&self) -> &AsyncMutex<dyn crate::transport::AsyncWriteFrame>;
-    fn reqs(&self) -> &RequestContext;
+    fn write(&self) -> &AsyncMutex<dyn AsyncWriteFrame>;
+    fn reqs(&self) -> Option<&RequestContext>;
 }
 
-impl<C, T> Connection for ConnectionBody<C, T>
+impl<C, T> Connection for ConnectionBody<C, T, RequestContext>
 where
-    C: Codec + Send + Sync + 'static,
-    T: crate::transport::AsyncWriteFrame + Send + Sync + 'static,
+    C: Codec,
+    T: AsyncWriteFrame,
 {
     fn codec(&self) -> &dyn Codec {
         &self.codec
     }
 
-    fn write(&self) -> &AsyncMutex<dyn crate::transport::AsyncWriteFrame> {
+    fn write(&self) -> &AsyncMutex<dyn AsyncWriteFrame> {
         &self.write
     }
 
-    fn reqs(&self) -> &RequestContext {
-        &self.reqs
+    fn reqs(&self) -> Option<&RequestContext> {
+        Some(&self.reqs)
     }
 }
 
-impl<C, T> std::fmt::Debug for ConnectionBody<C, T> {
+impl<C, T> Connection for ConnectionBody<C, T, ()>
+where
+    C: Codec,
+    T: AsyncWriteFrame,
+{
+    fn codec(&self) -> &dyn Codec {
+        &self.codec
+    }
+
+    fn write(&self) -> &AsyncMutex<dyn AsyncWriteFrame> {
+        &self.write
+    }
+
+    fn reqs(&self) -> Option<&RequestContext> {
+        None
+    }
+}
+
+impl<C, T, R: Debug> Debug for ConnectionBody<C, T, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConnectionBody").field("reqs", &self.reqs).finish()
     }
@@ -53,19 +79,83 @@ struct RequestContext {
     // TODO: Handle cancellations ...
 }
 
-/// Handle to the internal RPC connection control. Can be shared among multiple threads and accessed
-/// simultaneously.
+/* ---------------------------------------------------------------------------------------------- */
+/*                                             HANDLES                                            */
+/* ---------------------------------------------------------------------------------------------- */
+/// Bidirectional RPC handle.
 #[derive(Clone, Debug)]
-pub struct Handle(Arc<dyn Connection>);
+pub struct Handle(SendHandle, Receiver);
 
-/// Reused buffer over multiple RPC request/responses
-#[derive(Debug, Clone, Default)]
-pub struct Buffer {
-    keygen_buf: SmallVec<[u8; 36]>,
-    tmpbuf: Vec<u8>,
+impl std::ops::Deref for Handle {
+    type Target = SendHandle;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl Handle {
+    pub fn receiver(&self) -> &Receiver {
+        &self.1
+    }
+
+    pub fn into_receiver(self) -> Receiver {
+        self.1
+    }
+
+    pub fn split(self) -> (SendHandle, Receiver) {
+        (self.0, self.1)
+    }
+
+    pub fn into_sender(self) -> SendHandle {
+        self.0
+    }
+}
+
+/// Receive-only handle. This is useful when you want to consume all remaining RPC messages when
+/// the connection is being closed.
+#[derive(Clone, Debug)]
+pub struct Receiver(flume::Receiver<msg::RecvMsg>);
+
+impl Receiver {
+    pub fn blocking_recv(&self) -> Result<msg::RecvMsg, RecvError> {
+        Ok(self.0.recv()?)
+    }
+
+    pub async fn recv(&self) -> Result<msg::RecvMsg, RecvError> {
+        Ok(self.0.recv_async().await?)
+    }
+
+    pub fn try_recv(&self) -> Result<msg::RecvMsg, TryRecvError> {
+        self.0.try_recv().map_err(|e| match e {
+            flume::TryRecvError::Empty => TryRecvError::Empty,
+            flume::TryRecvError::Disconnected => TryRecvError::Disconnected,
+        })
+    }
+
+    pub fn is_disconnected(&self) -> bool {
+        self.0.is_disconnected()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Send-only handle. This holds strong reference to the connection.
+#[derive(Clone, Debug)]
+pub struct SendHandle(Arc<dyn Connection>);
+
+/// Reused buffer over multiple RPC request/responses
+///
+/// To minimize the memory allocation during sender payload serialization, reuse this buffer over
+/// multiple RPC request/notification.
+#[derive(Debug, Clone, Default)]
+pub struct ReusableSendBuffer {
+    tmpbuf: Vec<u8>,
+}
+
+impl SendHandle {
     pub async fn send_request<'a, T: serde::Serialize, R>(
         &'a self,
         method: &str,
@@ -85,7 +175,7 @@ impl Handle {
     #[doc(hidden)]
     pub async fn send_request_ex<'a, T: serde::Serialize, R>(
         &'a self,
-        buf_reuse: &mut Buffer,
+        buf_reuse: &mut ReusableSendBuffer,
         method: &str,
         params: &T,
     ) -> Result<ResponseFuture<R>, SendError> {
@@ -95,14 +185,10 @@ impl Handle {
     #[doc(hidden)]
     pub async fn send_notify_ex<T: serde::Serialize>(
         &self,
-        buf_reuse: &mut Buffer,
+        buf_reuse: &mut ReusableSendBuffer,
         method: &str,
         params: &T,
     ) -> Result<(), SendError> {
-        todo!()
-    }
-
-    pub async fn recv_msg(&self) -> Result<msg::RecvMsg, RecvError> {
         todo!()
     }
 }
@@ -112,20 +198,20 @@ impl Handle {
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ResponseFuture<T> {
     _type: std::marker::PhantomData<T>,
-    handle: Handle,
+    handle: SendHandle,
     req_id: u64,
 }
 
 #[derive(Debug)]
 struct InboundBody {
-    buffer: bytes::Bytes,
-    handle: Handle,
+    buffer: Bytes,
+    handle: SendHandle,
     payload: Range<usize>,
 }
 
 pub trait Inbound: Sized {
     #[doc(hidden)]
-    fn inbound_get_handle(&self) -> &Handle;
+    fn inbound_get_handle(&self) -> &SendHandle;
 
     fn method(&self) -> Option<&str>;
     fn payload(&self) -> &[u8];
@@ -152,6 +238,9 @@ pub trait Inbound: Sized {
     }
 }
 
+/* ---------------------------------------------------------------------------------------------- */
+/*                                        ERROR DEFINIITONS                                       */
+/* ---------------------------------------------------------------------------------------------- */
 #[derive(Debug, thiserror::Error)]
 pub enum SendError {
     #[error("Encoding outbound message failed: {0}")]
@@ -162,16 +251,114 @@ pub enum SendError {
 
     #[error("Error during sending encoded message: {0}")]
     SendFailed(std::io::Error),
+
+    #[error("Request feature is disabled for this connection")]
+    RequestDisabled,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecvError {
-    // TODO: Connection Closed, Aborted, Parse Error, etc...
+    #[error("Channel has been closed")]
+    Disconnected,
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum TryRecvError {
+    #[error("Connection has been disconnected")]
+    Disconnected,
+
+    #[error("Channel is empty")]
+    Empty,
+}
+
+impl From<flume::RecvError> for RecvError {
+    fn from(value: flume::RecvError) -> Self {
+        match value {
+            flume::RecvError::Disconnected => Self::Disconnected,
+        }
+    }
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                             BUILDER                                            */
+/* ---------------------------------------------------------------------------------------------- */
 
 // TODO: Request Builder
 //  - Create async worker task to handle receive
+#[derive(derive_setters::Setters)]
+pub struct Builder<T0, T1, C> {
+    #[setters(skip)]
+    codec: C,
+    #[setters(skip)]
+    write: T0,
+    #[setters(skip)]
+    read: T1,
+}
 
+impl Builder<(), (), ()> {
+    pub fn new() -> Self {
+        Self { codec: (), write: (), read: () }
+    }
+}
+
+impl<T0, T1, C> Builder<T0, T1, C> {
+    pub fn with_codec<C1: Codec>(self, codec: C1) -> Builder<T0, T1, C1> {
+        Builder { codec, write: self.write, read: self.read }
+    }
+
+    pub fn with_write<T2: AsyncWriteFrame>(self, write: T2) -> Builder<T2, T1, C> {
+        Builder { codec: self.codec, write, read: self.read }
+    }
+
+    pub fn with_read<T2: AsyncReadFrame>(self, read: T2) -> Builder<T0, T2, C> {
+        Builder { codec: self.codec, write: self.write, read }
+    }
+
+    pub fn with_read_stream<T2: AsyncRead, F: Framing>(
+        self,
+        read: T2,
+        framing: F,
+        initial_buffer_capacity: usize,
+    ) -> Builder<T0, impl AsyncReadFrame, C> {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        struct FramingReader<T, F> {
+            reader: T,
+            framing: F,
+            buffer: BytesMut,
+        }
+
+        impl<T, F> AsyncReadFrame for FramingReader<T, F>
+        where
+            T: AsyncRead,
+            F: Framing,
+        {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Result<Bytes, std::io::Error>> {
+                let this = self.get_mut();
+
+                todo!()
+            }
+        }
+
+        Builder {
+            codec: self.codec,
+            write: self.write,
+            read: FramingReader {
+                reader: read,
+                framing,
+                buffer: BytesMut::with_capacity(initial_buffer_capacity),
+            },
+        }
+    }
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                            MESSAGES                                            */
+/* ---------------------------------------------------------------------------------------------- */
 pub mod msg {
     use std::ops::Range;
 
@@ -203,6 +390,9 @@ pub mod msg {
     // TODO: Inbound impls
 }
 
+/* ---------------------------------------------------------------------------------------------- */
+/*                                      DRIVER IMPLEMENTATION                                     */
+/* ---------------------------------------------------------------------------------------------- */
 mod driver {
     //! Internal driver context. It receives the request from the connection, and dispatches it to
     //! the handler.

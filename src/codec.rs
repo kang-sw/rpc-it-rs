@@ -8,7 +8,7 @@ use erased_serde::{Deserializer, Serialize};
 
 /// Splits data stream into frames. For example, for implmenting JSON-RPC over TCP,
 /// this would split the stream into JSON-RPC objects delimited by objects.
-pub trait Framing {
+pub trait Framing: Send + Sync + 'static + Unpin {
     /// Advance internal parsing status
     ///
     /// # Returns
@@ -43,6 +43,8 @@ pub enum RequestIdType {
 ///
 /// This is a trait that encodes/decodes data frame into underlying RPC protocol, and generally
 /// responsible for any protocol-specific data frame handling.
+///
+/// The codec, should trivially be clone-able.
 pub trait Codec: Send + Sync + 'static {
     /// Encodes notify frame
     fn encode_notify(
@@ -61,12 +63,12 @@ pub trait Codec: Send + Sync + 'static {
     /// internally generated request ID. This generated ID will be fed to [`Codec::decode_inbound`]
     /// to match the response to the request.
     ///
-    /// The generated request ID doesn't need to be deterministic to the req_id_seqn, but only
+    /// The generated request ID doesn't need to be deterministic to the req_id_seqn, but only the
     /// returned hash matters.
     ///
     /// # Returns
     ///
-    /// Should return for deterministic hash of the request ID.
+    /// Should return for deterministic hash of the (internally generated) request ID.
     ///
     /// This is used to match the response to the request.
     fn encode_request(
