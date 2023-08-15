@@ -1,19 +1,16 @@
 use std::{fmt::Debug, future::Future, num::NonZeroUsize, ops::Range, sync::Arc};
 
 use crate::{
-    codec::{DecodeError, FramingError},
-    prelude::{Codec, Framing},
+    codec::{Codec, DecodeError, Framing, FramingError},
     transport::{AsyncRead, AsyncReadFrame, AsyncWriteFrame},
 };
 
 use async_lock::Mutex as AsyncMutex;
 use bytes::{Bytes, BytesMut};
-use smallvec::SmallVec;
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                            CONSTANTS                                           */
 /* ---------------------------------------------------------------------------------------------- */
-const FRAMING_READ_STREAM_DEFAULT_BUFFER_LENGTH: usize = 1024;
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                          BACKED TRAIT                                          */
@@ -290,10 +287,10 @@ impl From<flume::RecvError> for RecvError {
 
 // TODO: Request Builder
 //  - Create async worker task to handle receive
-pub struct Builder<T0, T1, C> {
+pub struct Builder<Tw, Tr, C> {
     codec: C,
-    write: T0,
-    read: T1,
+    write: Tw,
+    read: Tr,
 
     /// Required configurations
     cfg: BuilderOtherConfig,
@@ -311,18 +308,18 @@ impl Default for Builder<(), (), ()> {
     }
 }
 
-impl<T0, T1, C> Builder<T0, T1, C> {
+impl<Tw, Tr, C> Builder<Tw, Tr, C> {
     /// Specify codec to use
-    pub fn with_codec<C1: Codec>(self, codec: C1) -> Builder<T0, T1, C1> {
+    pub fn with_codec<C1: Codec>(self, codec: C1) -> Builder<Tw, Tr, C1> {
         Builder { codec, write: self.write, read: self.read, cfg: self.cfg }
     }
 
     /// Specify write frame to use
-    pub fn with_write<T2: AsyncWriteFrame>(self, write: T2) -> Builder<T2, T1, C> {
+    pub fn with_write<Tw2: AsyncWriteFrame>(self, write: Tw2) -> Builder<Tw2, Tr, C> {
         Builder { codec: self.codec, write, read: self.read, cfg: self.cfg }
     }
 
-    pub fn with_read<T2: AsyncReadFrame>(self, read: T2) -> Builder<T0, T2, C> {
+    pub fn with_read<Tr2: AsyncReadFrame>(self, read: Tr2) -> Builder<Tw, Tr2, C> {
         Builder { codec: self.codec, write: self.write, read, cfg: self.cfg }
     }
 
@@ -333,20 +330,17 @@ impl<T0, T1, C> Builder<T0, T1, C> {
     /// - `fallback_buffer_size`: When the framing decoder does not provide the next buffer size,
     ///   this value is used to pre-allocate the buffer for the next [`AsyncReadFrame::poll_read`]
     ///   call.
-    pub fn with_read_stream<T2: AsyncRead, F: Framing>(
+    pub fn with_read_stream<Tr2: AsyncRead, F: Framing>(
         self,
-        read: T2,
+        read: Tr2,
         framing: F,
-        fallback_buffer_size: Option<NonZeroUsize>,
-    ) -> Builder<T0, impl AsyncReadFrame, C> {
+    ) -> Builder<Tw, impl AsyncReadFrame, C> {
         use std::pin::Pin;
         use std::task::{Context, Poll};
 
         struct FramingReader<T, F> {
             reader: T,
             framing: F,
-            cursor: usize,
-            fb_n_buf: usize,
         }
 
         impl<T, F> AsyncReadFrame for FramingReader<T, F>
@@ -363,36 +357,20 @@ impl<T0, T1, C> Builder<T0, T1, C> {
 
                 loop {
                     // Reading as many as possible is almostly desireable.
-                    let buflen = this
-                        .framing
-                        .next_buffer_size()
-                        .map(|x| x.get())
-                        .unwrap_or_default()
-                        .max(this.fb_n_buf);
-                    let margin_now = buf.len() - this.cursor;
-                    let n_alloc_more = buflen.saturating_sub(margin_now);
-                    buf.reserve(n_alloc_more);
+                    let size_hint = this.framing.next_buffer_size();
+                    let mut buf_read = buf.split_to(0);
 
-                    // SAFETY: We don't use the `unread` bytes
-                    unsafe { buf.set_len(buf.capacity()) };
-                    let buffer = &mut buf.as_mut()[this.cursor..];
-
-                    let Poll::Ready(read_len) = Pin::new(&mut this.reader).poll_read(cx, buffer)? else {
+                    let Poll::Ready(_) = Pin::new(&mut this.reader).poll_read(cx, &mut buf_read, size_hint)? else {
                         break Poll::Pending;
                     };
 
-                    debug_assert!(
-                        read_len <= buflen,
-                        "It returned larger length than requested buffer size"
-                    );
+                    buf.unsplit(buf_read);
 
-                    this.cursor += read_len;
-                    match this.framing.advance(&buf[..this.cursor]) {
+                    // Try decode the buffer.
+                    match this.framing.advance(&buf[..]) {
                         Ok(Some(x)) => {
                             debug_assert!(x.valid_data_end <= x.next_frame_start);
-                            debug_assert!(x.next_frame_start <= this.cursor);
-
-                            this.cursor -= x.next_frame_start;
+                            debug_assert!(x.next_frame_start <= buf.len());
 
                             let mut frame = buf.split_to(x.next_frame_start);
                             break Poll::Ready(Ok(frame.split_off(x.valid_data_end).into()));
@@ -409,10 +387,9 @@ impl<T0, T1, C> Builder<T0, T1, C> {
                         }
 
                         Err(FramingError::Recoverable(num_discard_bytes)) => {
-                            debug_assert!(num_discard_bytes <= this.cursor);
+                            debug_assert!(num_discard_bytes <= buf.len());
 
                             let _ = buf.split_to(num_discard_bytes);
-                            this.cursor -= num_discard_bytes;
                             continue;
                         }
                     }
@@ -423,14 +400,7 @@ impl<T0, T1, C> Builder<T0, T1, C> {
         Builder {
             codec: self.codec,
             write: self.write,
-            read: FramingReader {
-                reader: read,
-                framing,
-                cursor: 0,
-                fb_n_buf: fallback_buffer_size
-                    .map(|x| x.get())
-                    .unwrap_or(FRAMING_READ_STREAM_DEFAULT_BUFFER_LENGTH),
-            },
+            read: FramingReader { reader: read, framing },
             cfg: self.cfg,
         }
     }
@@ -448,10 +418,10 @@ impl<T0, T1, C> Builder<T0, T1, C> {
     }
 }
 
-impl<T0, T1, C> Builder<T0, T1, C>
+impl<Tw, Tr, C> Builder<Tw, Tr, C>
 where
-    T0: AsyncWriteFrame,
-    T1: AsyncReadFrame,
+    Tw: AsyncWriteFrame,
+    Tr: AsyncReadFrame,
     C: Codec,
 {
     pub fn build(self) -> Result<(Handle, impl Future), std::io::Error> {
@@ -474,12 +444,12 @@ where
                 reqs: RequestContext::default(),
             });
 
-            let w_conn = Arc::downgrade(&arc);
-            let task = async move {
-                // TODO: RPC driver with request support
-            };
+            fut_with_request = Some(<ConnectionBody<_, _, RequestContext>>::inbound_event_handler(
+                Arc::downgrade(&arc),
+                self.read,
+                tx_in_msg,
+            ));
 
-            fut_with_request = Some(task);
             conn = arc;
         } else {
             let arc = Arc::new(ConnectionBody {
@@ -488,12 +458,12 @@ where
                 reqs: (),
             });
 
-            let w_conn = Arc::downgrade(&arc);
-            let task = async move {
-                // TODO: RPC driver without request support
-            };
+            fut_without_request = Some(<ConnectionBody<_, _, ()>>::inbound_event_handler(
+                Arc::downgrade(&arc),
+                self.read,
+                tx_in_msg,
+            ));
 
-            fut_without_request = Some(task);
             conn = arc;
         }
 
@@ -551,4 +521,59 @@ mod driver {
     //! the handler.
     //!
     // TODO: Driver implementation
+
+    use std::sync::Weak;
+
+    use bytes::BytesMut;
+
+    use crate::{
+        codec::Codec,
+        transport::{AsyncReadFrame, AsyncWriteFrame},
+    };
+
+    use super::{msg, ConnectionBody, RequestContext};
+
+    struct InboundDriverCtx<C, T, R> {
+        conn: Weak<ConnectionBody<C, T, R>>,
+        tx_msg: flume::Sender<msg::RecvMsg>,
+
+        recv_buf: BytesMut,
+    }
+
+    /// Request-acceting version of connection driver
+    impl<C, T> ConnectionBody<C, T, RequestContext>
+    where
+        C: Codec,
+        T: AsyncWriteFrame,
+    {
+        pub(crate) async fn inbound_event_handler<Tr: AsyncReadFrame>(
+            w_this: Weak<Self>,
+            read: Tr,
+            tx_recv_msg: flume::Sender<msg::RecvMsg>,
+        ) {
+        }
+    }
+
+    /// Non-request-accepting version of connection driver
+    impl<C, T> ConnectionBody<C, T, ()>
+    where
+        C: Codec,
+        T: AsyncWriteFrame,
+    {
+        pub(crate) async fn inbound_event_handler<Tr: AsyncReadFrame>(
+            w_this: Weak<Self>,
+            read: Tr,
+            tx_recv_msg: flume::Sender<msg::RecvMsg>,
+        ) {
+        }
+    }
+
+    /// Puts shared logic between both version of connection drivers
+    impl<C, T, R> ConnectionBody<C, T, R>
+    where
+        C: Codec,
+        T: AsyncWriteFrame,
+    {
+        async fn recv_inbound_once<Tr: AsyncReadFrame>(w_this: &Weak<Self>, read: &mut Tr) {}
+    }
 }

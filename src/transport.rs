@@ -1,5 +1,5 @@
 use core::{pin::Pin, task::Poll};
-use std::task::Context;
+use std::{num::NonZeroUsize, task::Context};
 
 use bytes::{Bytes, BytesMut};
 
@@ -35,11 +35,8 @@ pub trait AsyncWriteFrame: Unpin + Send + Sync + 'static {
 pub trait AsyncReadFrame: Unpin + Send + Sync + 'static {
     /// Polls the underlying transport for frame read.
     ///
-    /// Provided buffer should never be modified by the caller. The buffer is solely used for
-    /// internal parsing, and the caller should not assume the buffer is in any valid state after
-    /// this call.
-    ///
-    /// Modifying buffer is only valid when this function returns [`Poll::Ready`] with [`Err`]
+    /// Provided buffer should never be modified by the caller. The buffer should solely be used for
+    /// representing internal status of the codec.
     ///
     /// # Returns
     ///
@@ -67,7 +64,7 @@ pub trait AsyncRead: Unpin + Send + Sync + 'static {
     ///
     /// # Returns
     ///
-    /// - `Poll::Ready(Ok(bytes_read))` if data is successfully read.
+    /// - `Poll::Ready(Ok(()))` if data is successfully read.
     /// - `Poll::Ready(Err(...))` if any error occurs during read.
     /// - `Poll::Pending` if the underlying transport is not ready.
     ///
@@ -77,8 +74,9 @@ pub trait AsyncRead: Unpin + Send + Sync + 'static {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buffer: &mut [u8],
-    ) -> Poll<Result<usize, std::io::Error>>;
+        buffer: &mut BytesMut,
+        size_hint: Option<NonZeroUsize>,
+    ) -> Poll<Result<(), std::io::Error>>;
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
         let _ = cx;

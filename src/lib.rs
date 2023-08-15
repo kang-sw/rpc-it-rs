@@ -28,8 +28,3 @@ pub extern crate serde;
 pub mod codec;
 pub mod rpc;
 pub mod transport;
-
-pub mod prelude {
-    pub use crate::codec::{Codec, Framing};
-    pub use crate::transport::{AsyncReadFrame, AsyncWriteFrame};
-}
