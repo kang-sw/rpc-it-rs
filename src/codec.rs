@@ -154,5 +154,5 @@ pub enum DecodeError {
 pub enum InboundFrameType {
     Notify { method: Range<usize> },
     Request { method: Range<usize>, req_id: Range<usize> },
-    Response { req_id_hash: u64, is_error: bool },
+    Response { req_id: Range<usize>, req_id_hash: u64, is_error: bool },
 }

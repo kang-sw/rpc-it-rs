@@ -1,4 +1,10 @@
-use std::{fmt::Debug, future::Future, num::NonZeroUsize, ops::Range, sync::Arc};
+use std::{
+    fmt::Debug,
+    future::Future,
+    num::NonZeroUsize,
+    ops::Range,
+    sync::{Arc, Weak},
+};
 
 use crate::{
     codec::{Codec, DecodeError, Framing, FramingError},
@@ -24,6 +30,7 @@ struct ConnectionBody<C, T, R> {
     codec: C,
     write: AsyncMutex<T>,
     reqs: R,
+    drive: flume::Sender<InboundDriverDirective>,
 }
 
 trait Connection: Send + Sync + 'static + Debug {
@@ -81,6 +88,14 @@ struct RequestContext {
     // TODO: Handle cancellations ...
 }
 
+/// Which couldn't be handled within the non-async drop handlers ...
+///
+/// - A received request object is dropped before response is sent, therefore an 'aborted' message
+///   should be sent to the receiver
+#[derive(Debug)]
+enum InboundDriverDirective {
+    AbortedResponse(msg::Request),
+}
 /* ---------------------------------------------------------------------------------------------- */
 /*                                             HANDLES                                            */
 /* ---------------------------------------------------------------------------------------------- */
@@ -204,10 +219,10 @@ pub struct ResponseFuture<T> {
     req_id: u64,
 }
 
+/// Common content of inbound message
 #[derive(Debug)]
 struct InboundBody {
     buffer: Bytes,
-    handle: SendHandle,
     payload: Range<usize>,
 }
 
@@ -287,10 +302,11 @@ impl From<flume::RecvError> for RecvError {
 
 // TODO: Request Builder
 //  - Create async worker task to handle receive
-pub struct Builder<Tw, Tr, C> {
+pub struct Builder<Tw, Tr, C, E> {
     codec: C,
     write: Tw,
     read: Tr,
+    ev: E,
 
     /// Required configurations
     cfg: BuilderOtherConfig,
@@ -302,25 +318,29 @@ struct BuilderOtherConfig {
     inbound_channel_cap: Option<NonZeroUsize>,
 }
 
-impl Default for Builder<(), (), ()> {
+impl Default for Builder<(), (), (), EmptyEventListener> {
     fn default() -> Self {
-        Self { codec: (), write: (), read: (), cfg: Default::default() }
+        Self { codec: (), write: (), read: (), cfg: Default::default(), ev: EmptyEventListener }
     }
 }
 
-impl<Tw, Tr, C> Builder<Tw, Tr, C> {
+impl<Tw, Tr, C, E> Builder<Tw, Tr, C, E> {
     /// Specify codec to use
-    pub fn with_codec<C1: Codec>(self, codec: C1) -> Builder<Tw, Tr, C1> {
-        Builder { codec, write: self.write, read: self.read, cfg: self.cfg }
+    pub fn with_codec<C1: Codec>(self, codec: C1) -> Builder<Tw, Tr, C1, E> {
+        Builder { codec, write: self.write, read: self.read, cfg: self.cfg, ev: self.ev }
     }
 
     /// Specify write frame to use
-    pub fn with_write<Tw2: AsyncWriteFrame>(self, write: Tw2) -> Builder<Tw2, Tr, C> {
-        Builder { codec: self.codec, write, read: self.read, cfg: self.cfg }
+    pub fn with_write<Tw2: AsyncWriteFrame>(self, write: Tw2) -> Builder<Tw2, Tr, C, E> {
+        Builder { codec: self.codec, write, read: self.read, cfg: self.cfg, ev: self.ev }
     }
 
-    pub fn with_read<Tr2: AsyncReadFrame>(self, read: Tr2) -> Builder<Tw, Tr2, C> {
-        Builder { codec: self.codec, write: self.write, read, cfg: self.cfg }
+    pub fn with_read<Tr2: AsyncReadFrame>(self, read: Tr2) -> Builder<Tw, Tr2, C, E> {
+        Builder { codec: self.codec, write: self.write, read, cfg: self.cfg, ev: self.ev }
+    }
+
+    pub fn with_event_listener<E2: InboundEventSubscriber>(self, ev: E2) -> Builder<Tw, Tr, C, E2> {
+        Builder { codec: self.codec, write: self.write, read: self.read, cfg: self.cfg, ev }
     }
 
     /// Set the read frame with stream reader and framing decoder.
@@ -334,7 +354,7 @@ impl<Tw, Tr, C> Builder<Tw, Tr, C> {
         self,
         read: Tr2,
         framing: F,
-    ) -> Builder<Tw, impl AsyncReadFrame, C> {
+    ) -> Builder<Tw, impl AsyncReadFrame, C, E> {
         use std::pin::Pin;
         use std::task::{Context, Poll};
 
@@ -402,6 +422,7 @@ impl<Tw, Tr, C> Builder<Tw, Tr, C> {
             write: self.write,
             read: FramingReader { reader: read, framing },
             cfg: self.cfg,
+            ev: self.ev,
         }
     }
 
@@ -418,16 +439,18 @@ impl<Tw, Tr, C> Builder<Tw, Tr, C> {
     }
 }
 
-impl<Tw, Tr, C> Builder<Tw, Tr, C>
+impl<Tw, Tr, C, E> Builder<Tw, Tr, C, E>
 where
     Tw: AsyncWriteFrame,
     Tr: AsyncReadFrame,
     C: Codec,
+    E: InboundEventSubscriber,
 {
     pub fn build(self) -> Result<(Handle, impl Future), std::io::Error> {
         let mut fut_with_request = None;
         let mut fut_without_request = None;
 
+        let (tx_inb_drv, rx_inb_drv) = flume::unbounded();
         let (tx_in_msg, rx_in_msg) =
             if let Some(chan_cap) = self.cfg.inbound_channel_cap.map(|x| x.get()) {
                 flume::bounded(chan_cap)
@@ -438,33 +461,41 @@ where
         let conn: Arc<dyn Connection>;
 
         if self.cfg.enable_send_request {
-            let arc = Arc::new(ConnectionBody {
+            let this = Arc::new(ConnectionBody {
                 codec: self.codec,
                 write: AsyncMutex::new(self.write),
                 reqs: RequestContext::default(),
+                drive: tx_inb_drv,
             });
 
-            fut_with_request = Some(<ConnectionBody<_, _, RequestContext>>::inbound_event_handler(
-                Arc::downgrade(&arc),
-                self.read,
-                tx_in_msg,
-            ));
+            fut_with_request =
+                Some(<ConnectionBody<_, _, RequestContext>>::inbound_event_handler(DriverBody {
+                    w_this: Arc::downgrade(&this),
+                    read: self.read,
+                    ev_subs: self.ev,
+                    rx_drive: rx_inb_drv,
+                    tx_msg: tx_in_msg,
+                }));
 
-            conn = arc;
+            conn = this;
         } else {
-            let arc = Arc::new(ConnectionBody {
+            let this = Arc::new(ConnectionBody {
                 codec: self.codec,
                 write: AsyncMutex::new(self.write),
                 reqs: (),
+                drive: tx_inb_drv,
             });
 
-            fut_without_request = Some(<ConnectionBody<_, _, ()>>::inbound_event_handler(
-                Arc::downgrade(&arc),
-                self.read,
-                tx_in_msg,
-            ));
+            fut_without_request =
+                Some(<ConnectionBody<_, _, ()>>::inbound_event_handler(DriverBody {
+                    w_this: Arc::downgrade(&this),
+                    read: self.read,
+                    ev_subs: self.ev,
+                    rx_drive: rx_inb_drv,
+                    tx_msg: tx_in_msg,
+                }));
 
-            conn = arc;
+            conn = this;
         }
 
         Ok((Handle(SendHandle(conn), Receiver(rx_in_msg)), async move {
@@ -480,10 +511,69 @@ where
 }
 
 /* ---------------------------------------------------------------------------------------------- */
+/*                                      EVENT LISTENER TRAIT                                      */
+/* ---------------------------------------------------------------------------------------------- */
+
+#[derive(Debug, thiserror::Error)]
+pub enum InboundError {
+    #[error("Response packet is received, but we haven't enabled request feature!")]
+    ResponseWithoutRequest,
+
+    #[error("Response packet is not routed.")]
+    ResponseNotFound(msg::Response),
+}
+
+/// This trait is to notify the event from the connection.
+pub trait InboundEventSubscriber: Send + Sync + 'static {
+    /// Called when the inbound stream is closed. If channel is closed
+    ///
+    /// # Arguments
+    ///
+    /// - `closed_by_us`: Are we closing? Otherwise, the read stream is closed by the remote.
+    /// - `result`:
+    ///     - Closing result of the read stream. Usually, if `closed_by_us` is true, this is
+    ///       `Ok(())`, otherwise, may contain error related to network stream disconnection.
+    fn on_close(&self, closed_by_us: bool, result: std::io::Result<()>) {
+        let _ = (closed_by_us, result);
+    }
+
+    /// When an errnous response is received.
+    ///
+    /// -
+    fn on_inbound_error(&self, error: InboundError) {
+        let _ = error;
+    }
+}
+
+/// Placeholder implementation of event listener.
+struct EmptyEventListener;
+impl InboundEventSubscriber for EmptyEventListener {}
+
+/* ---------------------------------------------------------------------------------------------- */
 /*                                            MESSAGES                                            */
 /* ---------------------------------------------------------------------------------------------- */
+pub trait Message {
+    fn payload(&self) -> &[u8];
+    fn raw(&self) -> &[u8];
+    fn into_raw(self) -> Bytes;
+}
+
+pub trait MessageReqId: Message {
+    fn req_id(&self) -> &[u8];
+    fn method_raw(&self) -> Option<&[u8]>;
+}
+
+pub trait MessageMethodName: Message {
+    fn method_raw(&self) -> &[u8];
+    fn method(&self) -> Option<&str> {
+        std::str::from_utf8(self.method_raw()).ok()
+    }
+}
+
 pub mod msg {
     use std::ops::Range;
+
+    // TODO: Message Trait Implementations
 
     #[derive(Debug)]
     pub struct Request {
@@ -501,6 +591,8 @@ pub mod msg {
     #[derive(Debug)]
     pub struct Response {
         h: super::InboundBody,
+        req_id: Range<usize>,
+        /// Should we interpret payload as error object?
         is_error: bool,
     }
 
@@ -516,29 +608,34 @@ pub mod msg {
 /* ---------------------------------------------------------------------------------------------- */
 /*                                      DRIVER IMPLEMENTATION                                     */
 /* ---------------------------------------------------------------------------------------------- */
+
+pub(crate) struct DriverBody<C, T, E, R, Tr> {
+    w_this: Weak<ConnectionBody<C, T, R>>,
+    read: Tr,
+    ev_subs: E,
+    rx_drive: flume::Receiver<InboundDriverDirective>,
+    tx_msg: flume::Sender<msg::RecvMsg>,
+}
+
 mod driver {
     //! Internal driver context. It receives the request from the connection, and dispatches it to
     //! the handler.
     //!
     // TODO: Driver implementation
 
-    use std::sync::Weak;
-
     use bytes::BytesMut;
+    use futures_util::{future::FusedFuture, FutureExt};
+    use std::{future::poll_fn, pin::Pin, sync::Weak};
 
     use crate::{
         codec::Codec,
         transport::{AsyncReadFrame, AsyncWriteFrame},
     };
 
-    use super::{msg, ConnectionBody, RequestContext};
-
-    struct InboundDriverCtx<C, T, R> {
-        conn: Weak<ConnectionBody<C, T, R>>,
-        tx_msg: flume::Sender<msg::RecvMsg>,
-
-        recv_buf: BytesMut,
-    }
+    use super::{
+        msg, ConnectionBody, DriverBody, InboundDriverDirective, InboundEventSubscriber,
+        RequestContext,
+    };
 
     /// Request-acceting version of connection driver
     impl<C, T> ConnectionBody<C, T, RequestContext>
@@ -546,11 +643,13 @@ mod driver {
         C: Codec,
         T: AsyncWriteFrame,
     {
-        pub(crate) async fn inbound_event_handler<Tr: AsyncReadFrame>(
-            w_this: Weak<Self>,
-            read: Tr,
-            tx_recv_msg: flume::Sender<msg::RecvMsg>,
+        pub(crate) async fn inbound_event_handler<Tr: AsyncReadFrame, E: InboundEventSubscriber>(
+            body: DriverBody<C, T, E, RequestContext, Tr>,
         ) {
+            body.execute(|this, ev, param| {
+                todo!("Route response to awaiting request handlers");
+            })
+            .await;
         }
     }
 
@@ -560,20 +659,95 @@ mod driver {
         C: Codec,
         T: AsyncWriteFrame,
     {
-        pub(crate) async fn inbound_event_handler<Tr: AsyncReadFrame>(
-            w_this: Weak<Self>,
-            read: Tr,
-            tx_recv_msg: flume::Sender<msg::RecvMsg>,
+        pub(crate) async fn inbound_event_handler<Tr: AsyncReadFrame, E: InboundEventSubscriber>(
+            body: DriverBody<C, T, E, (), Tr>,
+        ) {
+            // Naively call the implementation with empty handler. Just discards all responses
+            body.execute(|_, _, _| ()).await
+        }
+    }
+
+    impl<C, T, E, R, Tr> DriverBody<C, T, E, R, Tr>
+    where
+        C: Codec,
+        T: AsyncWriteFrame,
+        E: InboundEventSubscriber,
+        Tr: AsyncReadFrame,
+    {
+        async fn execute(
+            mut self,
+            fn_handle_response: impl Fn(&ConnectionBody<C, T, R>, &mut E, HandleResponseParam<'_>),
+        ) {
+            let DriverBody { w_this, mut read, mut ev_subs, rx_drive: rx_msg, tx_msg } = self;
+            let mut rx_buf = bytes::BytesMut::new();
+
+            use futures_util::future::Fuse;
+            let mut fut_drive_msg = Fuse::terminated();
+            let mut fut_read = Fuse::terminated();
+            let mut close_from_remote = false;
+
+            loop {
+                if fut_drive_msg.is_terminated() {
+                    fut_drive_msg = rx_msg.recv_async().fuse();
+                }
+
+                if fut_read.is_terminated() {
+                    fut_read = poll_fn(|cx| Pin::new(&mut read).poll_read(cx, &mut rx_buf)).fuse();
+                }
+
+                futures_util::select! {
+                    msg = fut_drive_msg => {
+                        if let Some((msg, this)) = msg.ok().zip(w_this.upgrade()) {
+                            Self::on_drive_msg(&this, &mut ev_subs, msg).await;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    inbound = fut_read => {
+                        let Some(this) = w_this.upgrade() else { break };
+
+                        match inbound {
+                            Ok(bytes) => {
+                                Self::on_read(&this, &mut ev_subs, &fn_handle_response, bytes, &tx_msg).await;
+                            }
+                            Err(e) => {
+                                close_from_remote = true;
+                                ev_subs.on_close(false, Err(e));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Just try to close the channel
+            if !close_from_remote {
+                let r = poll_fn(|cx| Pin::new(&mut read).poll_close(cx)).await;
+                ev_subs.on_close(true, r); // We're closing this
+            }
+        }
+
+        async fn on_drive_msg(
+            this: &ConnectionBody<C, T, R>,
+            ev_subs: &mut E,
+            msg: InboundDriverDirective,
+        ) {
+            // TODO: Handle inbound drive message
+        }
+
+        async fn on_read(
+            this: &ConnectionBody<C, T, R>,
+            ev_subs: &mut E,
+            fn_handle_response: &impl Fn(&ConnectionBody<C, T, R>, &mut E, HandleResponseParam<'_>),
+            inbound: bytes::Bytes,
+            tx_msg: &flume::Sender<msg::RecvMsg>,
         ) {
         }
     }
 
-    /// Puts shared logic between both version of connection drivers
-    impl<C, T, R> ConnectionBody<C, T, R>
-    where
-        C: Codec,
-        T: AsyncWriteFrame,
-    {
-        async fn recv_inbound_once<Tr: AsyncReadFrame>(w_this: &Weak<Self>, read: &mut Tr) {}
+    struct HandleResponseParam<'a> {
+        payload: bytes::Bytes,
+        req_id: &'a [u8],
+        is_error: bool,
     }
 }
