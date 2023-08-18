@@ -879,10 +879,12 @@ mod inner {
                     }
 
                     result = fut_bg_sender => {
-                        let Err(err) = result else { break };
+                        if let Err(err) = result {
+                            close_from_remote = true;
+                            ev_subs.on_close(true, Err(err));
+                        }
 
-                        close_from_remote = true;
-                        ev_subs.on_close(true, Err(err));
+                        break;
                     }
                 }
             }
