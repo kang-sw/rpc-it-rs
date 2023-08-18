@@ -3,11 +3,11 @@ use std::{
     future::Future,
     num::NonZeroUsize,
     ops::Range,
-    sync::{Arc, Weak},
+    sync::{atomic::AtomicBool, Arc, Weak},
 };
 
 use crate::{
-    codec::{Codec, DecodeError, Framing, FramingError},
+    codec::{self, Codec, DecodeError, Framing, FramingError},
     transport::{AsyncRead, AsyncReadFrame, AsyncWriteFrame},
 };
 
@@ -26,23 +26,28 @@ use bytes::{Bytes, BytesMut};
 ///
 /// For unsupported features(e.g. notify from client), the codec should return
 /// [`crate::codec::EncodeError::UnsupportedFeature`] error.
-struct ConnectionBody<C, T, R> {
+struct ConnectionImpl<C, T, R> {
     codec: C,
     write: AsyncMutex<T>,
     reqs: R,
     drive: flume::Sender<InboundDriverDirective>,
+    is_alive: AtomicBool,
 }
 
+/// Wraps connection implementation with virtual dispatch.
 trait Connection: Send + Sync + 'static + Debug {
     fn codec(&self) -> &dyn Codec;
     fn write(&self) -> &AsyncMutex<dyn AsyncWriteFrame>;
     fn reqs(&self) -> Option<&RequestContext>;
+    fn drive(&self) -> &flume::Sender<InboundDriverDirective>;
+    fn is_alive(&self) -> bool;
 }
 
-impl<C, T> Connection for ConnectionBody<C, T, RequestContext>
+impl<C, T, R> Connection for ConnectionImpl<C, T, R>
 where
     C: Codec,
     T: AsyncWriteFrame,
+    R: GetRequestContext,
 {
     fn codec(&self) -> &dyn Codec {
         &self.codec
@@ -53,29 +58,58 @@ where
     }
 
     fn reqs(&self) -> Option<&RequestContext> {
-        Some(&self.reqs)
+        self.reqs.get_req_con()
+    }
+
+    fn drive(&self) -> &flume::Sender<InboundDriverDirective> {
+        &self.drive
+    }
+
+    fn is_alive(&self) -> bool {
+        self.is_alive.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
-impl<C, T> Connection for ConnectionBody<C, T, ()>
+impl<C, T, R> ConnectionImpl<C, T, R>
 where
     C: Codec,
     T: AsyncWriteFrame,
+    R: GetRequestContext,
 {
-    fn codec(&self) -> &dyn Codec {
-        &self.codec
+    fn with_req(self) -> ConnectionImpl<C, T, RequestContext> {
+        ConnectionImpl {
+            codec: self.codec,
+            write: self.write,
+            reqs: RequestContext::default(),
+            drive: self.drive,
+            is_alive: self.is_alive,
+        }
     }
 
-    fn write(&self) -> &AsyncMutex<dyn AsyncWriteFrame> {
-        &self.write
+    fn dyn_ref(&self) -> &dyn Connection {
+        self
     }
+}
 
-    fn reqs(&self) -> Option<&RequestContext> {
+/// Trick to get the request context from the generic type, and to cast [`ConnectionBody`] to
+/// `dyn` [`Connection`] trait object.
+trait GetRequestContext: std::fmt::Debug + Send + Sync + 'static {
+    fn get_req_con(&self) -> Option<&RequestContext>;
+}
+
+impl GetRequestContext for RequestContext {
+    fn get_req_con(&self) -> Option<&RequestContext> {
+        Some(self)
+    }
+}
+
+impl GetRequestContext for () {
+    fn get_req_con(&self) -> Option<&RequestContext> {
         None
     }
 }
 
-impl<C, T, R: Debug> Debug for ConnectionBody<C, T, R> {
+impl<C, T, R: Debug> Debug for ConnectionImpl<C, T, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConnectionBody").field("reqs", &self.reqs).finish()
     }
@@ -94,8 +128,18 @@ struct RequestContext {
 ///   should be sent to the receiver
 #[derive(Debug)]
 enum InboundDriverDirective {
-    AbortedResponse(msg::Request),
+    DeferredWrite(DeferredWrite),
 }
+
+#[derive(Debug)]
+enum DeferredWrite {
+    /// Send error response to the request
+    ErrorResponse(msg::RequestInner, codec::PredefinedResponseError),
+
+    /// Send request was deferred. This is used for non-blocking response, etc.
+    Raw(bytes::Bytes),
+}
+
 /* ---------------------------------------------------------------------------------------------- */
 /*                                             HANDLES                                            */
 /* ---------------------------------------------------------------------------------------------- */
@@ -168,7 +212,7 @@ pub struct SendHandle(Arc<dyn Connection>);
 /// To minimize the memory allocation during sender payload serialization, reuse this buffer over
 /// multiple RPC request/notification.
 #[derive(Debug, Clone, Default)]
-pub struct ReusableSendBuffer {
+pub struct BufferPool {
     tmpbuf: Vec<u8>,
 }
 
@@ -192,7 +236,7 @@ impl SendHandle {
     #[doc(hidden)]
     pub async fn send_request_ex<'a, T: serde::Serialize, R>(
         &'a self,
-        buf_reuse: &mut ReusableSendBuffer,
+        buf_reuse: &mut BufferPool,
         method: &str,
         params: &T,
     ) -> Result<ResponseFuture<R>, SendError> {
@@ -202,10 +246,19 @@ impl SendHandle {
     #[doc(hidden)]
     pub async fn send_notify_ex<T: serde::Serialize>(
         &self,
-        buf_reuse: &mut ReusableSendBuffer,
+        buf_reuse: &mut BufferPool,
         method: &str,
         params: &T,
     ) -> Result<(), SendError> {
+        todo!()
+    }
+
+    pub fn is_closed(&self) -> bool {
+        // TODO:
+        false
+    }
+
+    pub async fn close(self) -> std::io::Result<()> {
         todo!()
     }
 }
@@ -266,8 +319,8 @@ pub enum SendError {
     #[error("Error during preparing send: {0}")]
     SendSetupFailed(std::io::Error),
 
-    #[error("Error during sending encoded message: {0}")]
-    SendFailed(std::io::Error),
+    #[error("Error during sending message to write stream: {0}")]
+    IoError(#[from] std::io::Error),
 
     #[error("Request feature is disabled for this connection")]
     RequestDisabled,
@@ -459,17 +512,18 @@ where
             };
 
         let conn: Arc<dyn Connection>;
+        let this = ConnectionImpl {
+            codec: self.codec,
+            write: AsyncMutex::new(self.write),
+            reqs: (),
+            drive: tx_inb_drv,
+            is_alive: AtomicBool::new(true),
+        };
 
         if self.cfg.enable_send_request {
-            let this = Arc::new(ConnectionBody {
-                codec: self.codec,
-                write: AsyncMutex::new(self.write),
-                reqs: RequestContext::default(),
-                drive: tx_inb_drv,
-            });
-
+            let this = Arc::new(this.with_req());
             fut_with_request =
-                Some(<ConnectionBody<_, _, RequestContext>>::inbound_event_handler(DriverBody {
+                Some(<ConnectionImpl<_, _, RequestContext>>::inbound_event_handler(DriverBody {
                     w_this: Arc::downgrade(&this),
                     read: self.read,
                     ev_subs: self.ev,
@@ -479,15 +533,9 @@ where
 
             conn = this;
         } else {
-            let this = Arc::new(ConnectionBody {
-                codec: self.codec,
-                write: AsyncMutex::new(self.write),
-                reqs: (),
-                drive: tx_inb_drv,
-            });
-
+            let this = Arc::new(this);
             fut_without_request =
-                Some(<ConnectionBody<_, _, ()>>::inbound_event_handler(DriverBody {
+                Some(<ConnectionImpl<_, _, ()>>::inbound_event_handler(DriverBody {
                     w_this: Arc::downgrade(&this),
                     read: self.read,
                     ev_subs: self.ev,
@@ -521,6 +569,8 @@ pub enum InboundError {
 
     #[error("Response packet is not routed.")]
     ResponseNotFound(msg::Response),
+    // TODO: ParseFailed
+    // TODO: BrokenStream
 }
 
 /// This trait is to notify the event from the connection.
@@ -560,7 +610,6 @@ pub trait Message {
 
 pub trait MessageReqId: Message {
     fn req_id(&self) -> &[u8];
-    fn method_raw(&self) -> Option<&[u8]>;
 }
 
 pub trait MessageMethodName: Message {
@@ -575,11 +624,73 @@ pub mod msg {
 
     // TODO: Message Trait Implementations
 
+    macro_rules! impl_message {
+        ($t:ty) => {
+            impl super::Message for $t {
+                fn payload(&self) -> &[u8] {
+                    &self.h.buffer[self.h.payload.clone()]
+                }
+
+                fn raw(&self) -> &[u8] {
+                    &self.h.buffer
+                }
+
+                fn into_raw(self) -> bytes::Bytes {
+                    self.h.buffer
+                }
+            }
+        };
+    }
+
+    macro_rules! impl_method_name {
+        ($t:ty) => {
+            impl super::MessageMethodName for $t {
+                fn method_raw(&self) -> &[u8] {
+                    &self.h.buffer[self.method.clone()]
+                }
+            }
+        };
+    }
+
+    macro_rules! impl_req_id {
+        ($t:ty) => {
+            impl super::MessageReqId for $t {
+                fn req_id(&self) -> &[u8] {
+                    &self.h.buffer[self.req_id.clone()]
+                }
+            }
+        };
+    }
+
+    impl_message!(RequestInner);
+    impl_method_name!(RequestInner);
+    impl_req_id!(RequestInner);
+
+    impl_message!(Notify);
+    impl_method_name!(Notify);
+
+    impl_message!(Response);
+    impl_req_id!(Response);
+
     #[derive(Debug)]
-    pub struct Request {
+    pub struct RequestInner {
         h: super::InboundBody,
         method: Range<usize>,
         req_id: Range<usize>,
+    }
+
+    #[derive(Debug)]
+    pub struct Request {
+        inner: RequestInner,
+        w: super::SendHandle,
+    }
+
+    impl std::ops::Deref for Request {
+        type Target = RequestInner;
+
+        fn deref(&self) -> &Self::Target {
+            &self.inner
+        }
     }
 
     #[derive(Debug)]
@@ -592,7 +703,8 @@ pub mod msg {
     pub struct Response {
         h: super::InboundBody,
         req_id: Range<usize>,
-        /// Should we interpret payload as error object?
+
+        /// Should we interpret the payload as error object?
         is_error: bool,
     }
 
@@ -609,36 +721,39 @@ pub mod msg {
 /*                                      DRIVER IMPLEMENTATION                                     */
 /* ---------------------------------------------------------------------------------------------- */
 
-pub(crate) struct DriverBody<C, T, E, R, Tr> {
-    w_this: Weak<ConnectionBody<C, T, R>>,
+struct DriverBody<C, T, E, R, Tr> {
+    w_this: Weak<ConnectionImpl<C, T, R>>,
     read: Tr,
     ev_subs: E,
     rx_drive: flume::Receiver<InboundDriverDirective>,
     tx_msg: flume::Sender<msg::RecvMsg>,
 }
 
-mod driver {
+mod inner {
     //! Internal driver context. It receives the request from the connection, and dispatches it to
     //! the handler.
     //!
     // TODO: Driver implementation
 
     use bytes::BytesMut;
+    use capture_it::capture;
     use futures_util::{future::FusedFuture, FutureExt};
     use std::{future::poll_fn, pin::Pin, sync::Weak};
+    use with_drop::with_drop;
 
     use crate::{
-        codec::Codec,
+        codec::{self, Codec},
+        rpc::{Connection, DeferredWrite, SendError},
         transport::{AsyncReadFrame, AsyncWriteFrame},
     };
 
     use super::{
-        msg, ConnectionBody, DriverBody, InboundDriverDirective, InboundEventSubscriber,
-        RequestContext,
+        msg, ConnectionImpl, DriverBody, GetRequestContext, InboundDriverDirective,
+        InboundEventSubscriber, RequestContext,
     };
 
     /// Request-acceting version of connection driver
-    impl<C, T> ConnectionBody<C, T, RequestContext>
+    impl<C, T> ConnectionImpl<C, T, RequestContext>
     where
         C: Codec,
         T: AsyncWriteFrame,
@@ -654,7 +769,7 @@ mod driver {
     }
 
     /// Non-request-accepting version of connection driver
-    impl<C, T> ConnectionBody<C, T, ()>
+    impl<C, T> ConnectionImpl<C, T, ()>
     where
         C: Codec,
         T: AsyncWriteFrame,
@@ -672,11 +787,12 @@ mod driver {
         C: Codec,
         T: AsyncWriteFrame,
         E: InboundEventSubscriber,
+        R: GetRequestContext,
         Tr: AsyncReadFrame,
     {
         async fn execute(
-            mut self,
-            fn_handle_response: impl Fn(&ConnectionBody<C, T, R>, &mut E, HandleResponseParam<'_>),
+            self,
+            fn_handle_response: impl Fn(&ConnectionImpl<C, T, R>, &mut E, HandleResponseParam<'_>),
         ) {
             let DriverBody { w_this, mut read, mut ev_subs, rx_drive: rx_msg, tx_msg } = self;
             let mut rx_buf = bytes::BytesMut::new();
@@ -686,6 +802,43 @@ mod driver {
             let mut fut_read = Fuse::terminated();
             let mut close_from_remote = false;
 
+            /* ----------------------------- Background Sender Task ----------------------------- */
+            // Tasks that perform write operations in the background. For example, within the `Drop`
+            // trait, which does not allow asynchronous operations, it can be used to send a cancel
+            // handling of an `unhandled request`.
+            let (tx_bg_sender, rx_bg_sender) = flume::unbounded();
+            let fut_bg_sender = capture!([w_this], async move {
+                let mut pool = super::BufferPool::default();
+                while let Ok(msg) = rx_bg_sender.recv_async().await {
+                    match msg {
+                        DeferredWrite::ErrorResponse(req, err) => {
+                            let Some(this) = w_this.upgrade() else { break };
+                            let err = this.dyn_ref().__send_error_rep(&mut pool, &req, &err).await;
+
+                            // Ignore all other error types, as this message is triggered
+                            // crate-internally on very limited situations
+                            let Err(SendError::IoError(e)) = err else { continue };
+                            return Err(e);
+                        }
+                        DeferredWrite::Raw(msg) => {
+                            let Some(this) = w_this.upgrade() else { break };
+                            this.dyn_ref().__write_raw(&msg).await?;
+                        }
+                    }
+                }
+
+                Ok::<(), std::io::Error>(())
+            });
+            let fut_bg_sender = fut_bg_sender.fuse();
+            let mut fut_bg_sender = std::pin::pin!(fut_bg_sender);
+
+            // Mark the connection as 'dead' when the driver is terminated.
+            let _mark_dead_on_exit = with_drop(w_this.clone(), |x| {
+                let Some(x) = x.upgrade() else { return };
+                x.is_alive.store(false, std::sync::atomic::Ordering::Release);
+            });
+
+            /* ------------------------------------ App Loop ------------------------------------ */
             loop {
                 if fut_drive_msg.is_terminated() {
                     fut_drive_msg = rx_msg.recv_async().fuse();
@@ -697,10 +850,17 @@ mod driver {
 
                 futures_util::select! {
                     msg = fut_drive_msg => {
-                        if let Some((msg, this)) = msg.ok().zip(w_this.upgrade()) {
-                            Self::on_drive_msg(&this, &mut ev_subs, msg).await;
-                        } else {
-                            break;
+                        match msg {
+                            Ok(InboundDriverDirective::DeferredWrite(msg)) => {
+                                // This may not fail.
+                                tx_bg_sender.send_async(msg).await.ok();
+                            }
+
+                            Err(_) => {
+                                // Connection disposed by 'us' (by dropping RPC handle). i.e.
+                                // `close_from_remote = false`
+                                break;
+                            }
                         }
                     }
 
@@ -717,7 +877,19 @@ mod driver {
                             }
                         }
                     }
+
+                    result = fut_bg_sender => {
+                        let Err(err) = result else { break };
+
+                        close_from_remote = true;
+                        ev_subs.on_close(true, Err(err));
+                    }
                 }
+            }
+
+            // If we're exitting with alive handle, manually close the write stream.
+            if let Some(x) = w_this.upgrade() {
+                x.dyn_ref().__close().await.ok();
             }
 
             // Just try to close the channel
@@ -727,21 +899,36 @@ mod driver {
             }
         }
 
-        async fn on_drive_msg(
-            this: &ConnectionBody<C, T, R>,
-            ev_subs: &mut E,
-            msg: InboundDriverDirective,
-        ) {
-            // TODO: Handle inbound drive message
-        }
-
         async fn on_read(
-            this: &ConnectionBody<C, T, R>,
+            this: &ConnectionImpl<C, T, R>,
             ev_subs: &mut E,
-            fn_handle_response: &impl Fn(&ConnectionBody<C, T, R>, &mut E, HandleResponseParam<'_>),
+            fn_handle_response: &impl Fn(&ConnectionImpl<C, T, R>, &mut E, HandleResponseParam<'_>),
             inbound: bytes::Bytes,
             tx_msg: &flume::Sender<msg::RecvMsg>,
         ) {
+            // TODO: Handle inbound frame
+        }
+    }
+
+    impl dyn super::Connection {
+        pub(crate) async fn __send_error_rep(
+            &self,
+            buf: &mut super::BufferPool,
+            recv: &msg::RequestInner,
+            error: &codec::PredefinedResponseError,
+        ) -> Result<(), super::SendError> {
+            todo!();
+        }
+
+        pub(crate) async fn __write_raw(&self, buf: &[u8]) -> std::io::Result<()> {
+            let mut write = self.write().lock().await;
+            poll_fn(|cx| Pin::new(&mut *write).poll_pre_write(cx)).await?;
+            poll_fn(|cx| Pin::new(&mut *write).poll_write(cx, buf)).await?;
+            Ok(())
+        }
+
+        pub(crate) async fn __close(&self) -> std::io::Result<()> {
+            todo!()
         }
     }
 

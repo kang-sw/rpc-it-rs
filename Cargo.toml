@@ -19,6 +19,7 @@ flume = "0.11"
 derive_setters = "0.1.6"
 futures-util = "0.3.28"
 capture-it = "0.4.3"
+with_drop = "0.0.3"
 
 [features]
 tokio = []
