@@ -22,7 +22,7 @@ capture-it = "0.4.3"
 bitflags = "2.4.0"
 enum-as-inner = "0.6.0"
 parking_lot = "0.12.1"
-indexmap = "2.0.0"
+dashmap = "5.5.0"
 
 [features]
 default = ["in-memory"]

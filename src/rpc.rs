@@ -1,3 +1,12 @@
+//! RPC connection implementation
+//!
+//! # Cautions
+//!
+//! - All `write` operation are not cancellation-safe in async context. Once you abort the async
+//!   write task such as `request`, `notify`, `response*` series, the write stream may remain in
+//!   corrupted state, which may invalidate any subsequent write operation.
+//!
+
 use std::{
     fmt::Debug,
     future::Future,
@@ -329,7 +338,12 @@ impl SendHandle {
         self.0.tx_drive().is_disconnected()
     }
 
-    /// Closes the connection. If the
+    /// Closes the connection. If it's already closed, it'll return false.
+    ///
+    /// # Caution
+    ///
+    /// If multiple threads calls this method at the same time, more than one thread may return
+    /// true, as the close operation is lazy.
     pub fn close(self) -> bool {
         self.0.tx_drive().send(InboundDriverDirective::Close).is_ok()
     }
@@ -348,6 +362,10 @@ impl SendHandle {
 mod req {
     use std::{num::NonZeroU64, sync::atomic::AtomicU64};
 
+    use dashmap::DashMap;
+    use futures_util::task::AtomicWaker;
+    use parking_lot::Mutex;
+
     use super::{msg, Connection};
 
     /// RPC request context. Stores request ID and response receiver context.
@@ -355,12 +373,17 @@ mod req {
     pub struct RequestContext {
         /// We may not run out of 64-bit sequential integers ...
         req_id_gen: AtomicU64,
-        // TODO: Registered request futures ...
-        // TODO: Handle cancellations ...
+        waiters: DashMap<NonZeroU64, RequestSlot>,
     }
 
-    #[derive(Clone, Copy)]
-    pub(super) struct RequestSlotId(usize);
+    #[derive(Clone, Debug)]
+    pub(super) struct RequestSlotId(NonZeroU64);
+
+    #[derive(Debug)]
+    struct RequestSlot {
+        waker: AtomicWaker,
+        value: Mutex<Option<msg::Response>>,
+    }
 
     impl RequestContext {
         /// Never returns 0.
@@ -376,12 +399,9 @@ mod req {
 
         #[must_use]
         pub(super) fn register_req(&self, req_id_hash: NonZeroU64) -> RequestSlotId {
-            todo!("")
-        }
-
-        /// Invoked on `ResponseFuture::drop` called
-        fn try_unregister_req(&self, req_id_hash: RequestSlotId) {
-            todo!("")
+            let slot = RequestSlot { waker: AtomicWaker::new(), value: Mutex::new(None) };
+            self.waiters.insert(req_id_hash, slot).map(|_| panic!("Request ID collision"));
+            RequestSlotId(req_id_hash)
         }
 
         /// Routes given response to appropriate handler. Returns `Err` if no handler is found.
@@ -390,23 +410,30 @@ mod req {
             req_id_hash: NonZeroU64,
             response: msg::Response,
         ) -> Result<(), msg::Response> {
+            let Some(slot) = self.waiters.get(&req_id_hash) else {
+                return Err(response);
+            };
+
+            slot.value.lock().replace(response);
+            slot.waker.wake();
+
             Ok(())
         }
     }
 
     /// When dropped, the response handler will be unregistered from the queue.
     #[must_use = "futures do nothing unless you `.await` or poll them"]
-    pub struct ResponseFuture<'a> {
-        handle: &'a dyn Connection,
-        req_id_hash: Option<NonZeroU64>,
-    }
+    pub struct ResponseFuture<'a>(ResponseFutureInner<'a>);
 
-    enum ResponseFutureState {}
+    enum ResponseFutureInner<'a> {
+        Uninit(&'a dyn Connection, NonZeroU64),
+        Waiting(&'a dyn Connection, NonZeroU64),
+        Finished,
+    }
 
     impl<'a> ResponseFuture<'a> {
         pub(super) fn new(handle: &'a dyn Connection, slot_id: RequestSlotId) -> Self {
-            todo!()
-            // Self { handle, req_id_hash: Some(slot_id) }
+            Self(ResponseFutureInner::Uninit(handle, slot_id.0))
         }
     }
 
@@ -414,22 +441,53 @@ mod req {
         type Output = msg::Response;
 
         fn poll(
-            self: std::pin::Pin<&mut Self>,
+            mut self: std::pin::Pin<&mut Self>,
             cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Self::Output> {
-            // TODO: Check if we're fused out ..
-            // TODO:
+            use ResponseFutureInner::*;
 
-            todo!()
+            macro_rules! get_conn {
+                ($conn:expr, $hash:expr) => {
+                    $conn
+                        .reqs()
+                        .unwrap()
+                        .waiters
+                        .get($hash)
+                        .expect("Request lifetime is bound to response future")
+                };
+            }
+
+            match &mut self.0 {
+                Uninit(conn, hash) => {
+                    let elem = get_conn!(conn, hash);
+
+                    todo!("register waker")
+                }
+
+                Waiting(conn, hash) => {
+                    let elem = get_conn!(conn, hash);
+
+                    todo!("check if response is available")
+                }
+
+                Finished => todo!("do nothing, poll after finished ..."),
+            }
         }
     }
 
-    impl Drop for ResponseFuture<'_> {
+    impl futures_util::future::FusedFuture for ResponseFuture<'_> {
+        fn is_terminated(&self) -> bool {
+            matches!(self.0, ResponseFutureInner::Finished)
+        }
+    }
+
+    impl Drop for ResponseFutureInner<'_> {
         fn drop(&mut self) {
-            if let Some(req_id_hash) = self.req_id_hash.take() {
-                todo!()
-                // self.handle.reqs().unwrap().try_unregister_req(req_id_hash);
-            }
+            let (Self::Uninit(conn, hash) | Self::Waiting(conn, hash)) = self else { return };
+
+            // TODO: Unregister the request
+
+            todo!()
         }
     }
 }
