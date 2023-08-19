@@ -60,7 +60,7 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
         &self,
         method: &str,
         params: &dyn Serialize,
-        write: &mut dyn std::io::Write,
+        write: &mut Vec<u8>,
     ) -> Result<(), EncodeError> {
         let _ = (method, params, write);
         Err(EncodeError::UnsupportedFeature("Notify is not supported by this codec".into()))
@@ -85,7 +85,7 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
         method: &str,
         req_id_hint: u64,
         params: &dyn Serialize,
-        write: &mut dyn std::io::Write,
+        write: &mut Vec<u8>,
     ) -> Result<u64, EncodeError> {
         let _ = (method, req_id_hint, params, write);
         Err(EncodeError::UnsupportedFeature("Request is not supported by this codec".into()))
@@ -102,7 +102,7 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
         req_id: &[u8],
         encode_as_error: bool,
         response: &dyn Serialize,
-        write: &mut dyn std::io::Write,
+        write: &mut Vec<u8>,
     ) -> Result<(), EncodeError> {
         let _ = (req_id, response, encode_as_error, write);
         Err(EncodeError::UnsupportedFeature("Response is not supported by this codec".into()))
@@ -113,7 +113,7 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
         &self,
         req_id: &[u8],
         response: &PredefinedResponseError,
-        write: &mut dyn std::io::Write,
+        write: &mut Vec<u8>,
     ) -> Result<(), EncodeError> {
         self.encode_response(req_id, true, response, write)
     }

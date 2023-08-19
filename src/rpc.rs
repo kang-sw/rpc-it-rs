@@ -3,7 +3,7 @@ use std::{
     future::Future,
     num::NonZeroUsize,
     ops::Range,
-    sync::{atomic::AtomicBool, Arc, Weak},
+    sync::{Arc, Weak},
 };
 
 use crate::{
@@ -234,31 +234,38 @@ pub struct SendHandle(Arc<dyn Connection>);
 /// To minimize the memory allocation during sender payload serialization, reuse this buffer over
 /// multiple RPC request/notification.
 #[derive(Debug, Clone, Default)]
-pub struct BufferPool {
-    tmpbuf: Vec<u8>,
+pub struct WriteBuffer {
+    value: Vec<u8>,
+}
+
+impl WriteBuffer {
+    pub(crate) fn prepare(&mut self) -> &mut Self {
+        self.value.clear();
+        self
+    }
 }
 
 impl SendHandle {
-    pub async fn send_request<'a, T: serde::Serialize>(
+    pub async fn request<'a, T: serde::Serialize>(
         &'a self,
         method: &str,
         params: &T,
     ) -> Result<ResponseFuture, SendError> {
-        self.send_request_ex(&mut Default::default(), method, params).await
+        self.request_with_reuse(&mut Default::default(), method, params).await
     }
 
-    pub async fn send_notify<T: serde::Serialize>(
+    pub async fn notify<T: serde::Serialize>(
         &self,
         method: &str,
         params: &T,
     ) -> Result<(), SendError> {
-        self.send_notify_ex(&mut Default::default(), method, params).await
+        self.notify_with_reuse(&mut Default::default(), method, params).await
     }
 
     #[doc(hidden)]
-    pub async fn send_request_ex<T: serde::Serialize>(
+    pub async fn request_with_reuse<T: serde::Serialize>(
         &self,
-        buf: &mut BufferPool,
+        buf: &mut WriteBuffer,
         method: &str,
         params: &T,
     ) -> Result<ResponseFuture, SendError> {
@@ -267,9 +274,8 @@ impl SendHandle {
         };
 
         let req_id_hint = req.next_req_id_base();
-        buf.tmpbuf.clear();
         let req_id_hash =
-            self.0.codec().encode_request(method, req_id_hint, params, &mut buf.tmpbuf)?;
+            self.0.codec().encode_request(method, req_id_hint, params, &mut buf.prepare().value)?;
 
         // Registering request always preceded than sending request. If request was not sent due to
         // I/O issue or cancellation, the request will be unregistered on the drop of the
@@ -277,24 +283,39 @@ impl SendHandle {
         req.register_response_catch(req_id_hash);
 
         let fut = ResponseFuture::new(&*self.0, req_id_hash);
-        self.0.__write_raw(&buf.tmpbuf).await?;
+        self.0.__write_raw(&buf.value).await?;
 
         Ok(fut)
     }
 
     #[doc(hidden)]
-    pub async fn send_notify_ex<T: serde::Serialize>(
+    pub async fn notify_with_reuse<T: serde::Serialize>(
         &self,
-        buf: &mut BufferPool,
+        buf: &mut WriteBuffer,
         method: &str,
         params: &T,
     ) -> Result<(), SendError> {
-        buf.tmpbuf.clear();
-        self.0.codec().encode_notify(method, params, &mut buf.tmpbuf)?;
-        self.0.__write_raw(&buf.tmpbuf).await?;
+        self.0.codec().encode_notify(method, params, &mut buf.prepare().value)?;
+        self.0.__write_raw(&buf.value).await?;
         Ok(())
     }
 
+    /// Send deferred notification. This method is non-blocking, as the message will be sent in the
+    /// background task.
+    pub fn notify_deferred<T: serde::Serialize>(
+        &self,
+        method: &str,
+        params: &T,
+    ) -> Result<(), SendError> {
+        let mut vec = Vec::new();
+        self.0.codec().encode_notify(method, params, &mut vec)?;
+        self.0
+            .tx_drive()
+            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(vec.into())))
+            .map_err(|_| SendError::Disconnected)
+    }
+
+    /// Check if the connection is disconnected.
     pub fn is_disconnected(&self) -> bool {
         self.0.tx_drive().is_disconnected()
     }
@@ -304,11 +325,13 @@ impl SendHandle {
         self.0.tx_drive().send(InboundDriverDirective::Close).is_ok()
     }
 
-    pub fn send_request_enabled(&self) -> bool {
+    /// Is sending request enabled?
+    pub fn is_request_enabled(&self) -> bool {
         self.0.reqs().is_some()
     }
 
-    pub fn features(&self) -> Feature {
+    /// Get feature flags
+    pub fn get_feature_flags(&self) -> Feature {
         self.0.feature_flag()
     }
 }
@@ -341,6 +364,15 @@ mod req {
         /// Invoked on `ResponseFuture::drop` called
         fn unregister_response_catch(&self, req_id_hash: u64) {
             todo!("")
+        }
+
+        /// Routes given response to appropriate handler. Returns `Err` if no handler is found.
+        pub fn route_response(
+            &self,
+            req_id_hash: u64,
+            response: msg::Response,
+        ) -> Result<(), msg::Response> {
+            Ok(())
         }
     }
 
@@ -385,6 +417,9 @@ pub enum SendError {
 
     #[error("Request feature is disabled for this connection")]
     RequestDisabled,
+
+    #[error("Channel is already closed!")]
+    Disconnected,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -637,10 +672,10 @@ where
 #[derive(Debug, thiserror::Error)]
 pub enum InboundError {
     #[error("Response packet is received, but we haven't enabled request feature!")]
-    ResponseWithoutRequest(msg::Response),
+    RedundantResponse(msg::Response),
 
     #[error("Response packet is not routed.")]
-    ResponseNotFound(msg::Response),
+    ExpiredResponse(msg::Response),
 
     #[error("Failed to decode inbound type: {} bytes, error was = {0} ", .1.len())]
     InboundDecodeError(DecodeError, bytes::Bytes),
@@ -682,7 +717,7 @@ impl InboundEventSubscriber for EmptyEventListener {}
 pub trait Message {
     fn payload(&self) -> &[u8];
     fn raw(&self) -> &[u8];
-    fn into_raw(self) -> Bytes;
+    fn raw_bytes(&self) -> Bytes;
     fn codec(&self) -> &dyn Codec;
 
     /// Parses payload as speicfied type.
@@ -731,7 +766,16 @@ struct InboundBody {
 }
 
 pub mod msg {
-    use std::ops::Range;
+    use std::{ops::Range, sync::Arc};
+
+    use enum_as_inner::EnumAsInner;
+
+    use crate::{
+        codec::{DecodeError, PredefinedResponseError},
+        rpc::MessageReqId,
+    };
+
+    use super::{Connection, Message};
 
     macro_rules! impl_message {
         ($t:ty) => {
@@ -744,8 +788,8 @@ pub mod msg {
                     &self.h.buffer
                 }
 
-                fn into_raw(self) -> bytes::Bytes {
-                    self.h.buffer
+                fn raw_bytes(&self) -> bytes::Bytes {
+                    self.h.buffer.clone()
                 }
 
                 fn codec(&self) -> &dyn super::Codec {
@@ -789,20 +833,86 @@ pub mod msg {
 
     #[derive(Debug)]
     pub struct Request {
-        pub(super) inner: RequestInner,
-        pub(super) w: super::SendHandle,
+        pub(super) body: Option<(RequestInner, Arc<dyn Connection>)>,
     }
 
     impl std::ops::Deref for Request {
         type Target = RequestInner;
 
         fn deref(&self) -> &Self::Target {
-            &self.inner
+            &self.body.as_ref().unwrap().0
         }
     }
 
     impl Request {
         // TODO: send response
+
+        /// Response with given value. If the value is `Err`, the response will be sent as error
+        #[doc(hidden)]
+        pub async fn response_with_reuse<T: serde::Serialize>(
+            mut self,
+            buf: &mut super::WriteBuffer,
+            value: Result<&T, &T>,
+        ) -> Result<(), super::SendError> {
+            let (inner, conn) = self.body.take().unwrap();
+            buf.prepare();
+
+            let encode_as_error = value.is_err();
+            let value = value.unwrap_or_else(|x| x);
+            self.codec().encode_response(inner.req_id(), encode_as_error, value, &mut buf.value)?;
+
+            conn.__write_raw(&buf.value).await?;
+            Ok(())
+        }
+
+        /// Explicitly abort the request. This is useful when you want to cancel the request
+        pub async fn abort(self) -> Result<(), super::SendError> {
+            self.error_predefined(PredefinedResponseError::Aborted).await
+        }
+
+        /// Response with 'parse failed' predefined error type.
+        pub async fn error_parse_failed<T>(self) -> Result<(), super::SendError> {
+            let err = PredefinedResponseError::ParseFailed(std::any::type_name::<T>());
+            self.error_predefined(err).await
+        }
+
+        /// Response 'internal' error with given error code.
+        pub async fn error_internal(
+            self,
+            errc: i32,
+            detail: Option<String>,
+        ) -> Result<(), super::SendError> {
+            let err = if let Some(detail) = detail {
+                PredefinedResponseError::InternalDetailed(errc, detail)
+            } else {
+                PredefinedResponseError::Internal(errc)
+            };
+
+            self.error_predefined(err).await
+        }
+
+        async fn error_predefined(
+            mut self,
+            err: super::codec::PredefinedResponseError,
+        ) -> Result<(), super::SendError> {
+            let (inner, conn) = self.body.take().unwrap();
+            conn.__send_err_predef(&mut Default::default(), &inner, &err).await
+        }
+    }
+
+    impl Drop for Request {
+        fn drop(&mut self) {
+            if let Some((inner, conn)) = self.body.take() {
+                conn.tx_drive()
+                    .send(super::InboundDriverDirective::DeferredWrite(
+                        super::DeferredWrite::ErrorResponse(
+                            inner,
+                            PredefinedResponseError::Unhandled,
+                        ),
+                    ))
+                    .ok();
+            }
+        }
     }
 
     /* -------------------------------------- Notify Logics ------------------------------------- */
@@ -815,16 +925,49 @@ pub mod msg {
     impl_message!(Notify);
     impl_method_name!(Notify);
 
-    #[derive(Debug)]
+    #[derive(Debug, EnumAsInner)]
     pub enum RecvMsg {
         Request(Request),
         Notify(Notify),
     }
 
-    impl RecvMsg {
-        // TODO: as_notify / request
-        // TODO: is_*
-        // TODO: get payload / method
+    impl super::Message for RecvMsg {
+        fn payload(&self) -> &[u8] {
+            match self {
+                Self::Request(x) => x.payload(),
+                Self::Notify(x) => x.payload(),
+            }
+        }
+
+        fn raw(&self) -> &[u8] {
+            match self {
+                Self::Request(x) => x.raw(),
+                Self::Notify(x) => x.raw(),
+            }
+        }
+
+        fn raw_bytes(&self) -> bytes::Bytes {
+            match self {
+                Self::Request(x) => x.raw_bytes(),
+                Self::Notify(x) => x.raw_bytes(),
+            }
+        }
+
+        fn codec(&self) -> &dyn crate::codec::Codec {
+            match self {
+                Self::Request(x) => x.codec(),
+                Self::Notify(x) => x.codec(),
+            }
+        }
+    }
+
+    impl super::MessageMethodName for RecvMsg {
+        fn method_raw(&self) -> &[u8] {
+            match self {
+                Self::Request(x) => x.method_raw(),
+                Self::Notify(x) => x.method_raw(),
+            }
+        }
     }
 
     /* ------------------------------------- Response Logics ------------------------------------ */
@@ -839,6 +982,22 @@ pub mod msg {
 
     impl_message!(Response);
     impl_req_id!(Response);
+
+    impl Response {
+        pub fn is_error(&self) -> bool {
+            self.is_error
+        }
+
+        pub fn result<'a, T: serde::Deserialize<'a>, E: serde::Deserialize<'a>>(
+            &'a self,
+        ) -> Result<Result<T, E>, DecodeError> {
+            if self.is_error {
+                self.parse().map(Err)
+            } else {
+                self.parse().map(Ok)
+            }
+        }
+    }
 }
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -856,8 +1015,6 @@ struct DriverBody<C, T, E, R, Tr> {
 mod inner {
     //! Internal driver context. It receives the request from the connection, and dispatches it to
     //! the handler.
-    //!
-    // TODO: Driver implementation
 
     use capture_it::capture;
     use futures_util::{future::FusedFuture, FutureExt};
@@ -865,13 +1022,13 @@ mod inner {
 
     use crate::{
         codec::{self, Codec, InboundFrameType},
-        rpc::{Connection, DeferredWrite, SendError},
+        rpc::{DeferredWrite, SendError},
         transport::{AsyncReadFrame, AsyncWriteFrame},
     };
 
     use super::{
         msg, ConnectionImpl, DriverBody, Feature, GetRequestContext, InboundBody,
-        InboundDriverDirective, InboundError, InboundEventSubscriber, RequestContext,
+        InboundDriverDirective, InboundError, InboundEventSubscriber, MessageReqId, RequestContext,
     };
 
     /// Request-acceting version of connection driver
@@ -884,7 +1041,9 @@ mod inner {
             body: DriverBody<C, T, E, RequestContext, Tr>,
         ) {
             body.execute(|this, ev, param| {
-                todo!("Route response to awaiting request handlers");
+                if let Err(msg) = this.reqs.route_response(param.req_id_hash, param.response) {
+                    ev.on_inbound_error(InboundError::ExpiredResponse(msg));
+                }
             })
             .await;
         }
@@ -901,7 +1060,7 @@ mod inner {
         ) {
             // Naively call the implementation with empty handler. Just discards all responses
             body.execute(|_, ev, param| {
-                ev.on_inbound_error(InboundError::ResponseWithoutRequest(param.response))
+                ev.on_inbound_error(InboundError::RedundantResponse(param.response))
             })
             .await
         }
@@ -933,12 +1092,12 @@ mod inner {
             // `Drop` handler.
             let (tx_bg_sender, rx_bg_sender) = flume::unbounded();
             let fut_bg_sender = capture!([w_this], async move {
-                let mut pool = super::BufferPool::default();
+                let mut pool = super::WriteBuffer::default();
                 while let Ok(msg) = rx_bg_sender.recv_async().await {
                     match msg {
                         DeferredWrite::ErrorResponse(req, err) => {
                             let Some(this) = w_this.upgrade() else { break };
-                            let err = this.dyn_ref().__send_error_rep(&mut pool, &req, &err).await;
+                            let err = this.dyn_ref().__send_err_predef(&mut pool, &req, &err).await;
 
                             // Ignore all other error types, as this message is triggered
                             // crate-internally on very limited situations
@@ -1053,8 +1212,7 @@ mod inner {
                         ),
                         InboundFrameType::Request { method, req_id } => (
                             msg::RecvMsg::Request(msg::Request {
-                                inner: msg::RequestInner { h, method, req_id },
-                                w: super::SendHandle(this.clone()),
+                                body: Some((msg::RequestInner { h, method, req_id }, this.clone())),
                             }),
                             this.features.contains(Feature::NO_RECEIVE_REQUEST),
                         ),
@@ -1083,13 +1241,20 @@ mod inner {
     }
 
     impl dyn super::Connection {
-        pub(crate) async fn __send_error_rep(
+        pub(crate) async fn __send_err_predef(
             &self,
-            buf: &mut super::BufferPool,
+            buf: &mut super::WriteBuffer,
             recv: &msg::RequestInner,
             error: &codec::PredefinedResponseError,
         ) -> Result<(), super::SendError> {
-            todo!();
+            self.codec().encode_response_predefined(
+                recv.req_id(),
+                error,
+                &mut buf.prepare().value,
+            )?;
+
+            self.__write_raw(&buf.prepare().value).await?;
+            Ok(())
         }
 
         pub(crate) async fn __write_raw(&self, buf: &[u8]) -> std::io::Result<()> {
@@ -1099,8 +1264,13 @@ mod inner {
             Ok(())
         }
 
-        pub(crate) async fn __close(&self) -> std::io::Result<()> {
+        pub(crate) async fn __flush(&self) -> std::io::Result<()> {
             todo!()
+        }
+
+        pub(crate) async fn __close(&self) -> std::io::Result<()> {
+            let mut write = self.write().lock().await;
+            poll_fn(|cx| Pin::new(&mut *write).poll_close(cx)).await
         }
     }
 
