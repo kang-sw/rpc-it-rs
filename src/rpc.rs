@@ -14,6 +14,8 @@ use crate::{
 use async_lock::Mutex as AsyncMutex;
 use bitflags::bitflags;
 use bytes::{Bytes, BytesMut};
+use req::RequestContext;
+pub use req::ResponseFuture;
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                            CONSTANTS                                           */
@@ -138,13 +140,6 @@ impl<C, T, R: Debug> Debug for ConnectionImpl<C, T, R> {
     }
 }
 
-/// RPC request context. Stores request ID and response receiver context.
-#[derive(Debug, Default)]
-struct RequestContext {
-    // TODO: Registered request futures ...
-    // TODO: Handle cancellations ...
-}
-
 /// Which couldn't be handled within the non-async drop handlers ...
 ///
 /// - A received request object is dropped before response is sent, therefore an 'aborted' message
@@ -261,23 +256,43 @@ impl SendHandle {
     }
 
     #[doc(hidden)]
-    pub async fn send_request_ex<'a, T: serde::Serialize>(
-        &'a self,
-        buf_reuse: &mut BufferPool,
+    pub async fn send_request_ex<T: serde::Serialize>(
+        &self,
+        buf: &mut BufferPool,
         method: &str,
         params: &T,
     ) -> Result<ResponseFuture, SendError> {
-        todo!()
+        let Some(req) = self.0.reqs() else {
+            return Err(SendError::RequestDisabled)
+        };
+
+        let req_id_hint = req.next_req_id_base();
+        buf.tmpbuf.clear();
+        let req_id_hash =
+            self.0.codec().encode_request(method, req_id_hint, params, &mut buf.tmpbuf)?;
+
+        // Registering request always preceded than sending request. If request was not sent due to
+        // I/O issue or cancellation, the request will be unregistered on the drop of the
+        // `ResponseFuture`.
+        req.register_response_catch(req_id_hash);
+
+        let fut = ResponseFuture::new(&*self.0, req_id_hash);
+        self.0.__write_raw(&buf.tmpbuf).await?;
+
+        Ok(fut)
     }
 
     #[doc(hidden)]
     pub async fn send_notify_ex<T: serde::Serialize>(
         &self,
-        buf_reuse: &mut BufferPool,
+        buf: &mut BufferPool,
         method: &str,
         params: &T,
     ) -> Result<(), SendError> {
-        todo!()
+        buf.tmpbuf.clear();
+        self.0.codec().encode_notify(method, params, &mut buf.tmpbuf)?;
+        self.0.__write_raw(&buf.tmpbuf).await?;
+        Ok(())
     }
 
     pub fn is_disconnected(&self) -> bool {
@@ -298,21 +313,59 @@ impl SendHandle {
     }
 }
 
-/// When dropped, the response handler will be unregistered from the queue.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct ResponseFuture<'a> {
-    handle: &'a dyn Connection,
-    req_id_hash: u64,
-}
+mod req {
+    use std::sync::atomic::AtomicU64;
 
-impl<'a> std::future::Future for ResponseFuture<'a> {
-    type Output = msg::Response;
+    use super::{msg, Connection};
 
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        todo!()
+    /// RPC request context. Stores request ID and response receiver context.
+    #[derive(Debug, Default)]
+    pub(super) struct RequestContext {
+        /// We may not run out of 64-bit sequential integers ...
+        req_id_gen: AtomicU64,
+        // TODO: Registered request futures ...
+        // TODO: Handle cancellations ...
+    }
+
+    impl RequestContext {
+        /// Never returns 0.
+        pub fn next_req_id_base(&self) -> u64 {
+            // Don't let it be zero, even after we publish 2^63 requests on single connection ...
+            1 + self.req_id_gen.fetch_add(2, std::sync::atomic::Ordering::Relaxed)
+        }
+
+        pub fn register_response_catch(&self, req_id_hash: u64) {
+            todo!("")
+        }
+
+        /// Invoked on `ResponseFuture::drop` called
+        fn unregister_response_catch(&self, req_id_hash: u64) {
+            todo!("")
+        }
+    }
+
+    /// When dropped, the response handler will be unregistered from the queue.
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    pub struct ResponseFuture<'a> {
+        handle: &'a dyn Connection,
+        req_id_hash: u64,
+    }
+
+    impl<'a> ResponseFuture<'a> {
+        pub(super) fn new(handle: &'a dyn Connection, req_id_hash: u64) -> Self {
+            Self { handle, req_id_hash }
+        }
+    }
+
+    impl<'a> std::future::Future for ResponseFuture<'a> {
+        type Output = msg::Response;
+
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            todo!()
+        }
     }
 }
 
@@ -719,22 +772,17 @@ pub mod msg {
         };
     }
 
-    impl_message!(RequestInner);
-    impl_method_name!(RequestInner);
-    impl_req_id!(RequestInner);
-
-    impl_message!(Notify);
-    impl_method_name!(Notify);
-
-    impl_message!(Response);
-    impl_req_id!(Response);
-
+    /* ------------------------------------- Request Logics ------------------------------------- */
     #[derive(Debug)]
     pub struct RequestInner {
         pub(super) h: super::InboundBody,
         pub(super) method: Range<usize>,
         pub(super) req_id: Range<usize>,
     }
+
+    impl_message!(RequestInner);
+    impl_method_name!(RequestInner);
+    impl_req_id!(RequestInner);
 
     #[derive(Debug)]
     pub struct Request {
@@ -754,11 +802,15 @@ pub mod msg {
         // TODO: send response
     }
 
+    /* -------------------------------------- Notify Logics ------------------------------------- */
     #[derive(Debug)]
     pub struct Notify {
         pub(super) h: super::InboundBody,
         pub(super) method: Range<usize>,
     }
+
+    impl_message!(Notify);
+    impl_method_name!(Notify);
 
     #[derive(Debug)]
     pub enum RecvMsg {
@@ -772,6 +824,7 @@ pub mod msg {
         // TODO: get payload / method
     }
 
+    /* ------------------------------------- Response Logics ------------------------------------ */
     #[derive(Debug)]
     pub struct Response {
         pub(super) h: super::InboundBody,
@@ -781,9 +834,8 @@ pub mod msg {
         pub(super) is_error: bool,
     }
 
-    impl Response {
-        // TODO: parse
-    }
+    impl_message!(Response);
+    impl_req_id!(Response);
 }
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -804,15 +856,9 @@ mod inner {
     //!
     // TODO: Driver implementation
 
-    use bytes::BytesMut;
     use capture_it::capture;
     use futures_util::{future::FusedFuture, FutureExt};
-    use std::{
-        future::poll_fn,
-        pin::Pin,
-        sync::{Arc, Weak},
-    };
-    use with_drop::with_drop;
+    use std::{future::poll_fn, pin::Pin, sync::Arc};
 
     use crate::{
         codec::{self, Codec, InboundFrameType},
