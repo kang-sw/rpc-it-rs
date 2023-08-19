@@ -21,8 +21,9 @@
 //!
 //!
 
+// Re-export crates
+pub extern crate bytes;
 pub extern crate erased_serde;
-/// Re-exported crates
 pub extern crate serde;
 
 pub mod codec;
