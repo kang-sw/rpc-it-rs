@@ -54,7 +54,7 @@ pub enum RequestIdType {
 /// responsible for any protocol-specific data frame handling.
 ///
 /// The codec, should trivially be clone-able.
-pub trait Codec: Send + Sync + 'static {
+pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
     /// Encodes notify frame
     fn encode_notify(
         &self,

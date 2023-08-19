@@ -52,7 +52,7 @@ bitflags! {
 /// For unsupported features(e.g. notify from client), the codec should return
 /// [`crate::codec::EncodeError::UnsupportedFeature`] error.
 struct ConnectionImpl<C, T, R> {
-    codec: C,
+    codec: Arc<C>,
     write: AsyncMutex<T>,
     reqs: R,
     tx_drive: flume::Sender<InboundDriverDirective>,
@@ -75,7 +75,7 @@ where
     R: GetRequestContext,
 {
     fn codec(&self) -> &dyn Codec {
-        &self.codec
+        &*self.codec
     }
 
     fn write(&self) -> &AsyncMutex<dyn AsyncWriteFrame> {
@@ -369,42 +369,6 @@ mod req {
     }
 }
 
-/// Common content of inbound message
-#[derive(Debug)]
-struct InboundBody {
-    buffer: Bytes,
-    payload: Range<usize>,
-}
-
-pub trait Inbound: Sized {
-    #[doc(hidden)]
-    fn inbound_get_handle(&self) -> &SendHandle;
-
-    fn method(&self) -> Option<&str>;
-    fn payload(&self) -> &[u8];
-
-    fn decode_in_place<'a, T: serde::Deserialize<'a>>(
-        &'a self,
-        dst: &mut Option<T>,
-    ) -> Result<(), DecodeError> {
-        if let Some(dst) = dst.as_mut() {
-        } else {
-            self.inbound_get_handle().0.codec().decode_payload(self.payload(), &mut |de| {
-                *dst = Some(erased_serde::deserialize(de)?);
-                Ok(())
-            })?;
-        }
-
-        Ok(())
-    }
-
-    fn decode<'a, T: serde::Deserialize<'a>>(&'a self) -> Result<T, DecodeError> {
-        let mut dst = None;
-        self.decode_in_place(&mut dst)?;
-        Ok(dst.unwrap())
-    }
-}
-
 /* ---------------------------------------------------------------------------------------------- */
 /*                                        ERROR DEFINIITONS                                       */
 /* ---------------------------------------------------------------------------------------------- */
@@ -621,7 +585,7 @@ where
 
         let conn: Arc<dyn Connection>;
         let this = ConnectionImpl {
-            codec: self.codec,
+            codec: self.codec.into(),
             write: AsyncMutex::new(self.write),
             reqs: (),
             tx_drive: tx_inb_drv,
@@ -703,12 +667,13 @@ pub trait InboundEventSubscriber: Send + Sync + 'static {
     ///
     /// -
     fn on_inbound_error(&self, error: InboundError) {
-        let _ = (error);
+        let _ = (error,);
     }
 }
 
 /// Placeholder implementation of event listener.
 struct EmptyEventListener;
+
 impl InboundEventSubscriber for EmptyEventListener {}
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -718,6 +683,32 @@ pub trait Message {
     fn payload(&self) -> &[u8];
     fn raw(&self) -> &[u8];
     fn into_raw(self) -> Bytes;
+    fn codec(&self) -> &dyn Codec;
+
+    /// Parses payload as speicfied type.
+    fn parse<'a, T: serde::de::Deserialize<'a>>(&'a self) -> Result<T, DecodeError> {
+        let mut dst = None;
+        self.parse_in_place(&mut dst)?;
+        Ok(dst.unwrap())
+    }
+
+    /// Parses payload as speicfied type, in-place. It is marked as hidden to follow origianl method
+    /// [`serde::Deserialize::deserialize_in_place`]'s visibility convention, which is '*almost
+    /// never what newbies are looking for*'.
+    #[doc(hidden)]
+    fn parse_in_place<'a, T: serde::de::Deserialize<'a>>(
+        &'a self,
+        dst: &mut Option<T>,
+    ) -> Result<(), DecodeError> {
+        self.codec().decode_payload(self.payload(), &mut |de| {
+            if let Some(dst) = dst.as_mut() {
+                T::deserialize_in_place(de, dst)
+            } else {
+                *dst = Some(T::deserialize(de)?);
+                Ok(())
+            }
+        })
+    }
 }
 
 pub trait MessageReqId: Message {
@@ -729,6 +720,14 @@ pub trait MessageMethodName: Message {
     fn method(&self) -> Option<&str> {
         std::str::from_utf8(self.method_raw()).ok()
     }
+}
+
+/// Common content of inbound message
+#[derive(Debug)]
+struct InboundBody {
+    buffer: Bytes,
+    payload: Range<usize>,
+    codec: Arc<dyn Codec>,
 }
 
 pub mod msg {
@@ -747,6 +746,10 @@ pub mod msg {
 
                 fn into_raw(self) -> bytes::Bytes {
                     self.h.buffer
+                }
+
+                fn codec(&self) -> &dyn super::Codec {
+                    &*self.h.codec
                 }
             }
         };
@@ -1040,7 +1043,7 @@ mod inner {
                 }
             };
 
-            let h = InboundBody { buffer: frame, payload: payload_span };
+            let h = InboundBody { buffer: frame, payload: payload_span, codec: this.codec.clone() };
             match header {
                 InboundFrameType::Notify { .. } | InboundFrameType::Request { .. } => {
                     let (msg, disabled) = match header {
