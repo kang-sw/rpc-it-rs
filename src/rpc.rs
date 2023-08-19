@@ -8,18 +8,15 @@ use std::{
 
 use crate::{
     codec::{self, Codec, DecodeError, Framing, FramingError},
-    transport::{AsyncRead, AsyncReadFrame, AsyncWriteFrame},
+    transport::InboundChunk,
 };
 
 use async_lock::Mutex as AsyncMutex;
 use bitflags::bitflags;
 use bytes::{Bytes, BytesMut};
+use futures_util::{AsyncRead, AsyncWrite, Stream};
 use req::RequestContext;
 pub use req::ResponseFuture;
-
-/* ---------------------------------------------------------------------------------------------- */
-/*                                            CONSTANTS                                           */
-/* ---------------------------------------------------------------------------------------------- */
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                          FEATURE FLAGS                                         */
@@ -57,12 +54,13 @@ struct ConnectionImpl<C, T, R> {
     reqs: R,
     tx_drive: flume::Sender<InboundDriverDirective>,
     features: Feature,
+    _unpin: std::marker::PhantomPinned,
 }
 
 /// Wraps connection implementation with virtual dispatch.
 trait Connection: Send + Sync + 'static + Debug {
     fn codec(&self) -> &dyn Codec;
-    fn write(&self) -> &AsyncMutex<dyn AsyncWriteFrame>;
+    fn write(&self) -> &AsyncMutex<dyn AsyncWrite + Send + 'static>;
     fn reqs(&self) -> Option<&RequestContext>;
     fn tx_drive(&self) -> &flume::Sender<InboundDriverDirective>;
     fn feature_flag(&self) -> Feature;
@@ -71,14 +69,14 @@ trait Connection: Send + Sync + 'static + Debug {
 impl<C, T, R> Connection for ConnectionImpl<C, T, R>
 where
     C: Codec,
-    T: AsyncWriteFrame,
+    T: AsyncWrite + Send + 'static,
     R: GetRequestContext,
 {
     fn codec(&self) -> &dyn Codec {
         &*self.codec
     }
 
-    fn write(&self) -> &AsyncMutex<dyn AsyncWriteFrame> {
+    fn write(&self) -> &AsyncMutex<dyn AsyncWrite + Send + 'static> {
         &self.write
     }
 
@@ -98,7 +96,7 @@ where
 impl<C, T, R> ConnectionImpl<C, T, R>
 where
     C: Codec,
-    T: AsyncWriteFrame,
+    T: AsyncWrite + Send + 'static,
     R: GetRequestContext,
 {
     fn with_req(self) -> ConnectionImpl<C, T, RequestContext> {
@@ -108,6 +106,7 @@ where
             reqs: RequestContext::default(),
             tx_drive: self.tx_drive,
             features: self.features,
+            _unpin: Default::default(),
         }
     }
 
@@ -481,11 +480,17 @@ impl<Tw, Tr, C, E> Builder<Tw, Tr, C, E> {
     }
 
     /// Specify write frame to use
-    pub fn with_write<Tw2: AsyncWriteFrame>(self, write: Tw2) -> Builder<Tw2, Tr, C, E> {
+    pub fn with_write<Tw2>(self, write: Tw2) -> Builder<Tw2, Tr, C, E>
+    where
+        Tw2: AsyncWrite + Send + 'static,
+    {
         Builder { codec: self.codec, write, read: self.read, cfg: self.cfg, ev: self.ev }
     }
 
-    pub fn with_read<Tr2: AsyncReadFrame>(self, read: Tr2) -> Builder<Tw, Tr2, C, E> {
+    pub fn with_read<Tr2>(self, read: Tr2) -> Builder<Tw, Tr2, C, E>
+    where
+        Tr2: Stream<Item = InboundChunk> + Send + Sync + 'static,
+    {
         Builder { codec: self.codec, write: self.write, read, cfg: self.cfg, ev: self.ev }
     }
 
@@ -500,60 +505,79 @@ impl<Tw, Tr, C, E> Builder<Tw, Tr, C, E> {
     /// - `fallback_buffer_size`: When the framing decoder does not provide the next buffer size,
     ///   this value is used to pre-allocate the buffer for the next [`AsyncReadFrame::poll_read`]
     ///   call.
-    pub fn with_read_stream<Tr2: AsyncRead, F: Framing>(
+    pub fn with_read_stream<Tr2, F>(
         self,
         read: Tr2,
         framing: F,
-    ) -> Builder<Tw, impl AsyncReadFrame, C, E> {
+    ) -> Builder<Tw, impl Stream<Item = InboundChunk>, C, E>
+    where
+        Tr2: AsyncRead + Send + Sync + 'static,
+        F: Framing,
+    {
         use std::pin::Pin;
         use std::task::{Context, Poll};
 
         struct FramingReader<T, F> {
             reader: T,
             framing: F,
+            buf: bytes::BytesMut,
         }
 
-        impl<T, F> AsyncReadFrame for FramingReader<T, F>
+        impl<T, F> Stream for FramingReader<T, F>
         where
-            T: AsyncRead,
+            T: AsyncRead + Send + Sync + 'static,
             F: Framing,
         {
-            fn poll_read(
-                self: Pin<&mut Self>,
-                cx: &mut Context<'_>,
-                buf: &mut BytesMut,
-            ) -> Poll<Result<Bytes, std::io::Error>> {
-                let this = self.get_mut();
+            type Item = InboundChunk;
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                // We don't know when to stop ...
+                (0, None)
+            }
+
+            fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+                // SAFETY: We won't move this value, for sure, right?
+                let FramingReader { reader, framing, buf } = unsafe { self.get_unchecked_mut() };
+                let mut reader = unsafe { Pin::new_unchecked(reader) };
 
                 loop {
                     // Reading as many as possible is almostly desireable.
-                    let size_hint = this.framing.next_buffer_size();
+                    let size_hint = framing.next_buffer_size();
                     let mut buf_read = buf.split_to(0);
+                    buf_read.reserve(size_hint.map(|x| x.get()).unwrap_or(4096));
 
-                    let Poll::Ready(_) = Pin::new(&mut this.reader).poll_read(cx, &mut buf_read, size_hint)? else {
-                        break Poll::Pending;
-                    };
+                    unsafe {
+                        buf_read.set_len(buf_read.capacity());
+
+                        // SAFETY: Pinning value from already pinned value `self`
+                        let Poll::Ready(nread) = reader.as_mut().poll_read(cx, &mut buf_read[..])? else {
+                            break Poll::Pending;
+                        };
+
+                        assert!(nread <= buf_read.capacity());
+                        buf_read.set_len(nread);
+                    }
 
                     buf.unsplit(buf_read);
 
                     // Try decode the buffer.
-                    match this.framing.advance(&buf[..]) {
+                    match framing.advance(&buf[..]) {
                         Ok(Some(x)) => {
                             debug_assert!(x.valid_data_end <= x.next_frame_start);
                             debug_assert!(x.next_frame_start <= buf.len());
 
                             let mut frame = buf.split_to(x.next_frame_start);
-                            break Poll::Ready(Ok(frame.split_off(x.valid_data_end).into()));
+                            break Poll::Ready(Some(Ok(frame.split_off(x.valid_data_end).into())));
                         }
 
                         // Just poll once more, until it retunrs 'Pending' ...
                         Ok(None) => continue,
 
                         Err(FramingError::Broken(why)) => {
-                            return Poll::Ready(Err(std::io::Error::new(
+                            return Poll::Ready(Some(Err(std::io::Error::new(
                                 std::io::ErrorKind::InvalidData,
                                 why,
-                            )))
+                            ))))
                         }
 
                         Err(FramingError::Recoverable(num_discard_bytes)) => {
@@ -570,7 +594,7 @@ impl<Tw, Tr, C, E> Builder<Tw, Tr, C, E> {
         Builder {
             codec: self.codec,
             write: self.write,
-            read: FramingReader { reader: read, framing },
+            read: FramingReader { reader: read, framing, buf: BytesMut::default() },
             cfg: self.cfg,
             ev: self.ev,
         }
@@ -601,8 +625,8 @@ impl<Tw, Tr, C, E> Builder<Tw, Tr, C, E> {
 
 impl<Tw, Tr, C, E> Builder<Tw, Tr, C, E>
 where
-    Tw: AsyncWriteFrame,
-    Tr: AsyncReadFrame,
+    Tw: AsyncWrite + Send + 'static,
+    Tr: Stream<Item = crate::transport::InboundChunk> + Send + Sync + 'static,
     C: Codec,
     E: InboundEventSubscriber,
 {
@@ -625,6 +649,7 @@ where
             reqs: (),
             tx_drive: tx_inb_drv,
             features: self.cfg.feature_flag,
+            _unpin: std::marker::PhantomPinned,
         };
 
         if self.cfg.enable_send_request {
@@ -1017,13 +1042,13 @@ mod inner {
     //! the handler.
 
     use capture_it::capture;
-    use futures_util::{future::FusedFuture, FutureExt};
-    use std::{future::poll_fn, pin::Pin, sync::Arc};
+    use futures_util::{future::FusedFuture, AsyncWrite, FutureExt, Stream};
+    use std::{future::poll_fn, sync::Arc};
 
     use crate::{
         codec::{self, Codec, InboundFrameType},
         rpc::{DeferredWrite, SendError},
-        transport::{AsyncReadFrame, AsyncWriteFrame},
+        transport::InboundChunk,
     };
 
     use super::{
@@ -1035,11 +1060,14 @@ mod inner {
     impl<C, T> ConnectionImpl<C, T, RequestContext>
     where
         C: Codec,
-        T: AsyncWriteFrame,
+        T: AsyncWrite + Send + 'static,
     {
-        pub(crate) async fn inbound_event_handler<Tr: AsyncReadFrame, E: InboundEventSubscriber>(
+        pub(crate) async fn inbound_event_handler<Tr, E>(
             body: DriverBody<C, T, E, RequestContext, Tr>,
-        ) {
+        ) where
+            Tr: Stream<Item = InboundChunk> + Send + Sync + 'static,
+            E: InboundEventSubscriber,
+        {
             body.execute(|this, ev, param| {
                 if let Err(msg) = this.reqs.route_response(param.req_id_hash, param.response) {
                     ev.on_inbound_error(InboundError::ExpiredResponse(msg));
@@ -1053,11 +1081,13 @@ mod inner {
     impl<C, T> ConnectionImpl<C, T, ()>
     where
         C: Codec,
-        T: AsyncWriteFrame,
+        T: AsyncWrite + Send + 'static,
     {
-        pub(crate) async fn inbound_event_handler<Tr: AsyncReadFrame, E: InboundEventSubscriber>(
-            body: DriverBody<C, T, E, (), Tr>,
-        ) {
+        pub(crate) async fn inbound_event_handler<Tr, E>(body: DriverBody<C, T, E, (), Tr>)
+        where
+            Tr: Stream<Item = InboundChunk> + Send + Sync + 'static,
+            E: InboundEventSubscriber,
+        {
             // Naively call the implementation with empty handler. Just discards all responses
             body.execute(|_, ev, param| {
                 ev.on_inbound_error(InboundError::RedundantResponse(param.response))
@@ -1069,17 +1099,16 @@ mod inner {
     impl<C, T, E, R, Tr> DriverBody<C, T, E, R, Tr>
     where
         C: Codec,
-        T: AsyncWriteFrame,
+        T: AsyncWrite + Send + 'static,
         E: InboundEventSubscriber,
         R: GetRequestContext,
-        Tr: AsyncReadFrame,
+        Tr: Stream<Item = InboundChunk> + Send + Sync + 'static,
     {
         async fn execute(
             self,
             fn_handle_response: impl Fn(&Arc<ConnectionImpl<C, T, R>>, &mut E, HandleResponseParam),
         ) {
             let DriverBody { w_this, mut read, mut ev_subs, rx_drive: rx_msg, tx_msg } = self;
-            let mut rx_buf = bytes::BytesMut::new();
 
             use futures_util::future::Fuse;
             let mut fut_drive_msg = Fuse::terminated();
@@ -1115,6 +1144,7 @@ mod inner {
             });
             let fut_bg_sender = fut_bg_sender.fuse();
             let mut fut_bg_sender = std::pin::pin!(fut_bg_sender);
+            let mut read = std::pin::pin!(read);
 
             /* ------------------------------------ App Loop ------------------------------------ */
             loop {
@@ -1123,7 +1153,7 @@ mod inner {
                 }
 
                 if fut_read.is_terminated() {
-                    fut_read = poll_fn(|cx| Pin::new(&mut read).poll_read(cx, &mut rx_buf)).fuse();
+                    fut_read = poll_fn(|cx| read.as_mut().poll_next(cx)).fuse();
                 }
 
                 futures_util::select! {
@@ -1146,7 +1176,7 @@ mod inner {
                         let Some(this) = w_this.upgrade() else { break };
 
                         match inbound {
-                            Ok(bytes) => {
+                            Some(Ok(bytes)) => {
                                 Self::on_read(
                                     &this,
                                     &mut ev_subs,
@@ -1156,9 +1186,21 @@ mod inner {
                                 )
                                 .await;
                             }
-                            Err(e) => {
+                            Some(Err(e)) => {
                                 close_from_remote = true;
                                 ev_subs.on_close(false, Err(e));
+                            }
+                            None => {
+                                close_from_remote = true;
+                                ev_subs.on_close(
+                                    false,
+                                    Err(
+                                        std::io::Error::new(
+                                            std::io::ErrorKind::Other,
+                                            "Input stream broken"
+                                        )
+                                    )
+                                );
                             }
                         }
                     }
@@ -1181,8 +1223,8 @@ mod inner {
 
             // Just try to close the channel
             if !close_from_remote {
-                let r = poll_fn(|cx| Pin::new(&mut read).poll_close(cx)).await;
-                ev_subs.on_close(true, r); // We're closing this
+                drop(read); // Just explicitly drop the read stream
+                ev_subs.on_close(true, Ok(())); // We're closing this
             }
         }
 
@@ -1240,6 +1282,14 @@ mod inner {
         }
     }
 
+    /// SAFETY: `ConnectionImpl` is `!Unpin`, thus it is safe to pin the reference.
+    macro_rules! pin {
+        ($this:ident, $ident:ident) => {
+            let mut $ident = $this.write().lock().await;
+            let mut $ident = unsafe { std::pin::Pin::new_unchecked(&mut *$ident) };
+        };
+    }
+
     impl dyn super::Connection {
         pub(crate) async fn __send_err_predef(
             &self,
@@ -1257,20 +1307,24 @@ mod inner {
             Ok(())
         }
 
-        pub(crate) async fn __write_raw(&self, buf: &[u8]) -> std::io::Result<()> {
-            let mut write = self.write().lock().await;
-            poll_fn(|cx| Pin::new(&mut *write).poll_pre_write(cx)).await?;
-            poll_fn(|cx| Pin::new(&mut *write).poll_write(cx, buf)).await?;
+        pub(crate) async fn __write_raw(&self, mut buf: &[u8]) -> std::io::Result<()> {
+            pin!(self, write);
+            while !buf.is_empty() {
+                let nwrite = poll_fn(|cx| write.as_mut().poll_write(cx, buf)).await?;
+                buf = &buf[nwrite..];
+            }
+
             Ok(())
         }
 
         pub(crate) async fn __flush(&self) -> std::io::Result<()> {
-            todo!()
+            pin!(self, write);
+            poll_fn(|cx| write.as_mut().poll_flush(cx)).await
         }
 
         pub(crate) async fn __close(&self) -> std::io::Result<()> {
-            let mut write = self.write().lock().await;
-            poll_fn(|cx| Pin::new(&mut *write).poll_close(cx)).await
+            pin!(self, write);
+            poll_fn(|cx| write.as_mut().poll_close(cx)).await
         }
     }
 
