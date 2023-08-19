@@ -2,7 +2,11 @@
 //!
 //! [`Codec`] is a trait that encodes/decodes data frame into underlying RPC protocol.
 
-use std::{borrow::Cow, num::NonZeroUsize, ops::Range};
+use std::{
+    borrow::Cow,
+    num::{NonZeroU64, NonZeroUsize},
+    ops::Range,
+};
 
 use erased_serde::{Deserializer, Serialize};
 
@@ -86,7 +90,7 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
         req_id_hint: u64,
         params: &dyn Serialize,
         write: &mut Vec<u8>,
-    ) -> Result<u64, EncodeError> {
+    ) -> Result<NonZeroU64, EncodeError> {
         let _ = (method, req_id_hint, params, write);
         Err(EncodeError::UnsupportedFeature("Request is not supported by this codec".into()))
     }

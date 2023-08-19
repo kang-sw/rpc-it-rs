@@ -273,15 +273,19 @@ impl SendHandle {
         };
 
         let req_id_hint = req.next_req_id_base();
-        let req_id_hash =
-            self.0.codec().encode_request(method, req_id_hint, params, &mut buf.prepare().value)?;
+        let req_id_hash = self.0.codec().encode_request(
+            method,
+            req_id_hint.get(),
+            params,
+            &mut buf.prepare().value,
+        )?;
 
         // Registering request always preceded than sending request. If request was not sent due to
         // I/O issue or cancellation, the request will be unregistered on the drop of the
         // `ResponseFuture`.
-        req.register_response_catch(req_id_hash);
+        let slot_id = req.register_req(req_id_hash);
 
-        let fut = ResponseFuture::new(&*self.0, req_id_hash);
+        let fut = ResponseFuture::new(&*self.0, slot_id);
         self.0.__write_raw(&buf.value).await?;
 
         Ok(fut)
@@ -336,7 +340,7 @@ impl SendHandle {
 }
 
 mod req {
-    use std::sync::atomic::AtomicU64;
+    use std::{num::NonZeroU64, sync::atomic::AtomicU64};
 
     use super::{msg, Connection};
 
@@ -349,26 +353,35 @@ mod req {
         // TODO: Handle cancellations ...
     }
 
+    #[derive(Clone, Copy)]
+    pub(super) struct RequestSlotId(usize);
+
     impl RequestContext {
         /// Never returns 0.
-        pub fn next_req_id_base(&self) -> u64 {
-            // Don't let it be zero, even after we publish 2^63 requests on single connection ...
-            1 + self.req_id_gen.fetch_add(2, std::sync::atomic::Ordering::Relaxed)
+        pub fn next_req_id_base(&self) -> NonZeroU64 {
+            // SAFETY: 1 + 2 * N is always odd, and non-zero on wrapping condition.
+            // > Additionally, to see it wraps, we need to send 2^63 requests ...
+            unsafe {
+                NonZeroU64::new_unchecked(
+                    1 + self.req_id_gen.fetch_add(2, std::sync::atomic::Ordering::Relaxed),
+                )
+            }
         }
 
-        pub fn register_response_catch(&self, req_id_hash: u64) {
+        #[must_use]
+        pub fn register_req(&self, req_id_hash: NonZeroU64) -> RequestSlotId {
             todo!("")
         }
 
         /// Invoked on `ResponseFuture::drop` called
-        fn unregister_response_catch(&self, req_id_hash: u64) {
+        fn try_unregister_req(&self, req_id_hash: RequestSlotId) {
             todo!("")
         }
 
         /// Routes given response to appropriate handler. Returns `Err` if no handler is found.
         pub fn route_response(
             &self,
-            req_id_hash: u64,
+            req_id_hash: NonZeroU64,
             response: msg::Response,
         ) -> Result<(), msg::Response> {
             Ok(())
@@ -379,12 +392,15 @@ mod req {
     #[must_use = "futures do nothing unless you `.await` or poll them"]
     pub struct ResponseFuture<'a> {
         handle: &'a dyn Connection,
-        req_id_hash: u64,
+        req_id_hash: Option<NonZeroU64>,
     }
 
+    enum ResponseFutureState {}
+
     impl<'a> ResponseFuture<'a> {
-        pub(super) fn new(handle: &'a dyn Connection, req_id_hash: u64) -> Self {
-            Self { handle, req_id_hash }
+        pub(super) fn new(handle: &'a dyn Connection, slot_id: RequestSlotId) -> Self {
+            todo!()
+            // Self { handle, req_id_hash: Some(slot_id) }
         }
     }
 
@@ -395,7 +411,19 @@ mod req {
             self: std::pin::Pin<&mut Self>,
             cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Self::Output> {
+            // TODO: Check if we're fused out ..
+            // TODO:
+
             todo!()
+        }
+    }
+
+    impl Drop for ResponseFuture<'_> {
+        fn drop(&mut self) {
+            if let Some(req_id_hash) = self.req_id_hash.take() {
+                todo!()
+                // self.handle.reqs().unwrap().try_unregister_req(req_id_hash);
+            }
         }
     }
 }
@@ -701,6 +729,9 @@ pub enum InboundError {
 
     #[error("Response packet is not routed.")]
     ExpiredResponse(msg::Response),
+
+    #[error("Response hash was restored as 0, which is invalid.")]
+    ResponseHashZero(msg::Response),
 
     #[error("Failed to decode inbound type: {} bytes, error was = {0} ", .1.len())]
     InboundDecodeError(DecodeError, bytes::Bytes),
@@ -1043,7 +1074,7 @@ mod inner {
 
     use capture_it::capture;
     use futures_util::{future::FusedFuture, AsyncWrite, FutureExt, Stream};
-    use std::{future::poll_fn, sync::Arc};
+    use std::{future::poll_fn, num::NonZeroU64, sync::Arc};
 
     use crate::{
         codec::{self, Codec, InboundFrameType},
@@ -1069,7 +1100,12 @@ mod inner {
             E: InboundEventSubscriber,
         {
             body.execute(|this, ev, param| {
-                if let Err(msg) = this.reqs.route_response(param.req_id_hash, param.response) {
+                let Some(req_id_hash) = NonZeroU64::new(param.req_id_hash) else {
+                    ev.on_inbound_error(InboundError::ResponseHashZero(param.response));
+                    return;
+                };
+
+                if let Err(msg) = this.reqs.route_response(req_id_hash, param.response) {
                     ev.on_inbound_error(InboundError::ExpiredResponse(msg));
                 }
             })

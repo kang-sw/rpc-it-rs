@@ -36,3 +36,25 @@ pub mod transport {
 
     pub type InboundChunk = std::io::Result<Bytes>;
 }
+
+pub mod ext_transport {
+    #[cfg(feature = "tokio")]
+    mod tokio_ {}
+
+    #[cfg(feature = "tokio-tungstenite")]
+    mod tokio_tungstenite_ {}
+
+    #[cfg(feature = "wasm-bindgen-ws")]
+    mod wasm_websocket_ {}
+
+    #[cfg(feature = "in-memory")]
+    mod in_memory_ {}
+}
+
+pub mod ext_codec {
+    #[cfg(feature = "msgpack-rpc")]
+    mod msgpack_rpc_ {}
+
+    #[cfg(feature = "jsonrpc")]
+    mod jsonrpc_ {}
+}
