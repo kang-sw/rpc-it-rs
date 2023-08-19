@@ -30,7 +30,7 @@ bitflags! {
         ///
         /// If you don't want any undesired response to be sent, or you're creating a client handle,
         /// which usually does not receive any request, you can disable this feature.
-        const AUTO_RESPONSE_UNHANDLED =         1 << 01;
+        const ENABLE_AUTO_RESPONSE =            1 << 01;
 
         /// Do not receive any request from the remote end.
         const NO_RECEIVE_REQUEST =              1 << 02;
@@ -117,8 +117,14 @@ where
 
 /// Trick to get the request context from the generic type, and to cast [`ConnectionBody`] to
 /// `dyn` [`Connection`] trait object.
-trait GetRequestContext: std::fmt::Debug + Send + Sync + 'static {
+pub trait GetRequestContext: std::fmt::Debug + Send + Sync + 'static {
     fn get_req_con(&self) -> Option<&RequestContext>;
+}
+
+impl GetRequestContext for Arc<RequestContext> {
+    fn get_req_con(&self) -> Option<&RequestContext> {
+        Some(&*self)
+    }
 }
 
 impl GetRequestContext for RequestContext {
@@ -346,7 +352,7 @@ mod req {
 
     /// RPC request context. Stores request ID and response receiver context.
     #[derive(Debug, Default)]
-    pub(super) struct RequestContext {
+    pub struct RequestContext {
         /// We may not run out of 64-bit sequential integers ...
         req_id_gen: AtomicU64,
         // TODO: Registered request futures ...
@@ -358,7 +364,7 @@ mod req {
 
     impl RequestContext {
         /// Never returns 0.
-        pub fn next_req_id_base(&self) -> NonZeroU64 {
+        pub(super) fn next_req_id_base(&self) -> NonZeroU64 {
             // SAFETY: 1 + 2 * N is always odd, and non-zero on wrapping condition.
             // > Additionally, to see it wraps, we need to send 2^63 requests ...
             unsafe {
@@ -369,7 +375,7 @@ mod req {
         }
 
         #[must_use]
-        pub fn register_req(&self, req_id_hash: NonZeroU64) -> RequestSlotId {
+        pub(super) fn register_req(&self, req_id_hash: NonZeroU64) -> RequestSlotId {
             todo!("")
         }
 
@@ -379,7 +385,7 @@ mod req {
         }
 
         /// Routes given response to appropriate handler. Returns `Err` if no handler is found.
-        pub fn route_response(
+        pub(super) fn route_response(
             &self,
             req_id_hash: NonZeroU64,
             response: msg::Response,
@@ -478,11 +484,12 @@ impl From<flume::RecvError> for RecvError {
 
 // TODO: Request Builder
 //  - Create async worker task to handle receive
-pub struct Builder<Tw, Tr, C, E> {
+pub struct Builder<Tw, Tr, C, E, R> {
     codec: C,
     write: Tw,
     read: Tr,
     ev: E,
+    reqs: R,
 
     /// Required configurations
     cfg: BuilderOtherConfig,
@@ -490,46 +497,80 @@ pub struct Builder<Tw, Tr, C, E> {
 
 #[derive(Default)]
 struct BuilderOtherConfig {
-    enable_send_request: bool,
     inbound_channel_cap: Option<NonZeroUsize>,
     feature_flag: Feature,
 }
 
-impl Default for Builder<(), (), (), EmptyEventListener> {
+impl Default for Builder<(), (), (), EmptyEventListener, ()> {
     fn default() -> Self {
-        Self { codec: (), write: (), read: (), cfg: Default::default(), ev: EmptyEventListener }
+        Self {
+            codec: (),
+            write: (),
+            read: (),
+            cfg: Default::default(),
+            ev: EmptyEventListener,
+            reqs: (),
+        }
     }
 }
 
-impl<Tw, Tr, C, E> Builder<Tw, Tr, C, E> {
+impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
     /// Specify codec to use
-    pub fn with_codec<C1: Codec>(self, codec: impl Into<Arc<C1>>) -> Builder<Tw, Tr, Arc<C1>, E> {
+    pub fn with_codec<C1: Codec>(
+        self,
+        codec: impl Into<Arc<C1>>,
+    ) -> Builder<Tw, Tr, Arc<C1>, E, R> {
         Builder {
             codec: codec.into(),
             write: self.write,
             read: self.read,
             cfg: self.cfg,
             ev: self.ev,
+            reqs: self.reqs,
         }
     }
 
     /// Specify write frame to use
-    pub fn with_write<Tw2>(self, write: Tw2) -> Builder<Tw2, Tr, C, E>
+    pub fn with_write<Tw2>(self, write: Tw2) -> Builder<Tw2, Tr, C, E, R>
     where
         Tw2: AsyncWrite + Send + 'static,
     {
-        Builder { codec: self.codec, write, read: self.read, cfg: self.cfg, ev: self.ev }
+        Builder {
+            codec: self.codec,
+            write,
+            read: self.read,
+            cfg: self.cfg,
+            ev: self.ev,
+            reqs: self.reqs,
+        }
     }
 
-    pub fn with_read<Tr2>(self, read: Tr2) -> Builder<Tw, Tr2, C, E>
+    pub fn with_read<Tr2>(self, read: Tr2) -> Builder<Tw, Tr2, C, E, R>
     where
         Tr2: Stream<Item = InboundChunk> + Send + Sync + 'static,
     {
-        Builder { codec: self.codec, write: self.write, read, cfg: self.cfg, ev: self.ev }
+        Builder {
+            codec: self.codec,
+            write: self.write,
+            read,
+            cfg: self.cfg,
+            ev: self.ev,
+            reqs: self.reqs,
+        }
     }
 
-    pub fn with_event_listener<E2: InboundEventSubscriber>(self, ev: E2) -> Builder<Tw, Tr, C, E2> {
-        Builder { codec: self.codec, write: self.write, read: self.read, cfg: self.cfg, ev }
+    pub fn with_event_listener<E2: InboundEventSubscriber>(
+        self,
+        ev: E2,
+    ) -> Builder<Tw, Tr, C, E2, R> {
+        Builder {
+            codec: self.codec,
+            write: self.write,
+            read: self.read,
+            cfg: self.cfg,
+            ev,
+            reqs: self.reqs,
+        }
     }
 
     /// Set the read frame with stream reader and framing decoder.
@@ -543,7 +584,7 @@ impl<Tw, Tr, C, E> Builder<Tw, Tr, C, E> {
         self,
         read: Tr2,
         framing: F,
-    ) -> Builder<Tw, impl Stream<Item = InboundChunk>, C, E>
+    ) -> Builder<Tw, impl Stream<Item = InboundChunk>, C, E, R>
     where
         Tr2: AsyncRead + Send + Sync + 'static,
         F: Framing,
@@ -631,13 +672,36 @@ impl<Tw, Tr, C, E> Builder<Tw, Tr, C, E> {
             read: FramingReader { reader: read, framing, buf: BytesMut::default() },
             cfg: self.cfg,
             ev: self.ev,
+            reqs: self.reqs,
         }
     }
 
-    /// Enable or disable send request feature. Default is disabled.
-    pub fn with_send_request(mut self, enabled: bool) -> Self {
-        self.cfg.enable_send_request = enabled;
-        self
+    /// Enable request features with default request context.
+    pub fn with_request(self) -> Builder<Tw, Tr, C, E, RequestContext> {
+        Builder {
+            codec: self.codec,
+            write: self.write,
+            read: self.read,
+            cfg: self.cfg,
+            ev: self.ev,
+            reqs: RequestContext::default(),
+        }
+    }
+
+    /// Enable request features with custom request context. e.g. you can use
+    /// [`Arc<RequestContext>`] to share the request context between multiple connections.
+    pub fn with_request_context(
+        self,
+        reqs: impl GetRequestContext,
+    ) -> Builder<Tw, Tr, C, E, impl GetRequestContext> {
+        Builder {
+            codec: self.codec,
+            write: self.write,
+            read: self.read,
+            cfg: self.cfg,
+            ev: self.ev,
+            reqs,
+        }
     }
 
     /// Setting zero will create unbounded channel. Default is unbounded.
@@ -646,28 +710,28 @@ impl<Tw, Tr, C, E> Builder<Tw, Tr, C, E> {
         self
     }
 
+    /// Enable specified feature flags. This applies bit-or-assign operation on feature flags.
     pub fn with_feature(mut self, feature: Feature) -> Self {
         self.cfg.feature_flag |= feature;
         self
     }
 
+    /// Disable specified feature flags.
     pub fn without_feature(mut self, feature: Feature) -> Self {
         self.cfg.feature_flag &= !feature;
         self
     }
 }
 
-impl<Tw, Tr, C, E> Builder<Tw, Tr, Arc<C>, E>
+impl<Tw, Tr, C, E, R> Builder<Tw, Tr, Arc<C>, E, R>
 where
     Tw: AsyncWrite + Send + 'static,
     Tr: Stream<Item = crate::transport::InboundChunk> + Send + Sync + 'static,
     C: Codec,
     E: InboundEventSubscriber,
+    R: GetRequestContext,
 {
     pub fn build(self) -> Result<(Handle, impl Future), std::io::Error> {
-        let mut fut_with_request = None;
-        let mut fut_without_request = None;
-
         let (tx_inb_drv, rx_inb_drv) = flume::unbounded();
         let (tx_in_msg, rx_in_msg) =
             if let Some(chan_cap) = self.cfg.inbound_channel_cap.map(|x| x.get()) {
@@ -680,47 +744,23 @@ where
         let this = ConnectionImpl {
             codec: self.codec,
             write: AsyncMutex::new(self.write),
-            reqs: (),
+            reqs: self.reqs,
             tx_drive: tx_inb_drv,
             features: self.cfg.feature_flag,
             _unpin: std::marker::PhantomPinned,
         };
 
-        if self.cfg.enable_send_request {
-            let this = Arc::new(this.with_req());
-            fut_with_request =
-                Some(<ConnectionImpl<_, _, RequestContext>>::inbound_event_handler(DriverBody {
-                    w_this: Arc::downgrade(&this),
-                    read: self.read,
-                    ev_subs: self.ev,
-                    rx_drive: rx_inb_drv,
-                    tx_msg: tx_in_msg,
-                }));
+        let this = Arc::new(this.with_req());
+        let fut_driver = ConnectionImpl::inbound_event_handler(DriverBody {
+            w_this: Arc::downgrade(&this),
+            read: self.read,
+            ev_subs: self.ev,
+            rx_drive: rx_inb_drv,
+            tx_msg: tx_in_msg,
+        });
+        conn = this;
 
-            conn = this;
-        } else {
-            let this = Arc::new(this);
-            fut_without_request =
-                Some(<ConnectionImpl<_, _, ()>>::inbound_event_handler(DriverBody {
-                    w_this: Arc::downgrade(&this),
-                    read: self.read,
-                    ev_subs: self.ev,
-                    rx_drive: rx_inb_drv,
-                    tx_msg: tx_in_msg,
-                }));
-
-            conn = this;
-        }
-
-        Ok((Handle(SendHandle(conn), Receiver(rx_in_msg)), async move {
-            if let Some(fut) = fut_with_request {
-                fut.await;
-            } else if let Some(fut) = fut_without_request {
-                fut.await;
-            } else {
-                unreachable!()
-            }
-        }))
+        Ok((Handle(SendHandle(conn), Receiver(rx_in_msg)), fut_driver))
     }
 }
 
@@ -1094,47 +1134,33 @@ mod inner {
     };
 
     /// Request-acceting version of connection driver
-    impl<C, T> ConnectionImpl<C, T, RequestContext>
+    impl<C, T, R> ConnectionImpl<C, T, R>
     where
         C: Codec,
         T: AsyncWrite + Send + 'static,
+        R: GetRequestContext,
     {
-        pub(crate) async fn inbound_event_handler<Tr, E>(
-            body: DriverBody<C, T, E, RequestContext, Tr>,
-        ) where
+        pub(crate) async fn inbound_event_handler<Tr, E>(body: DriverBody<C, T, E, R, Tr>)
+        where
             Tr: Stream<Item = InboundChunk> + Send + Sync + 'static,
             E: InboundEventSubscriber,
         {
             body.execute(|this, ev, param| {
+                let Some(reqs) = this.reqs.get_req_con() else {
+                    ev.on_inbound_error(InboundError::RedundantResponse(param.response));
+                    return;
+                };
+
                 let Some(req_id_hash) = NonZeroU64::new(param.req_id_hash) else {
                     ev.on_inbound_error(InboundError::ResponseHashZero(param.response));
                     return;
                 };
 
-                if let Err(msg) = this.reqs.route_response(req_id_hash, param.response) {
+                if let Err(msg) = reqs.route_response(req_id_hash, param.response) {
                     ev.on_inbound_error(InboundError::ExpiredResponse(msg));
                 }
             })
             .await;
-        }
-    }
-
-    /// Non-request-accepting version of connection driver
-    impl<C, T> ConnectionImpl<C, T, ()>
-    where
-        C: Codec,
-        T: AsyncWrite + Send + 'static,
-    {
-        pub(crate) async fn inbound_event_handler<Tr, E>(body: DriverBody<C, T, E, (), Tr>)
-        where
-            Tr: Stream<Item = InboundChunk> + Send + Sync + 'static,
-            E: InboundEventSubscriber,
-        {
-            // Naively call the implementation with empty handler. Just discards all responses
-            body.execute(|_, ev, param| {
-                ev.on_inbound_error(InboundError::RedundantResponse(param.response))
-            })
-            .await
         }
     }
 
