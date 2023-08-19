@@ -503,8 +503,14 @@ impl Default for Builder<(), (), (), EmptyEventListener> {
 
 impl<Tw, Tr, C, E> Builder<Tw, Tr, C, E> {
     /// Specify codec to use
-    pub fn with_codec<C1: Codec>(self, codec: C1) -> Builder<Tw, Tr, C1, E> {
-        Builder { codec, write: self.write, read: self.read, cfg: self.cfg, ev: self.ev }
+    pub fn with_codec<C1: Codec>(self, codec: impl Into<Arc<C1>>) -> Builder<Tw, Tr, Arc<C1>, E> {
+        Builder {
+            codec: codec.into(),
+            write: self.write,
+            read: self.read,
+            cfg: self.cfg,
+            ev: self.ev,
+        }
     }
 
     /// Specify write frame to use
@@ -651,7 +657,7 @@ impl<Tw, Tr, C, E> Builder<Tw, Tr, C, E> {
     }
 }
 
-impl<Tw, Tr, C, E> Builder<Tw, Tr, C, E>
+impl<Tw, Tr, C, E> Builder<Tw, Tr, Arc<C>, E>
 where
     Tw: AsyncWrite + Send + 'static,
     Tr: Stream<Item = crate::transport::InboundChunk> + Send + Sync + 'static,
@@ -672,7 +678,7 @@ where
 
         let conn: Arc<dyn Connection>;
         let this = ConnectionImpl {
-            codec: self.codec.into(),
+            codec: self.codec,
             write: AsyncMutex::new(self.write),
             reqs: (),
             tx_drive: tx_inb_drv,
