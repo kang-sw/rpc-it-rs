@@ -38,3 +38,54 @@ pub use rpc::{
     Builder, Client, Feature, InboundError, InboundEventSubscriber, Message, RecvError,
     RequestContext, ResponseFuture, SendError, Transceiver, TryRecvError,
 };
+
+pub mod util {
+    use serde::ser::SerializeMap;
+
+    pub fn iter_as_map<'a, I>(iter: I) -> impl serde::Serialize + 'a
+    where
+        I: IntoIterator<Item = (&'a dyn erased_serde::Serialize, &'a dyn erased_serde::Serialize)>
+            + 'a,
+        I::IntoIter: ExactSizeIterator + Clone,
+    {
+        struct IterAsMap<'a, I>(I)
+        where
+            I: Iterator<Item = (&'a dyn erased_serde::Serialize, &'a dyn erased_serde::Serialize)>
+                + ExactSizeIterator
+                + Clone;
+
+        impl<'a, I> serde::Serialize for IterAsMap<'a, I>
+        where
+            I: Iterator<Item = (&'a dyn erased_serde::Serialize, &'a dyn erased_serde::Serialize)>
+                + ExactSizeIterator
+                + Clone,
+        {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                let mut map = serializer.serialize_map(Some(self.0.len()))?;
+                for (k, v) in self.0.clone() {
+                    map.serialize_entry(k, v)?;
+                }
+                map.end()
+            }
+        }
+
+        IterAsMap(iter.into_iter())
+    }
+}
+
+/// Create a map from a list of key-value pairs.
+///
+/// This is useful to quickly create a fixed-sized map for serialization.
+#[cfg(feature = "macros")]
+#[macro_export]
+macro_rules! kv_pairs {
+    ($($key:tt = $value:expr),*) => {
+        $crate::util::iter_as_map([$(
+            (&($key) as &dyn $crate::erased_serde::Serialize,
+             &($value) as &dyn $crate::erased_serde::Serialize)
+        ),*])
+    };
+}

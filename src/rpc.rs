@@ -269,13 +269,10 @@ impl Client {
             return Err(SendError::RequestDisabled)
         };
 
+        buf.prepare();
         let req_id_hint = req.next_req_id_base();
-        let req_id_hash = self.0.codec().encode_request(
-            method,
-            req_id_hint.get(),
-            params,
-            &mut buf.prepare().value,
-        )?;
+        let req_id_hash =
+            self.0.codec().encode_request(method, req_id_hint.get(), params, &mut buf.value)?;
 
         // Registering request always preceded than sending request. If request was not sent due to
         // I/O issue or cancellation, the request will be unregistered on the drop of the
@@ -295,8 +292,11 @@ impl Client {
         method: &str,
         params: &T,
     ) -> Result<(), SendError> {
-        self.0.codec().encode_notify(method, params, &mut buf.prepare().value)?;
+        buf.prepare();
+
+        self.0.codec().encode_notify(method, params, &mut buf.value)?;
         self.0.__write_raw(&buf.value).await?;
+
         Ok(())
     }
 
@@ -476,9 +476,9 @@ mod req {
         }
     }
 
-    impl Drop for ResponseFutureInner<'_> {
+    impl Drop for ResponseFuture<'_> {
         fn drop(&mut self) {
-            let Self::Waiting(conn, hash)  = self else { return };
+            let ResponseFutureInner::Waiting(conn, hash)  = self.0 else { return };
             let reqs = conn.reqs().unwrap();
             assert!(
                 reqs.waiters.remove(&hash).is_some(),
@@ -809,6 +809,7 @@ where
     /// Build the connection from provided parameters.
     ///
     /// To start the connection, you need to spawn the returned future to the executor.
+    #[must_use = "The connection will be closed immediately if you don't spawn the future!"]
     pub fn build(self) -> (Transceiver, impl std::future::Future<Output = ()> + Send) {
         let (tx_inb_drv, rx_inb_drv) = flume::unbounded();
         let (tx_in_msg, rx_in_msg) =
@@ -1045,7 +1046,12 @@ pub mod msg {
 
             let encode_as_error = value.is_err();
             let value = value.unwrap_or_else(|x| x);
-            self.codec().encode_response(inner.req_id(), encode_as_error, value, &mut buf.value)?;
+            inner.codec().encode_response(
+                inner.req_id(),
+                encode_as_error,
+                value,
+                &mut buf.value,
+            )?;
 
             conn.__write_raw(&buf.value).await?;
             Ok(())
@@ -1264,8 +1270,9 @@ mod inner {
 
                             // Ignore all other error types, as this message is triggered
                             // crate-internally on very limited situations
-                            let Err(SendError::IoError(e)) = err else { continue };
-                            return Err(e);
+                            if let Err(SendError::IoError(e)) = err {
+                                return Err(e);
+                            }
                         }
                         DeferredWrite::Raw(msg) => {
                             let Some(this) = w_this.upgrade() else { break };
@@ -1322,6 +1329,8 @@ mod inner {
                             Err(e) => {
                                 close_from_remote = true;
                                 ev_subs.on_close(false, Err(e));
+
+                                break;
                             }
                         }
                     }
@@ -1437,13 +1446,10 @@ mod inner {
             recv: &msg::RequestInner,
             error: &codec::PredefinedResponseError,
         ) -> Result<(), super::SendError> {
-            self.codec().encode_response_predefined(
-                recv.req_id(),
-                error,
-                &mut buf.prepare().value,
-            )?;
+            buf.prepare();
 
-            self.__write_raw(&buf.prepare().value).await?;
+            self.codec().encode_response_predefined(recv.req_id(), error, &mut buf.value)?;
+            self.__write_raw(&buf.value).await?;
             Ok(())
         }
 

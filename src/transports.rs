@@ -91,7 +91,7 @@ mod in_memory_ {
     impl AsyncReadFrame for InMemoryReader {
         fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<Bytes>> {
             let mut inner = self.0.lock();
-            if inner.buffer.is_empty() {
+            if inner.chunks.is_empty() {
                 if inner.writer_dropped {
                     return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
                 }
