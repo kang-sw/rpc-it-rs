@@ -104,7 +104,7 @@ pub mod transport {
     }
 }
 
-pub mod ext_transport {
+pub mod transports {
     #[cfg(feature = "tokio")]
     mod tokio_ {}
 
@@ -230,14 +230,57 @@ pub mod ext_transport {
     }
 }
 
-pub mod ext_codec {
-    /// Framing for ASCII newline delimited protocol
-    pub struct AsciiNewlineFraming {
-        newline_count: usize,
-        cursor: usize,
+pub mod codecs {
+
+    #[cfg(feature = "delim-framing")]
+    pub use delim::*;
+
+    #[cfg(feature = "delim-framing")]
+    mod delim {
+        use memchr::memmem;
+
+        use crate::codec::{self, Framing};
+
+        /// Splits a buffer into frames by byte sequence delimeter
+        #[derive(Debug)]
+        struct DelimeterFraming {
+            finder: memmem::Finder<'static>,
+            cursor: usize,
+        }
+
+        impl Framing for DelimeterFraming {
+            fn try_framing(
+                &mut self,
+                buffer: &[u8],
+            ) -> Result<Option<codec::FramingAdvanceResult>, codec::FramingError> {
+                let buf = &buffer[self.cursor..];
+                if let Some(pos) = self.finder.find(buf) {
+                    let valid_data_end = self.cursor + pos;
+                    let next_frame_start = valid_data_end + self.finder.needle().len();
+                    self.cursor = next_frame_start;
+                    Ok(Some(codec::FramingAdvanceResult { valid_data_end, next_frame_start }))
+                } else {
+                    // Remain some margin to not miss the delimeter
+                    self.cursor += buffer.len().saturating_sub(self.finder.needle().len());
+                    Ok(None)
+                }
+            }
+
+            fn advance(&mut self) {
+                self.cursor = 0;
+            }
+
+            fn next_buffer_size(&self) -> Option<std::num::NonZeroUsize> {
+                None
+            }
+        }
+
+        pub fn frame_by_delim(delim: &[u8]) -> impl Framing {
+            DelimeterFraming { cursor: 0, finder: memmem::Finder::new(delim).into_owned() }
+        }
     }
 
-    #[cfg(feature = "msgpack")]
+    #[cfg(feature = "msgpack-rpc")]
     mod msgpack_rpc {
         pub struct MsgpackRpcCodec {
             /// If specified, the codec will wrap the provided parameter to array automatically.
@@ -251,8 +294,9 @@ pub mod ext_codec {
         pub struct MsgpackFraming {}
     }
 
-    #[cfg(feature = "json")]
+    #[cfg(feature = "jsonrpc")]
     mod jsonrpc {
+        #[derive(Default)]
         pub struct JsonRpcCodec {}
     }
 }

@@ -695,8 +695,10 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
                     }
 
                     // Try decode the buffer.
-                    match framing.advance(&buf[..]) {
+                    match framing.try_framing(&buf[..]) {
                         Ok(Some(x)) => {
+                            framing.advance();
+
                             debug_assert!(x.valid_data_end <= x.next_frame_start);
                             debug_assert!(x.next_frame_start <= buf.len());
 

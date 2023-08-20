@@ -23,14 +23,20 @@ pub trait Framing: Send + Sync + 'static + Unpin {
     ///   [`Self::advance`] call should be called with the same buffer, but extended with more data
     ///   from the underlying transport.
     /// - `Err(...)` if any error occurs during framing.
-    fn advance(&mut self, buffer: &[u8]) -> Result<Option<FramingAdvanceResult>, FramingError>;
+    fn try_framing(&mut self, buffer: &[u8]) -> Result<Option<FramingAdvanceResult>, FramingError>;
+
+    /// Called after every successful frame parsing
+    fn advance(&mut self) {}
 
     /// Returns hint for the next buffer size. This is used to pre-allocate the buffer for the
     /// next [`Self::advance`] call.
-    fn next_buffer_size(&self) -> Option<NonZeroUsize>;
+    fn next_buffer_size(&self) -> Option<NonZeroUsize> {
+        // Default is no. Usually, this is only providable on protocols with frame headers.
+        None
+    }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct FramingAdvanceResult {
     pub valid_data_end: usize,
     pub next_frame_start: usize,
