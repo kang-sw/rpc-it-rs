@@ -17,7 +17,7 @@ use std::{
 
 use crate::{
     codec::{self, Codec, DecodeError, Framing, FramingError},
-    transport::InboundChunk,
+    transport::InboundMessage,
 };
 
 use async_lock::Mutex as AsyncMutex;
@@ -595,7 +595,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
 
     pub fn with_read<Tr2>(self, read: Tr2) -> Builder<Tw, Tr2, C, E, R>
     where
-        Tr2: Stream<Item = InboundChunk> + Send + Sync + 'static,
+        Tr2: Stream<Item = InboundMessage> + Send + Sync + 'static,
     {
         Builder {
             codec: self.codec,
@@ -632,7 +632,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
         self,
         read: Tr2,
         framing: F,
-    ) -> Builder<Tw, impl Stream<Item = InboundChunk>, C, E, R>
+    ) -> Builder<Tw, impl Stream<Item = InboundMessage>, C, E, R>
     where
         Tr2: AsyncRead + Send + Sync + 'static,
         F: Framing,
@@ -651,7 +651,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
             T: AsyncRead + Send + Sync + 'static,
             F: Framing,
         {
-            type Item = InboundChunk;
+            type Item = InboundMessage;
 
             fn size_hint(&self) -> (usize, Option<usize>) {
                 // We don't know when to stop ...
@@ -774,7 +774,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
 impl<Tw, Tr, C, E, R> Builder<Tw, Tr, Arc<C>, E, R>
 where
     Tw: AsyncWrite + Send + 'static,
-    Tr: Stream<Item = crate::transport::InboundChunk> + Send + Sync + 'static,
+    Tr: Stream<Item = crate::transport::InboundMessage> + Send + Sync + 'static,
     C: Codec,
     E: InboundEventSubscriber,
     R: GetRequestContext,
@@ -1171,7 +1171,7 @@ mod inner {
     use crate::{
         codec::{self, Codec, InboundFrameType},
         rpc::{DeferredWrite, SendError},
-        transport::InboundChunk,
+        transport::InboundMessage,
     };
 
     use super::{
@@ -1188,7 +1188,7 @@ mod inner {
     {
         pub(crate) async fn inbound_event_handler<Tr, E>(body: DriverBody<C, T, E, R, Tr>)
         where
-            Tr: Stream<Item = InboundChunk> + Send + Sync + 'static,
+            Tr: Stream<Item = InboundMessage> + Send + Sync + 'static,
             E: InboundEventSubscriber,
         {
             body.execute(|this, ev, param| {
@@ -1216,7 +1216,7 @@ mod inner {
         T: AsyncWrite + Send + 'static,
         E: InboundEventSubscriber,
         R: GetRequestContext,
-        Tr: Stream<Item = InboundChunk> + Send + Sync + 'static,
+        Tr: Stream<Item = InboundMessage> + Send + Sync + 'static,
     {
         async fn execute(
             self,
