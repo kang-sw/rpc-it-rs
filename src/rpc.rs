@@ -17,7 +17,7 @@ use std::{
 
 use crate::{
     codec::{self, Codec, DecodeError, Framing, FramingError},
-    transport::InboundMessage,
+    transport::{AsyncReadFrame, InboundMessage},
 };
 
 use async_lock::Mutex as AsyncMutex;
@@ -595,7 +595,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
 
     pub fn with_read<Tr2>(self, read: Tr2) -> Builder<Tw, Tr2, C, E, R>
     where
-        Tr2: Stream<Item = InboundMessage> + Send + Sync + 'static,
+        Tr2: AsyncReadFrame,
     {
         Builder {
             codec: self.codec,
@@ -632,7 +632,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
         self,
         read: Tr2,
         framing: F,
-    ) -> Builder<Tw, impl Stream<Item = InboundMessage>, C, E, R>
+    ) -> Builder<Tw, impl AsyncReadFrame, C, E, R>
     where
         Tr2: AsyncRead + Send + Sync + 'static,
         F: Framing,
@@ -648,7 +648,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
 
         impl<T, F> Stream for FramingReader<T, F>
         where
-            T: AsyncRead + Send + Sync + 'static,
+            T: AsyncRead + Sync + Send + 'static,
             F: Framing,
         {
             type Item = InboundMessage;
@@ -774,7 +774,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
 impl<Tw, Tr, C, E, R> Builder<Tw, Tr, Arc<C>, E, R>
 where
     Tw: AsyncWrite + Send + 'static,
-    Tr: Stream<Item = crate::transport::InboundMessage> + Send + Sync + 'static,
+    Tr: AsyncReadFrame,
     C: Codec,
     E: InboundEventSubscriber,
     R: GetRequestContext,
@@ -1165,13 +1165,13 @@ mod inner {
     //! the handler.
 
     use capture_it::capture;
-    use futures_util::{future::FusedFuture, AsyncWrite, FutureExt, Stream};
+    use futures_util::{future::FusedFuture, AsyncWrite, FutureExt};
     use std::{future::poll_fn, num::NonZeroU64, sync::Arc};
 
     use crate::{
         codec::{self, Codec, InboundFrameType},
         rpc::{DeferredWrite, SendError},
-        transport::InboundMessage,
+        transport::AsyncReadFrame,
     };
 
     use super::{
@@ -1188,7 +1188,7 @@ mod inner {
     {
         pub(crate) async fn inbound_event_handler<Tr, E>(body: DriverBody<C, T, E, R, Tr>)
         where
-            Tr: Stream<Item = InboundMessage> + Send + Sync + 'static,
+            Tr: AsyncReadFrame,
             E: InboundEventSubscriber,
         {
             body.execute(|this, ev, param| {
@@ -1216,7 +1216,7 @@ mod inner {
         T: AsyncWrite + Send + 'static,
         E: InboundEventSubscriber,
         R: GetRequestContext,
-        Tr: Stream<Item = InboundMessage> + Send + Sync + 'static,
+        Tr: AsyncReadFrame,
     {
         async fn execute(
             self,
