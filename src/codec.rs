@@ -65,7 +65,7 @@ pub enum ReqIdRef<'a> {
 }
 
 impl ReqId {
-    pub fn to_ref<'a>(&self, buffer: &'a [u8]) -> ReqIdRef<'a> {
+    pub fn make_ref<'a>(&self, buffer: &'a [u8]) -> ReqIdRef<'a> {
         match self {
             ReqId::U64(x) => ReqIdRef::U64(*x),
             ReqId::Bytes(x) => ReqIdRef::Bytes(&buffer[x.clone()]),

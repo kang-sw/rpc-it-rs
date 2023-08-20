@@ -985,7 +985,7 @@ pub mod msg {
         ($t:ty) => {
             impl super::MessageReqId for $t {
                 fn req_id(&self) -> ReqIdRef {
-                    self.req_id.to_ref(&self.h.buffer)
+                    self.req_id.make_ref(&self.h.buffer)
                 }
             }
         };
