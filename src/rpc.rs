@@ -179,69 +179,46 @@ enum DeferredWrite {
 /* ---------------------------------------------------------------------------------------------- */
 /*                                             HANDLES                                            */
 /* ---------------------------------------------------------------------------------------------- */
-/// Bidirectional RPC handle.
+/// Bidirectional RPC handle. It can serve as both client and server.
 #[derive(Clone, Debug)]
-pub struct Handle(SendHandle, Receiver);
+pub struct Channel(Client, flume::Receiver<msg::RecvMsg>);
 
-impl std::ops::Deref for Handle {
-    type Target = SendHandle;
+impl std::ops::Deref for Channel {
+    type Target = Client;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl Handle {
-    pub fn receiver(&self) -> &Receiver {
-        &self.1
-    }
-
-    pub fn into_receiver(self) -> Receiver {
-        self.1
-    }
-
-    pub fn split(self) -> (SendHandle, Receiver) {
-        (self.0, self.1)
-    }
-
-    pub fn into_sender(self) -> SendHandle {
+impl Channel {
+    pub fn into_sender(self) -> Client {
         self.0
     }
-}
 
-/// Receive-only handle. This is useful when you want to consume all remaining RPC messages when
-/// the connection is being closed.
-#[derive(Clone, Debug)]
-pub struct Receiver(flume::Receiver<msg::RecvMsg>);
+    pub fn clone_sender(&self) -> Client {
+        self.0.clone()
+    }
 
-impl Receiver {
     pub fn blocking_recv(&self) -> Result<msg::RecvMsg, RecvError> {
-        Ok(self.0.recv()?)
+        Ok(self.1.recv()?)
     }
 
     pub async fn recv(&self) -> Result<msg::RecvMsg, RecvError> {
-        Ok(self.0.recv_async().await?)
+        Ok(self.1.recv_async().await?)
     }
 
     pub fn try_recv(&self) -> Result<msg::RecvMsg, TryRecvError> {
-        self.0.try_recv().map_err(|e| match e {
+        self.1.try_recv().map_err(|e| match e {
             flume::TryRecvError::Empty => TryRecvError::Empty,
             flume::TryRecvError::Disconnected => TryRecvError::Disconnected,
         })
-    }
-
-    pub fn is_disconnected(&self) -> bool {
-        self.0.is_disconnected()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
     }
 }
 
 /// Send-only handle. This holds strong reference to the connection.
 #[derive(Clone, Debug)]
-pub struct SendHandle(Arc<dyn Connection>);
+pub struct Client(Arc<dyn Connection>);
 
 /// Reused buffer over multiple RPC request/responses
 ///
@@ -259,7 +236,7 @@ impl WriteBuffer {
     }
 }
 
-impl SendHandle {
+impl Client {
     pub async fn request<'a, T: serde::Serialize>(
         &'a self,
         method: &str,
@@ -360,7 +337,7 @@ impl SendHandle {
 }
 
 mod req {
-    use std::{num::NonZeroU64, sync::atomic::AtomicU64};
+    use std::{num::NonZeroU64, sync::atomic::AtomicU64, task::Poll};
 
     use dashmap::DashMap;
     use futures_util::task::AtomicWaker;
@@ -414,7 +391,8 @@ mod req {
                 return Err(response);
             };
 
-            slot.value.lock().replace(response);
+            let mut value = slot.value.lock();
+            value.replace(response);
             slot.waker.wake();
 
             Ok(())
@@ -426,14 +404,13 @@ mod req {
     pub struct ResponseFuture<'a>(ResponseFutureInner<'a>);
 
     enum ResponseFutureInner<'a> {
-        Uninit(&'a dyn Connection, NonZeroU64),
         Waiting(&'a dyn Connection, NonZeroU64),
         Finished,
     }
 
     impl<'a> ResponseFuture<'a> {
         pub(super) fn new(handle: &'a dyn Connection, slot_id: RequestSlotId) -> Self {
-            Self(ResponseFutureInner::Uninit(handle, slot_id.0))
+            Self(ResponseFutureInner::Waiting(handle, slot_id.0))
         }
     }
 
@@ -458,19 +435,19 @@ mod req {
             }
 
             match &mut self.0 {
-                Uninit(conn, hash) => {
-                    let elem = get_conn!(conn, hash);
-
-                    todo!("register waker")
-                }
-
                 Waiting(conn, hash) => {
                     let elem = get_conn!(conn, hash);
-
-                    todo!("check if response is available")
+                    let mut value = elem.value.lock();
+                    if let Some(value) = value.take() {
+                        self.0 = Finished;
+                        return Poll::Ready(value);
+                    } else {
+                        elem.waker.register(cx.waker());
+                        return Poll::Pending;
+                    }
                 }
 
-                Finished => todo!("do nothing, poll after finished ..."),
+                Finished => panic!("ResponseFuture polled after completion"),
             }
         }
     }
@@ -483,7 +460,8 @@ mod req {
 
     impl Drop for ResponseFutureInner<'_> {
         fn drop(&mut self) {
-            let (Self::Uninit(conn, hash) | Self::Waiting(conn, hash)) = self else { return };
+            let Self::Waiting(conn, hash)  = self else { return };
+            let reqs = conn.reqs().unwrap();
 
             // TODO: Unregister the request
 
@@ -789,7 +767,7 @@ where
     E: InboundEventSubscriber,
     R: GetRequestContext,
 {
-    pub fn build(self) -> Result<(Handle, impl Future), std::io::Error> {
+    pub fn build(self) -> Result<(Channel, impl Future), std::io::Error> {
         let (tx_inb_drv, rx_inb_drv) = flume::unbounded();
         let (tx_in_msg, rx_in_msg) =
             if let Some(chan_cap) = self.cfg.inbound_channel_cap.map(|x| x.get()) {
@@ -818,7 +796,7 @@ where
         });
         conn = this;
 
-        Ok((Handle(SendHandle(conn), Receiver(rx_in_msg)), fut_driver))
+        Ok((Channel(Client(conn), rx_in_msg), fut_driver))
     }
 }
 
