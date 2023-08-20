@@ -76,8 +76,8 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
     /// internally generated request ID. This generated ID will be fed to [`Codec::decode_inbound`]
     /// to match the response to the request.
     ///
-    /// The generated request ID doesn't need to be deterministic to the req_id_seqn, but only the
-    /// returned hash matters.
+    /// The generated request ID doesn't need to be deterministic to the req_id_seqn, however, in
+    /// this case, the returned hash must not be duplicated on every function call.
     ///
     /// # Returns
     ///

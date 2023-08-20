@@ -43,7 +43,7 @@ pub mod transport {
     };
 
     pub use bytes::Bytes;
-    pub use futures_util::{AsyncRead, AsyncWrite, Stream};
+    use futures_util::{AsyncWrite, Stream};
 
     pub type InboundMessage = std::io::Result<Bytes>;
 
@@ -92,11 +92,16 @@ pub mod transport {
         }
     }
 
-    pub trait AsyncReadFrame:
-        Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static
-    {
+    pub trait AsyncReadFrame: Send + Sync + 'static {
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<Bytes>>;
     }
-    impl<T: Stream<Item = std::io::Result<Bytes>> + Sync + Send + 'static> AsyncReadFrame for T {}
+
+    impl<T: Stream<Item = std::io::Result<Bytes>> + Sync + Send + 'static> AsyncReadFrame for T {
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<Bytes>> {
+            self.poll_next(cx)
+                .map(|x| x.unwrap_or_else(|| Err(std::io::ErrorKind::BrokenPipe.into())))
+        }
+    }
 }
 
 pub mod ext_transport {
@@ -125,6 +130,8 @@ pub mod ext_transport {
         use futures_util::task::AtomicWaker;
         use parking_lot::Mutex;
 
+        use crate::transport::{AsyncReadFrame, AsyncWriteFrame};
+
         struct InMemoryInner {
             buffer: BytesMut,
             chunks: VecDeque<Bytes>,
@@ -150,7 +157,7 @@ pub mod ext_transport {
             (InMemoryWriter(inner.clone()), InMemoryReader(inner.clone()))
         }
 
-        impl crate::transport::AsyncWrite for InMemoryWriter {
+        impl AsyncWriteFrame for InMemoryWriter {
             fn poll_write(
                 self: Pin<&mut Self>,
                 _cx: &mut Context<'_>,
@@ -195,20 +202,21 @@ pub mod ext_transport {
             }
         }
 
-        impl crate::transport::Stream for InMemoryReader {
-            type Item = crate::transport::InboundMessage;
-
-            fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        impl AsyncReadFrame for InMemoryReader {
+            fn poll_next(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<std::io::Result<Bytes>> {
                 let mut inner = self.0.lock();
                 if inner.buffer.is_empty() {
                     if inner.writer_dropped {
-                        return Poll::Ready(None);
+                        return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
                     }
 
                     inner.waker.register(cx.waker());
                     Poll::Pending
                 } else {
-                    Poll::Ready(Some(Ok(inner.chunks.pop_front().unwrap())))
+                    Poll::Ready(Ok(inner.chunks.pop_front().unwrap()))
                 }
             }
         }
@@ -223,9 +231,28 @@ pub mod ext_transport {
 }
 
 pub mod ext_codec {
-    #[cfg(feature = "msgpack-rpc")]
-    mod msgpack_rpc_ {}
+    /// Framing for ASCII newline delimited protocol
+    pub struct AsciiNewlineFraming {
+        newline_count: usize,
+        cursor: usize,
+    }
 
-    #[cfg(feature = "jsonrpc")]
-    mod jsonrpc_ {}
+    #[cfg(feature = "msgpack")]
+    mod msgpack_rpc {
+        pub struct MsgpackRpcCodec {
+            /// If specified, the codec will wrap the provided parameter to array automatically.
+            /// Otherwise, the caller should wrap the parameter within array manually.
+            ///
+            /// > [Reference](https://github.com/msgpack-rpc/msgpack-rpc/blob/master/spec.md#params)
+            auto_param_array_wrap: bool,
+        }
+
+        /// Provided
+        pub struct MsgpackFraming {}
+    }
+
+    #[cfg(feature = "json")]
+    mod jsonrpc {
+        pub struct JsonRpcCodec {}
+    }
 }

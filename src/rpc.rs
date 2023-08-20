@@ -625,13 +625,14 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
     ///
     /// # Parameters
     ///
-    /// - `fallback_buffer_size`: When the framing decoder does not provide the next buffer size,
+    /// - `default_readbuf_reserve`: When the framing decoder does not provide the next buffer size,
     ///   this value is used to pre-allocate the buffer for the next [`AsyncReadFrame::poll_read`]
     ///   call.
     pub fn with_read_stream<Tr2, F>(
         self,
         read: Tr2,
         framing: F,
+        default_readbuf_reserve: usize,
     ) -> Builder<Tw, impl AsyncReadFrame, C, E, R>
     where
         Tr2: AsyncRead + Send + Sync + 'static,
@@ -644,44 +645,54 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
             reader: T,
             framing: F,
             buf: bytes::BytesMut,
+            nreserve: usize,
+            state_skip_reading: bool,
         }
 
-        impl<T, F> Stream for FramingReader<T, F>
+        impl<T, F> AsyncReadFrame for FramingReader<T, F>
         where
             T: AsyncRead + Sync + Send + 'static,
             F: Framing,
         {
-            type Item = InboundMessage;
-
-            fn size_hint(&self) -> (usize, Option<usize>) {
-                // We don't know when to stop ...
-                (0, None)
-            }
-
-            fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            fn poll_next(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<std::io::Result<Bytes>> {
                 // SAFETY: We won't move this value, for sure, right?
-                let FramingReader { reader, framing, buf } = unsafe { self.get_unchecked_mut() };
+                let FramingReader { reader, framing, buf, nreserve, state_skip_reading } =
+                    unsafe { self.get_unchecked_mut() };
+
                 let mut reader = unsafe { Pin::new_unchecked(reader) };
 
                 loop {
-                    // Reading as many as possible is almostly desireable.
+                    // Read until the transport returns 'pending'
                     let size_hint = framing.next_buffer_size();
-                    let mut buf_read = buf.split_to(0);
-                    buf_read.reserve(size_hint.map(|x| x.get()).unwrap_or(4096));
+                    let size_required = size_hint.map(|x| x.get());
 
-                    unsafe {
-                        buf_read.set_len(buf_read.capacity());
+                    while !*state_skip_reading && size_required.is_some_and(|x| buf.len() < x) {
+                        let n_req_size = size_required.unwrap_or(0).saturating_sub(buf.len());
+                        let num_reserve = (*nreserve).max(n_req_size);
 
-                        // SAFETY: Pinning value from already pinned value `self`
-                        let Poll::Ready(nread) = reader.as_mut().poll_read(cx, &mut buf_read[..])? else {
-                            break Poll::Pending;
-                        };
+                        let old_cursor = buf.len();
+                        buf.reserve(num_reserve);
 
-                        assert!(nread <= buf_read.capacity());
-                        buf_read.set_len(nread);
+                        unsafe {
+                            buf.set_len(old_cursor + num_reserve);
+                            match reader.as_mut().poll_read(cx, buf) {
+                                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                                Poll::Ready(Ok(n)) => {
+                                    buf.set_len(old_cursor + n);
+                                }
+                                Poll::Pending => {
+                                    buf.set_len(old_cursor);
+
+                                    // Skip reading until all prepared buffer is consumed.
+                                    *state_skip_reading = true;
+                                    break;
+                                }
+                            }
+                        }
                     }
-
-                    buf.unsplit(buf_read);
 
                     // Try decode the buffer.
                     match framing.advance(&buf[..]) {
@@ -690,17 +701,20 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
                             debug_assert!(x.next_frame_start <= buf.len());
 
                             let mut frame = buf.split_to(x.next_frame_start);
-                            break Poll::Ready(Some(Ok(frame.split_off(x.valid_data_end).into())));
+                            break Poll::Ready(Ok(frame.split_off(x.valid_data_end).into()));
                         }
 
                         // Just poll once more, until it retunrs 'Pending' ...
-                        Ok(None) => continue,
+                        Ok(None) => {
+                            *state_skip_reading = false;
+                            continue;
+                        }
 
                         Err(FramingError::Broken(why)) => {
-                            return Poll::Ready(Some(Err(std::io::Error::new(
+                            return Poll::Ready(Err(std::io::Error::new(
                                 std::io::ErrorKind::InvalidData,
                                 why,
-                            ))))
+                            )))
                         }
 
                         Err(FramingError::Recoverable(num_discard_bytes)) => {
@@ -717,7 +731,13 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
         Builder {
             codec: self.codec,
             write: self.write,
-            read: FramingReader { reader: read, framing, buf: BytesMut::default() },
+            read: FramingReader {
+                reader: read,
+                framing,
+                buf: BytesMut::default(),
+                nreserve: default_readbuf_reserve,
+                state_skip_reading: false,
+            },
             cfg: self.cfg,
             ev: self.ev,
             reqs: self.reqs,
@@ -1290,7 +1310,7 @@ mod inner {
                         let Some(this) = w_this.upgrade() else { break };
 
                         match inbound {
-                            Some(Ok(bytes)) => {
+                            Ok(bytes) => {
                                 Self::on_read(
                                     &this,
                                     &mut ev_subs,
@@ -1300,21 +1320,9 @@ mod inner {
                                 )
                                 .await;
                             }
-                            Some(Err(e)) => {
+                            Err(e) => {
                                 close_from_remote = true;
                                 ev_subs.on_close(false, Err(e));
-                            }
-                            None => {
-                                close_from_remote = true;
-                                ev_subs.on_close(
-                                    false,
-                                    Err(
-                                        std::io::Error::new(
-                                            std::io::ErrorKind::Other,
-                                            "Input stream broken"
-                                        )
-                                    )
-                                );
                             }
                         }
                     }
