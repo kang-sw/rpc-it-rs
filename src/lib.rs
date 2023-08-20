@@ -49,13 +49,9 @@ pub mod transport {
 
     pub trait AsyncWriteFrame: Send + 'static {
         /// Called before writing a frame. This can be used to deal with writing cancellation.
-        fn poll_begin_write_frame(
-            self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            len: usize,
-        ) -> Poll<std::io::Result<()>> {
-            let _ = (cx, len);
-            Poll::Ready(Ok(()))
+        fn begin_write_frame(self: Pin<&mut Self>, len: usize) -> std::io::Result<()> {
+            let _ = (len,);
+            Ok(())
         }
 
         /// Write a frame to the underlying transport. It can be called multiple times to write a

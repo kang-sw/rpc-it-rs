@@ -17,13 +17,13 @@ use std::{
 
 use crate::{
     codec::{self, Codec, DecodeError, Framing, FramingError},
-    transport::{AsyncReadFrame, InboundMessage},
+    transport::{AsyncReadFrame, AsyncWriteFrame, InboundMessage},
 };
 
 use async_lock::Mutex as AsyncMutex;
 use bitflags::bitflags;
 use bytes::{Bytes, BytesMut};
-use futures_util::{AsyncRead, AsyncWrite, Stream};
+use futures_util::{AsyncRead, Stream};
 pub use req::RequestContext;
 pub use req::ResponseFuture;
 
@@ -69,7 +69,7 @@ struct ConnectionImpl<C, T, R> {
 /// Wraps connection implementation with virtual dispatch.
 trait Connection: Send + Sync + 'static + Debug {
     fn codec(&self) -> &dyn Codec;
-    fn write(&self) -> &AsyncMutex<dyn AsyncWrite + Send + 'static>;
+    fn write(&self) -> &AsyncMutex<dyn AsyncWriteFrame>;
     fn reqs(&self) -> Option<&RequestContext>;
     fn tx_drive(&self) -> &flume::Sender<InboundDriverDirective>;
     fn feature_flag(&self) -> Feature;
@@ -78,14 +78,14 @@ trait Connection: Send + Sync + 'static + Debug {
 impl<C, T, R> Connection for ConnectionImpl<C, T, R>
 where
     C: Codec,
-    T: AsyncWrite + Send + 'static,
+    T: AsyncWriteFrame,
     R: GetRequestContext,
 {
     fn codec(&self) -> &dyn Codec {
         &*self.codec
     }
 
-    fn write(&self) -> &AsyncMutex<dyn AsyncWrite + Send + 'static> {
+    fn write(&self) -> &AsyncMutex<dyn AsyncWriteFrame> {
         &self.write
     }
 
@@ -105,7 +105,7 @@ where
 impl<C, T, R> ConnectionImpl<C, T, R>
 where
     C: Codec,
-    T: AsyncWrite + Send + 'static,
+    T: AsyncWriteFrame,
     R: GetRequestContext,
 {
     fn with_req(self) -> ConnectionImpl<C, T, RequestContext> {
@@ -581,7 +581,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
     /// Specify write frame to use
     pub fn with_write<Tw2>(self, write: Tw2) -> Builder<Tw2, Tr, C, E, R>
     where
-        Tw2: AsyncWrite + Send + 'static,
+        Tw2: AsyncWriteFrame,
     {
         Builder {
             codec: self.codec,
@@ -773,7 +773,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
 
 impl<Tw, Tr, C, E, R> Builder<Tw, Tr, Arc<C>, E, R>
 where
-    Tw: AsyncWrite + Send + 'static,
+    Tw: AsyncWriteFrame,
     Tr: AsyncReadFrame,
     C: Codec,
     E: InboundEventSubscriber,
@@ -1165,13 +1165,13 @@ mod inner {
     //! the handler.
 
     use capture_it::capture;
-    use futures_util::{future::FusedFuture, AsyncWrite, FutureExt};
+    use futures_util::{future::FusedFuture, FutureExt};
     use std::{future::poll_fn, num::NonZeroU64, sync::Arc};
 
     use crate::{
         codec::{self, Codec, InboundFrameType},
         rpc::{DeferredWrite, SendError},
-        transport::AsyncReadFrame,
+        transport::{AsyncReadFrame, AsyncWriteFrame},
     };
 
     use super::{
@@ -1183,7 +1183,7 @@ mod inner {
     impl<C, T, R> ConnectionImpl<C, T, R>
     where
         C: Codec,
-        T: AsyncWrite + Send + 'static,
+        T: AsyncWriteFrame,
         R: GetRequestContext,
     {
         pub(crate) async fn inbound_event_handler<Tr, E>(body: DriverBody<C, T, E, R, Tr>)
@@ -1213,7 +1213,7 @@ mod inner {
     impl<C, T, E, R, Tr> DriverBody<C, T, E, R, Tr>
     where
         C: Codec,
-        T: AsyncWrite + Send + 'static,
+        T: AsyncWriteFrame,
         E: InboundEventSubscriber,
         R: GetRequestContext,
         Tr: AsyncReadFrame,
@@ -1436,6 +1436,9 @@ mod inner {
 
         pub(crate) async fn __write_raw(&self, mut buf: &[u8]) -> std::io::Result<()> {
             pin!(self, write);
+
+            write.as_mut().begin_write_frame(buf.len())?;
+
             while !buf.is_empty() {
                 let nwrite = poll_fn(|cx| write.as_mut().poll_write(cx, buf)).await?;
                 buf = &buf[nwrite..];
