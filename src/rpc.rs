@@ -9,7 +9,6 @@
 
 use std::{
     fmt::Debug,
-    future::Future,
     num::NonZeroUsize,
     ops::Range,
     sync::{Arc, Weak},
@@ -801,7 +800,10 @@ where
     E: InboundEventSubscriber,
     R: GetRequestContext,
 {
-    pub fn build(self) -> Result<(Channel, impl Future), std::io::Error> {
+    /// Build the connection from provided parameters.
+    ///
+    /// To start the connection, you need to spawn the returned future to the executor.
+    pub fn build(self) -> (Channel, impl std::future::Future + Send + Sync) {
         let (tx_inb_drv, rx_inb_drv) = flume::unbounded();
         let (tx_in_msg, rx_in_msg) =
             if let Some(chan_cap) = self.cfg.inbound_channel_cap.map(|x| x.get()) {
@@ -828,9 +830,9 @@ where
             rx_drive: rx_inb_drv,
             tx_msg: tx_in_msg,
         });
-        conn = this;
 
-        Ok((Channel(Client(conn), rx_in_msg), fut_driver))
+        conn = this;
+        (Channel(Client(conn), rx_in_msg), fut_driver)
     }
 }
 
@@ -879,7 +881,7 @@ pub trait InboundEventSubscriber: Send + Sync + 'static {
 }
 
 /// Placeholder implementation of event listener.
-struct EmptyEventListener;
+pub struct EmptyEventListener;
 
 impl InboundEventSubscriber for EmptyEventListener {}
 
@@ -1221,22 +1223,7 @@ mod inner {
             Tr: AsyncReadFrame,
             E: InboundEventSubscriber,
         {
-            body.execute(|this, ev, param| {
-                let Some(reqs) = this.reqs.get_req_con() else {
-                    ev.on_inbound_error(InboundError::RedundantResponse(param.response));
-                    return;
-                };
-
-                let Some(req_id_hash) = NonZeroU64::new(param.req_id_hash) else {
-                    ev.on_inbound_error(InboundError::ResponseHashZero(param.response));
-                    return;
-                };
-
-                if let Err(msg) = reqs.route_response(req_id_hash, param.response) {
-                    ev.on_inbound_error(InboundError::ExpiredResponse(msg));
-                }
-            })
-            .await;
+            body.execute().await;
         }
     }
 
@@ -1248,10 +1235,7 @@ mod inner {
         R: GetRequestContext,
         Tr: AsyncReadFrame,
     {
-        async fn execute(
-            self,
-            fn_handle_response: impl Fn(&Arc<ConnectionImpl<C, T, R>>, &mut E, HandleResponseParam),
-        ) {
+        async fn execute(self) {
             let DriverBody { w_this, mut read, mut ev_subs, rx_drive: rx_msg, tx_msg } = self;
 
             use futures_util::future::Fuse;
@@ -1324,7 +1308,6 @@ mod inner {
                                 Self::on_read(
                                     &this,
                                     &mut ev_subs,
-                                    &fn_handle_response,
                                     bytes,
                                     &tx_msg
                                 )
@@ -1376,7 +1359,6 @@ mod inner {
         async fn on_read(
             this: &Arc<ConnectionImpl<C, T, R>>,
             ev_subs: &mut E,
-            fn_handle_response: &impl Fn(&Arc<ConnectionImpl<C, T, R>>, &mut E, HandleResponseParam),
             frame: bytes::Bytes,
             tx_msg: &flume::Sender<msg::RecvMsg>,
         ) {
@@ -1414,14 +1396,21 @@ mod inner {
                 }
 
                 InboundFrameType::Response { req_id, req_id_hash, is_error } => {
-                    fn_handle_response(
-                        this,
-                        ev_subs,
-                        HandleResponseParam {
-                            response: msg::Response { h, req_id, is_error },
-                            req_id_hash,
-                        },
-                    );
+                    let response = msg::Response { h, is_error, req_id };
+
+                    let Some(reqs) = this.reqs.get_req_con() else {
+                        ev_subs.on_inbound_error(InboundError::RedundantResponse(response));
+                        return;
+                    };
+
+                    let Some(req_id_hash) = NonZeroU64::new(req_id_hash) else {
+                        ev_subs.on_inbound_error(InboundError::ResponseHashZero(response));
+                        return;
+                    };
+
+                    if let Err(msg) = reqs.route_response(req_id_hash, response) {
+                        ev_subs.on_inbound_error(InboundError::ExpiredResponse(msg));
+                    }
                 }
             }
         }

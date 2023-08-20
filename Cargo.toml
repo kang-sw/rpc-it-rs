@@ -37,3 +37,6 @@ jsonrpc = ["dep:serde_json"]
 json-framing = ["dep:memchr"]
 delim-framing = ["dep:memchr"]
 in-memory = []
+
+[dev-dependencies]
+tokio = { version = "1.32.0", features = ["test-util", "tokio-macros", "full"] }

@@ -51,7 +51,7 @@ pub mod framing {
 }
 
 #[cfg(feature = "msgpack-rpc")]
-mod msgpack_rpc {
+pub mod msgpack_rpc {
     pub struct Codec {
         /// If specified, the codec will wrap the provided parameter to array automatically.
         /// Otherwise, the caller should wrap the parameter within array manually.
@@ -67,7 +67,7 @@ mod msgpack_rpc {
 }
 
 #[cfg(feature = "jsonrpc")]
-mod jsonrpc {
+pub mod jsonrpc {
     use serde_json::value::RawValue;
 
     use crate::codec::{self, InboundFrameType, ReqId, ReqIdRef};
