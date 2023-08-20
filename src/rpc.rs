@@ -180,9 +180,9 @@ enum DeferredWrite {
 /* ---------------------------------------------------------------------------------------------- */
 /// Bidirectional RPC handle. It can serve as both client and server.
 #[derive(Clone, Debug)]
-pub struct Channel(Client, flume::Receiver<msg::RecvMsg>);
+pub struct Transceiver(Client, flume::Receiver<msg::RecvMsg>);
 
-impl std::ops::Deref for Channel {
+impl std::ops::Deref for Transceiver {
     type Target = Client;
 
     fn deref(&self) -> &Self::Target {
@@ -190,7 +190,7 @@ impl std::ops::Deref for Channel {
     }
 }
 
-impl Channel {
+impl Transceiver {
     pub fn into_sender(self) -> Client {
         self.0
     }
@@ -212,6 +212,12 @@ impl Channel {
             flume::TryRecvError::Empty => TryRecvError::Empty,
             flume::TryRecvError::Disconnected => TryRecvError::Disconnected,
         })
+    }
+}
+
+impl From<Transceiver> for Client {
+    fn from(value: Transceiver) -> Self {
+        value.0
     }
 }
 
@@ -803,7 +809,7 @@ where
     /// Build the connection from provided parameters.
     ///
     /// To start the connection, you need to spawn the returned future to the executor.
-    pub fn build(self) -> (Channel, impl std::future::Future + Send + Sync) {
+    pub fn build(self) -> (Transceiver, impl std::future::Future<Output = ()> + Send) {
         let (tx_inb_drv, rx_inb_drv) = flume::unbounded();
         let (tx_in_msg, rx_in_msg) =
             if let Some(chan_cap) = self.cfg.inbound_channel_cap.map(|x| x.get()) {
@@ -832,7 +838,7 @@ where
         });
 
         conn = this;
-        (Channel(Client(conn), rx_in_msg), fut_driver)
+        (Transceiver(Client(conn), rx_in_msg), fut_driver)
     }
 }
 
@@ -1467,10 +1473,5 @@ mod inner {
         pub(crate) fn __is_disconnected(&self) -> bool {
             self.tx_drive().is_disconnected()
         }
-    }
-
-    struct HandleResponseParam {
-        response: msg::Response,
-        req_id_hash: u64,
     }
 }
