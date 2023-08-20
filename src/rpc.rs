@@ -16,7 +16,7 @@ use std::{
 
 use crate::{
     codec::{self, Codec, DecodeError, Framing, FramingError},
-    transport::{AsyncReadFrame, AsyncWriteFrame},
+    transport::{AsyncFrameRead, AsyncFrameWrite},
 };
 
 use async_lock::Mutex as AsyncMutex;
@@ -68,7 +68,7 @@ struct ConnectionImpl<C, T, R> {
 /// Wraps connection implementation with virtual dispatch.
 trait Connection: Send + Sync + 'static + Debug {
     fn codec(&self) -> &dyn Codec;
-    fn write(&self) -> &AsyncMutex<dyn AsyncWriteFrame>;
+    fn write(&self) -> &AsyncMutex<dyn AsyncFrameWrite>;
     fn reqs(&self) -> Option<&RequestContext>;
     fn tx_drive(&self) -> &flume::Sender<InboundDriverDirective>;
     fn feature_flag(&self) -> Feature;
@@ -77,14 +77,14 @@ trait Connection: Send + Sync + 'static + Debug {
 impl<C, T, R> Connection for ConnectionImpl<C, T, R>
 where
     C: Codec,
-    T: AsyncWriteFrame,
+    T: AsyncFrameWrite,
     R: GetRequestContext,
 {
     fn codec(&self) -> &dyn Codec {
         &*self.codec
     }
 
-    fn write(&self) -> &AsyncMutex<dyn AsyncWriteFrame> {
+    fn write(&self) -> &AsyncMutex<dyn AsyncFrameWrite> {
         &self.write
     }
 
@@ -104,7 +104,7 @@ where
 impl<C, T, R> ConnectionImpl<C, T, R>
 where
     C: Codec,
-    T: AsyncWriteFrame,
+    T: AsyncFrameWrite,
     R: GetRequestContext,
 {
     fn with_req(self) -> ConnectionImpl<C, T, RequestContext> {
@@ -272,7 +272,7 @@ impl Client {
         buf.prepare();
         let req_id_hint = req.next_req_id_base();
         let req_id_hash =
-            self.0.codec().encode_request(method, req_id_hint.get(), params, &mut buf.value)?;
+            self.0.codec().encode_request(method, req_id_hint, params, &mut buf.value)?;
 
         // Registering request always preceded than sending request. If request was not sent due to
         // I/O issue or cancellation, the request will be unregistered on the drop of the
@@ -586,7 +586,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
     /// Specify write frame to use
     pub fn with_write<Tw2>(self, write: Tw2) -> Builder<Tw2, Tr, C, E, R>
     where
-        Tw2: AsyncWriteFrame,
+        Tw2: AsyncFrameWrite,
     {
         Builder {
             codec: self.codec,
@@ -600,7 +600,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
 
     pub fn with_read<Tr2>(self, read: Tr2) -> Builder<Tw, Tr2, C, E, R>
     where
-        Tr2: AsyncReadFrame,
+        Tr2: AsyncFrameRead,
     {
         Builder {
             codec: self.codec,
@@ -638,7 +638,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
         read: Tr2,
         framing: F,
         default_readbuf_reserve: usize,
-    ) -> Builder<Tw, impl AsyncReadFrame, C, E, R>
+    ) -> Builder<Tw, impl AsyncFrameRead, C, E, R>
     where
         Tr2: AsyncRead + Send + Sync + 'static,
         F: Framing,
@@ -654,7 +654,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
             state_skip_reading: bool,
         }
 
-        impl<T, F> AsyncReadFrame for FramingReader<T, F>
+        impl<T, F> AsyncFrameRead for FramingReader<T, F>
         where
             T: AsyncRead + Sync + Send + 'static,
             F: Framing,
@@ -800,8 +800,8 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
 
 impl<Tw, Tr, C, E, R> Builder<Tw, Tr, Arc<C>, E, R>
 where
-    Tw: AsyncWriteFrame,
-    Tr: AsyncReadFrame,
+    Tw: AsyncFrameWrite,
+    Tr: AsyncFrameRead,
     C: Codec,
     E: InboundEventSubscriber,
     R: GetRequestContext,
@@ -1215,7 +1215,7 @@ mod inner {
     use crate::{
         codec::{self, Codec, InboundFrameType},
         rpc::{DeferredWrite, SendError},
-        transport::{AsyncReadFrame, AsyncWriteFrame},
+        transport::{AsyncFrameRead, AsyncFrameWrite},
     };
 
     use super::{
@@ -1227,12 +1227,12 @@ mod inner {
     impl<C, T, R> ConnectionImpl<C, T, R>
     where
         C: Codec,
-        T: AsyncWriteFrame,
+        T: AsyncFrameWrite,
         R: GetRequestContext,
     {
         pub(crate) async fn inbound_event_handler<Tr, E>(body: DriverBody<C, T, E, R, Tr>)
         where
-            Tr: AsyncReadFrame,
+            Tr: AsyncFrameRead,
             E: InboundEventSubscriber,
         {
             body.execute().await;
@@ -1242,10 +1242,10 @@ mod inner {
     impl<C, T, E, R, Tr> DriverBody<C, T, E, R, Tr>
     where
         C: Codec,
-        T: AsyncWriteFrame,
+        T: AsyncFrameWrite,
         E: InboundEventSubscriber,
         R: GetRequestContext,
-        Tr: AsyncReadFrame,
+        Tr: AsyncFrameRead,
     {
         async fn execute(self) {
             let DriverBody { w_this, mut read, mut ev_subs, rx_drive: rx_msg, tx_msg } = self;

@@ -52,6 +52,13 @@ pub mod framing {
 
 #[cfg(feature = "msgpack-rpc")]
 pub mod msgpack_rpc {
+    use std::{borrow::Cow, num::NonZeroU64};
+
+    use derive_setters::Setters;
+
+    use crate::codec::{self, DecodeError::InvalidFormat, EncodeError};
+
+    #[derive(Setters, Debug, Default)]
     pub struct Codec {
         /// If specified, the codec will wrap the provided parameter to array automatically.
         /// Otherwise, the caller should wrap the parameter within array manually.
@@ -64,10 +71,168 @@ pub mod msgpack_rpc {
         /// deserialized as an array.
         unwrap_mono_param_array: bool,
     }
+
+    impl codec::Codec for Codec {
+        fn encode_notify(
+            &self,
+            method: &str,
+            params: &dyn erased_serde::Serialize,
+            write: &mut Vec<u8>,
+        ) -> Result<(), EncodeError> {
+            use rmp::encode::*;
+            write_array_len(write, 3).unwrap();
+            write_uint(write, 2).unwrap();
+            write_str(write, method).unwrap();
+
+            if self.auto_param_array_wrap {
+                write_array_len(write, 1).unwrap();
+            }
+
+            params
+                .erased_serialize(&mut <dyn erased_serde::Serializer>::erase(
+                    &mut rmp_serde::Serializer::new(write).with_human_readable(),
+                ))
+                .unwrap();
+
+            Ok(())
+        }
+
+        fn encode_request(
+            &self,
+            method: &str,
+            req_id_hint: NonZeroU64,
+            params: &dyn erased_serde::Serialize,
+            write: &mut Vec<u8>,
+        ) -> Result<std::num::NonZeroU64, EncodeError> {
+            use rmp::encode::*;
+            write_array_len(write, 4).unwrap();
+            write_uint(write, 0).unwrap();
+
+            let as_32bit = req_id_hint.get() as u32;
+            write_u32(write, as_32bit).unwrap();
+            write_str(write, method).unwrap();
+
+            if self.auto_param_array_wrap {
+                write_array_len(write, 1).unwrap();
+            }
+
+            params
+                .erased_serialize(&mut <dyn erased_serde::Serializer>::erase(
+                    &mut rmp_serde::Serializer::new(write).with_human_readable(),
+                ))
+                .unwrap();
+
+            Ok((as_32bit as u64).try_into().unwrap())
+        }
+
+        fn encode_response(
+            &self,
+            req_id: codec::ReqIdRef,
+            encode_as_error: bool,
+            response: &dyn erased_serde::Serialize,
+            mut write: &mut Vec<u8>,
+        ) -> Result<(), EncodeError> {
+            use rmp::encode::*;
+            write_array_len(write, 4).unwrap();
+
+            write_uint(write, 1).unwrap();
+            write_u32(
+                write,
+                *req_id
+                    .as_u64()
+                    .ok_or(EncodeError::UnsupportedDataFormat("unsupported non-integer".into()))?
+                    as _,
+            )
+            .unwrap();
+
+            let serialize = |v: &mut Vec<u8>| {
+                response
+                    .erased_serialize(&mut <dyn erased_serde::Serializer>::erase(
+                        &mut rmp_serde::Serializer::new(v).with_human_readable(),
+                    ))
+                    .unwrap();
+            };
+
+            if encode_as_error {
+                serialize(write);
+                write_nil(write).unwrap();
+            } else {
+                write_nil(write).unwrap();
+                serialize(write);
+            }
+
+            Ok(())
+        }
+
+        fn encode_response_predefined(
+            &self,
+            req_id: codec::ReqIdRef,
+            response: &codec::PredefinedResponseError,
+            write: &mut Vec<u8>,
+        ) -> Result<(), EncodeError> {
+            self.encode_response(req_id, true, response, write)
+        }
+
+        fn decode_inbound(
+            &self,
+            data: &[u8],
+        ) -> Result<(codec::InboundFrameType, std::ops::Range<usize>), codec::DecodeError> {
+            use rmp::decode::*;
+            let mut data_read = data;
+            let rd = &mut data_read;
+
+            fn efmt<T>(e: impl Into<Cow<'static, str>>) -> impl FnOnce(T) -> codec::DecodeError {
+                |_| InvalidFormat(e.into())
+            }
+
+            let arr_len = read_array_len(rd).map_err(efmt("Non-msgpack array format"))?;
+            if arr_len < 2 || arr_len > 4 {
+                return Err(InvalidFormat(format!("Invalid array length {arr_len}").into()));
+            }
+
+            let msg_type: u32 = read_int(rd).map_err(efmt("Non-msgpack integer format"))?;
+            match (arr_len, msg_type) {
+                // Request
+                (4, 0) => {
+                    let req_id: u32 =
+                        read_int(rd).map_err(efmt("req_id: Non-msgpack integer format"))?;
+                    let method = read_str_from_slice(rd);
+                    // TODO: wip ..
+                }
+
+                // Response
+                (4, 1) => {}
+
+                // Notify
+                (3, 2) => {}
+
+                (al, msg) => {
+                    return Err(InvalidFormat(
+                        format!("Invalid message type {msg}, with {al} args").into(),
+                    ));
+                }
+            }
+
+            todo!()
+        }
+
+        fn decode_payload<'a>(
+            &self,
+            payload: &'a [u8],
+            decode: &mut dyn FnMut(
+                &mut dyn erased_serde::Deserializer<'a>,
+            ) -> Result<(), erased_serde::Error>,
+        ) -> Result<(), codec::DecodeError> {
+            let _ = (payload, decode);
+            Err(codec::DecodeError::UnsupportedFeature("This codec is write-only.".into()))
+        }
+    }
 }
 
 #[cfg(feature = "jsonrpc")]
 pub mod jsonrpc {
+    use std::num::NonZeroU64;
+
     use serde_json::value::RawValue;
 
     use crate::codec::{self, InboundFrameType, ReqId, ReqIdRef};
@@ -189,7 +354,7 @@ pub mod jsonrpc {
         fn encode_request(
             &self,
             method: &str,
-            req_id_hint: u64,
+            req_id_hint: NonZeroU64,
             params: &dyn erased_serde::Serialize,
             write: &mut Vec<u8>,
         ) -> Result<std::num::NonZeroU64, codec::EncodeError> {
@@ -197,13 +362,13 @@ pub mod jsonrpc {
                 write,
                 &SerMsg {
                     method: Some(method),
-                    id: Some(MsgId::Int(req_id_hint)),
+                    id: Some(MsgId::Int(req_id_hint.get())),
                     params: Some(params),
                     ..Default::default()
                 },
             )
             .map_err(|e| codec::EncodeError::SerializeError(e.into()))?;
-            Ok(req_id_hint.try_into().unwrap())
+            Ok(req_id_hint)
         }
 
         fn encode_response(
@@ -264,7 +429,7 @@ pub mod jsonrpc {
                 Some(MsgId::Int(x)) => Some(ReqId::U64(*x)),
                 Some(MsgId::Str(x)) => Some(ReqId::Bytes(data_range_of(x.as_bytes()))),
                 Some(MsgId::Null) => {
-                    return Err(codec::DecodeError::UnsupportedDataFormat(
+                    return Err(codec::DecodeError::InvalidFormat(
                         "Null request ID returned".into(),
                     ))
                 }
@@ -290,7 +455,7 @@ pub mod jsonrpc {
                 // ID, (Error | Result) => Response
                 (Some(_id), None, None, e, r) if e.is_some() ^ r.is_some() => {
                     let MsgId::Int(req_id) = f.id.unwrap() else {
-						return Err(codec::DecodeError::UnsupportedDataFormat(
+						return Err(codec::DecodeError::InvalidFormat(
 							"We don't use string request ID types.".into(),
 						))
 					};
@@ -306,7 +471,7 @@ pub mod jsonrpc {
                 }
 
                 _ => {
-                    return Err(codec::DecodeError::UnsupportedDataFormat(
+                    return Err(codec::DecodeError::InvalidFormat(
                         format!(
                             "Invalid json-rpc with fields: \
 							 [id?={},method?={},params?={},error?={},result?={}]",

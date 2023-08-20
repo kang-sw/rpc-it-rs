@@ -1,11 +1,17 @@
 #[cfg(feature = "tokio")]
-mod tokio_ {}
+mod tokio_ {
+    // TODO: Implement I/O on AsyncRead/AsyncWrite
+}
 
 #[cfg(feature = "tokio-tungstenite")]
-mod tokio_tungstenite_ {}
+mod tokio_tungstenite_ {
+    // TODO: Implement I/O on splitted streams
+}
 
 #[cfg(feature = "wasm-bindgen-ws")]
-mod wasm_websocket_ {}
+mod wasm_websocket_ {
+    // TODO: Implement I/O on splitted streams
+}
 
 #[cfg(feature = "in-memory")]
 pub use in_memory_::*;
@@ -22,7 +28,7 @@ mod in_memory_ {
     use futures_util::task::AtomicWaker;
     use parking_lot::Mutex;
 
-    use crate::transport::{AsyncReadFrame, AsyncWriteFrame};
+    use crate::transport::{AsyncFrameRead, AsyncFrameWrite};
 
     struct InMemoryInner {
         buffer: BytesMut,
@@ -49,7 +55,7 @@ mod in_memory_ {
         (InMemoryWriter(inner.clone()), InMemoryReader(inner.clone()))
     }
 
-    impl AsyncWriteFrame for InMemoryWriter {
+    impl AsyncFrameWrite for InMemoryWriter {
         fn poll_write(
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
@@ -88,7 +94,7 @@ mod in_memory_ {
         }
     }
 
-    impl AsyncReadFrame for InMemoryReader {
+    impl AsyncFrameRead for InMemoryReader {
         fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<Bytes>> {
             let mut inner = self.0.lock();
             if inner.chunks.is_empty() {

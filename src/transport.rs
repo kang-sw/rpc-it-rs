@@ -6,7 +6,7 @@ use std::{
 pub use bytes::Bytes;
 use futures_util::{AsyncWrite, Stream};
 
-pub trait AsyncWriteFrame: Send + 'static {
+pub trait AsyncFrameWrite: Send + 'static {
     /// Called before writing a frame. This can be used to deal with writing cancellation.
     fn begin_write_frame(self: Pin<&mut Self>, len: usize) -> std::io::Result<()> {
         let _ = (len,);
@@ -30,7 +30,7 @@ pub trait AsyncWriteFrame: Send + 'static {
 }
 
 /// Futures adaptor for [`AsyncWriteFrame`]
-impl<T> AsyncWriteFrame for T
+impl<T> AsyncFrameWrite for T
 where
     T: AsyncWrite + Send + 'static,
 {
@@ -51,11 +51,11 @@ where
     }
 }
 
-pub trait AsyncReadFrame: Send + Sync + 'static {
+pub trait AsyncFrameRead: Send + Sync + 'static {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<Bytes>>;
 }
 
-impl<T: Stream<Item = std::io::Result<Bytes>> + Sync + Send + 'static> AsyncReadFrame for T {
+impl<T: Stream<Item = std::io::Result<Bytes>> + Sync + Send + 'static> AsyncFrameRead for T {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<Bytes>> {
         self.poll_next(cx).map(|x| x.unwrap_or_else(|| Err(std::io::ErrorKind::BrokenPipe.into())))
     }

@@ -1,6 +1,6 @@
 [package]
 name = "rpc-it"
-version = "0.4.0"
+version = "0.4.0-alpha"
 edition = "2021"
 repository = "https://github.com/kang-sw/rpc-it-rs"
 authors = ["kang-sw <ki6080@gmail.com>"]
@@ -16,7 +16,7 @@ erased-serde = "0.3"
 async-lock = "2.7.0"
 bytes = "1.4.0"
 flume = "0.11"
-derive_setters = "0.1.6"
+derive_setters = { version = "0.1.6", optional = true }
 futures-util = { version = "0.3.28", features = ["io", "sink"] }
 capture-it = "0.4.3"
 bitflags = "2.4.0"
@@ -26,13 +26,15 @@ dashmap = "5.5.0"
 tokio = { version = "1.32.0", optional = true, features = ["io-util"] }
 memchr = { version = "2.5.0", optional = true }
 serde_json = { version = "1.0.105", optional = true, features = ["raw_value"] }
+rmp = { version = "0.8.12", optional = true }
+rmp-serde = { version = "1.1.2", optional = true }
 
 [features]
 default = ["in-memory", "delim-framing", "json-framing", "macros"]
 tokio = ["dep:tokio"]
 tokio-tungstenite = ["tokio"]
 wasm-bindgen-ws = []
-msgpack-rpc = []
+msgpack-rpc = ["dep:rmp", "dep:rmp-serde", "dep:derive_setters"]
 jsonrpc = ["dep:serde_json"]
 json-framing = ["dep:memchr"]
 delim-framing = ["dep:memchr"]

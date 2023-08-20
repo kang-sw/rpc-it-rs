@@ -100,6 +100,8 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
     /// It is best to the output hash be deterministic for input `req_id_hint`, but it is not
     /// required.
     ///
+    /// - `req_id_hint` is guaranteed to be odd number.
+    ///
     /// # Returns
     ///
     /// Should return for deterministic hash of the (internally generated) request ID.
@@ -108,7 +110,7 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
     fn encode_request(
         &self,
         method: &str,
-        req_id_hint: u64,
+        req_id_hint: NonZeroU64,
         params: &dyn Serialize,
         write: &mut Vec<u8>,
     ) -> Result<NonZeroU64, EncodeError> {
@@ -226,7 +228,7 @@ pub enum DecodeError {
     UnsupportedFeature(Cow<'static, str>),
 
     #[error("Unsupported data format: {0}")]
-    UnsupportedDataFormat(Cow<'static, str>),
+    InvalidFormat(Cow<'static, str>),
 
     #[error("Parsing error from decoder: {0}")]
     ParseFailed(#[from] erased_serde::Error),
