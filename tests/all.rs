@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use futures_util::join;
 use rpc_it::{kv_pairs, rpc::MessageMethodName, Message, RecvMsg};
 
@@ -22,7 +24,9 @@ async fn test_basic_io(server: rpc_it::Transceiver, client: rpc_it::Client) {
     };
 
     let task_client = async move {
-        for i in 0..4000 {
+        let start_at = Instant::now();
+        const N_CALLS: i32 = 40000;
+        for i in 0..N_CALLS {
             match i % 2 {
                 0 => {
                     // Verify 'Add' operation
@@ -42,7 +46,7 @@ async fn test_basic_io(server: rpc_it::Transceiver, client: rpc_it::Client) {
                         .parse::<i32>()
                         .expect("parsing retunred value failed");
 
-                    print!("{} + {} = {} ... \r", a, b, value);
+                    // print!("{} + {} = {} ... \r", a, b, value);
                     assert_eq!(value, a + b);
                 }
                 1 => {
@@ -59,8 +63,12 @@ async fn test_basic_io(server: rpc_it::Transceiver, client: rpc_it::Client) {
                 _ => unreachable!(),
             }
         }
-
         client.close();
+        println!(
+            "elapsed: {:?}, iter: {:?}",
+            start_at.elapsed(),
+            start_at.elapsed() / N_CALLS as u32
+        );
     };
 
     join!(task_server, task_client);
