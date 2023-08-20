@@ -30,6 +30,12 @@ pub extern crate serde;
 pub mod codec;
 pub mod rpc;
 
+pub use rpc::{
+    msg::{Notify, RecvMsg, Request, Response},
+    Builder, Channel, Client, Feature, InboundError, InboundEventSubscriber, Message, RecvError,
+    RequestContext, ResponseFuture, SendError, TryRecvError,
+};
+
 pub mod transport {
     pub use bytes::Bytes;
     pub use futures_util::{AsyncRead, AsyncWrite, Stream};

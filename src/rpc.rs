@@ -24,7 +24,7 @@ use async_lock::Mutex as AsyncMutex;
 use bitflags::bitflags;
 use bytes::{Bytes, BytesMut};
 use futures_util::{AsyncRead, AsyncWrite, Stream};
-use req::RequestContext;
+pub use req::RequestContext;
 pub use req::ResponseFuture;
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -343,6 +343,8 @@ mod req {
     use futures_util::task::AtomicWaker;
     use parking_lot::Mutex;
 
+    use crate::RecvError;
+
     use super::{msg, Connection};
 
     /// RPC request context. Stores request ID and response receiver context.
@@ -397,6 +399,15 @@ mod req {
 
             Ok(())
         }
+
+        /// Wake up all waiters. This is to abort all pending response futures that are waiting on
+        /// closed connections. This doesn't do more than that, as the request context itself can
+        /// be shared among multiple connections.
+        pub(super) fn wake_up_all(&self) {
+            for x in self.waiters.iter() {
+                x.waker.wake();
+            }
+        }
     }
 
     /// When dropped, the response handler will be unregistered from the queue.
@@ -415,7 +426,7 @@ mod req {
     }
 
     impl<'a> std::future::Future for ResponseFuture<'a> {
-        type Output = msg::Response;
+        type Output = Result<msg::Response, RecvError>;
 
         fn poll(
             mut self: std::pin::Pin<&mut Self>,
@@ -423,26 +434,28 @@ mod req {
         ) -> std::task::Poll<Self::Output> {
             use ResponseFutureInner::*;
 
-            macro_rules! get_conn {
-                ($conn:expr, $hash:expr) => {
-                    $conn
-                        .reqs()
-                        .unwrap()
-                        .waiters
-                        .get($hash)
-                        .expect("Request lifetime is bound to response future")
-                };
-            }
-
             match &mut self.0 {
                 Waiting(conn, hash) => {
-                    let elem = get_conn!(conn, hash);
-                    let mut value = elem.value.lock();
-                    if let Some(value) = value.take() {
+                    if conn.__is_disconnected() {
+                        // Let the 'drop' trait erase the request from the queue.
+                        return Poll::Ready(Err(RecvError::Disconnected));
+                    }
+
+                    let mut value = None;
+                    conn.reqs().unwrap().waiters.remove_if(&hash, |_, elem| {
+                        if let Some(v) = elem.value.lock().take() {
+                            value = Some(v);
+                            true
+                        } else {
+                            elem.waker.register(cx.waker());
+                            false
+                        }
+                    });
+
+                    if let Some(value) = value {
                         self.0 = Finished;
-                        return Poll::Ready(value);
+                        return Poll::Ready(Ok(value));
                     } else {
-                        elem.waker.register(cx.waker());
                         return Poll::Pending;
                     }
                 }
@@ -462,10 +475,10 @@ mod req {
         fn drop(&mut self) {
             let Self::Waiting(conn, hash)  = self else { return };
             let reqs = conn.reqs().unwrap();
-
-            // TODO: Unregister the request
-
-            todo!()
+            assert!(
+                reqs.waiters.remove(&hash).is_some(),
+                "Request lifespan must be bound to this future."
+            );
         }
     }
 }
@@ -518,7 +531,6 @@ impl From<flume::RecvError> for RecvError {
 /*                                             BUILDER                                            */
 /* ---------------------------------------------------------------------------------------------- */
 
-// TODO: Request Builder
 //  - Create async worker task to handle receive
 pub struct Builder<Tw, Tr, C, E, R> {
     codec: C,
@@ -983,8 +995,6 @@ pub mod msg {
     }
 
     impl Request {
-        // TODO: send response
-
         /// Response with given value. If the value is `Err`, the response will be sent as error
         #[doc(hidden)]
         pub async fn response_with_reuse<T: serde::Serialize>(
@@ -1018,9 +1028,9 @@ pub mod msg {
         pub async fn error_internal(
             self,
             errc: i32,
-            detail: Option<String>,
+            detail: impl Into<Option<String>>,
         ) -> Result<(), super::SendError> {
-            let err = if let Some(detail) = detail {
+            let err = if let Some(detail) = detail.into() {
                 PredefinedResponseError::InternalDetailed(errc, detail)
             } else {
                 PredefinedResponseError::Internal(errc)
@@ -1166,7 +1176,7 @@ mod inner {
 
     use super::{
         msg, ConnectionImpl, DriverBody, Feature, GetRequestContext, InboundBody,
-        InboundDriverDirective, InboundError, InboundEventSubscriber, MessageReqId, RequestContext,
+        InboundDriverDirective, InboundError, InboundEventSubscriber, MessageReqId,
     };
 
     /// Request-acceting version of connection driver
@@ -1330,6 +1340,19 @@ mod inner {
                 drop(read); // Just explicitly drop the read stream
                 ev_subs.on_close(true, Ok(())); // We're closing this
             }
+
+            // Let all pending requests to be cancelled.
+            'cancel: {
+                let Some(this) = w_this.upgrade() else { break 'cancel };
+                let Some(reqs) = this.reqs.get_req_con() else { break 'cancel };
+
+                // Let the handle recognized as 'disconnected'
+                drop(fut_drive_msg);
+                drop(rx_msg);
+
+                // Wake up all pending responses
+                reqs.wake_up_all();
+            }
         }
 
         async fn on_read(
@@ -1429,6 +1452,10 @@ mod inner {
         pub(crate) async fn __close(&self) -> std::io::Result<()> {
             pin!(self, write);
             poll_fn(|cx| write.as_mut().poll_close(cx)).await
+        }
+
+        pub(crate) fn __is_disconnected(&self) -> bool {
+            self.tx_drive().is_disconnected()
         }
     }
 
