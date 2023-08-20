@@ -68,10 +68,9 @@ mod msgpack_rpc {
 
 #[cfg(feature = "jsonrpc")]
 mod jsonrpc {
-    use serde::de::DeserializeSeed;
     use serde_json::value::RawValue;
 
-    use crate::codec::{self, ReqId, ReqIdRef};
+    use crate::codec::{self, InboundFrameType, ReqId, ReqIdRef};
 
     #[derive(Debug, Default)]
     pub struct Codec {}
@@ -98,10 +97,17 @@ mod jsonrpc {
         params: Option<&'a T>,
 
         #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<&'a T>,
+        error: Option<SerErrObj<'a, T>>,
 
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<&'a T>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct SerErrObj<'a, T: serde::Serialize + ?Sized> {
+        code: i64,
+        message: &'a str,
+        data: &'a T,
     }
 
     impl<'a, T: serde::Serialize + ?Sized> Default for SerMsg<'a, T> {
@@ -146,7 +152,8 @@ mod jsonrpc {
 
     #[derive(Default, serde::Deserialize)]
     struct DeMsgFrame<'a> {
-        jsonrpc: JsonRpcTag,
+        #[serde(rename = "jsonrpc")]
+        _jsonrpc: JsonRpcTag,
 
         #[serde(borrow, default)]
         method: Option<&'a str>,
@@ -206,10 +213,28 @@ mod jsonrpc {
             response: &dyn erased_serde::Serialize,
             write: &mut Vec<u8>,
         ) -> Result<(), codec::EncodeError> {
-            let _ = (req_id, response, encode_as_error, write);
-            Err(codec::EncodeError::UnsupportedFeature(
-                "Response is not supported by this codec".into(),
-            ))
+            serde_json::to_writer(
+                write,
+                &SerMsg {
+                    id: Some(match req_id {
+                        ReqIdRef::U64(value) => MsgId::Int(value),
+                        ReqIdRef::Bytes(value) => {
+                            std::str::from_utf8(value).map_or(MsgId::Null, MsgId::Str)
+                        }
+                    }),
+                    error: {
+                        (encode_as_error == true).then_some(SerErrObj {
+                            code: -1,
+                            message: "Error from 'rpc_it::codecs::jsonrpc'",
+                            data: response,
+                        })
+                    },
+                    result: (encode_as_error == false).then_some(response),
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| codec::EncodeError::SerializeError(e.into()))?;
+            Ok(())
         }
 
         fn encode_response_predefined(
@@ -218,15 +243,83 @@ mod jsonrpc {
             response: &codec::PredefinedResponseError,
             write: &mut Vec<u8>,
         ) -> Result<(), codec::EncodeError> {
+            // TODO: New type for predefined response error?
             self.encode_response(req_id, true, response, write)
         }
 
         fn decode_inbound(
             &self,
             data: &[u8],
-        ) -> Result<(codec::InboundFrameType, std::ops::Range<usize>), codec::DecodeError> {
-            let _ = data;
-            Err(codec::DecodeError::UnsupportedFeature("This codec is write-only.".into()))
+        ) -> Result<(InboundFrameType, std::ops::Range<usize>), codec::DecodeError> {
+            let f = serde_json::from_slice::<DeMsgFrame>(data)
+                .map_err(|e| codec::DecodeError::Other(e.into()))?;
+
+            let data_range_of = |x: &[u8]| {
+                let offset = x.as_ptr() as usize - data.as_ptr() as usize;
+                offset..offset + x.len()
+            };
+
+            let method_range = f.method.map(|x| data_range_of(x.as_bytes()));
+            let req_id = match &f.id {
+                Some(MsgId::Int(x)) => Some(ReqId::U64(*x)),
+                Some(MsgId::Str(x)) => Some(ReqId::Bytes(data_range_of(x.as_bytes()))),
+                Some(MsgId::Null) => {
+                    return Err(codec::DecodeError::UnsupportedDataFormat(
+                        "Null request ID returned".into(),
+                    ))
+                }
+                None => None,
+            };
+
+            Ok(match (&f.id, f.method, f.params, f.error, f.result) {
+                // ID, Method, (Params) => Request
+                (Some(_id), Some(_), payload, None, None) => (
+                    InboundFrameType::Request {
+                        method: method_range.unwrap(),
+                        req_id: req_id.unwrap(),
+                    },
+                    payload.map(|value| data_range_of(value.get().as_bytes())).unwrap_or(0..0),
+                ),
+
+                // Method, (Params) => Notify
+                (None, Some(_), payload, None, None) => (
+                    InboundFrameType::Notify { method: method_range.unwrap() },
+                    payload.map(|value| data_range_of(value.get().as_bytes())).unwrap_or(0..0),
+                ),
+
+                // ID, (Error | Result) => Response
+                (Some(_id), None, None, e, r) if e.is_some() ^ r.is_some() => {
+                    let MsgId::Int(req_id) = f.id.unwrap() else {
+						return Err(codec::DecodeError::UnsupportedDataFormat(
+							"We don't use string request ID types.".into(),
+						))
+					};
+
+                    (
+                        InboundFrameType::Response {
+                            req_id: ReqId::U64(req_id),
+                            req_id_hash: req_id,
+                            is_error: e.is_some(),
+                        },
+                        data_range_of(e.or(r).unwrap().get().as_bytes()),
+                    )
+                }
+
+                _ => {
+                    return Err(codec::DecodeError::UnsupportedDataFormat(
+                        format!(
+                            "Invalid json-rpc with fields: \
+							 [id?={},method?={},params?={},error?={},result?={}]",
+                            f.id.is_some(),
+                            f.method.is_some(),
+                            f.params.is_some(),
+                            f.error.is_some(),
+                            f.result.is_some()
+                        )
+                        .into(),
+                    ))
+                }
+            })
         }
 
         fn decode_payload<'a>(
@@ -236,8 +329,10 @@ mod jsonrpc {
                 &mut dyn erased_serde::Deserializer<'a>,
             ) -> Result<(), erased_serde::Error>,
         ) -> Result<(), codec::DecodeError> {
-            let _ = (payload, decode);
-            Err(codec::DecodeError::UnsupportedFeature("This codec is write-only.".into()))
+            decode(&mut <dyn erased_serde::Deserializer>::erase(
+                &mut serde_json::Deserializer::from_slice(payload),
+            ))?;
+            Ok(())
         }
     }
 }

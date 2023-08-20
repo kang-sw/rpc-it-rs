@@ -216,7 +216,7 @@ pub enum EncodeError {
     #[error("Unsupported data format: {0}")]
     UnsupportedDataFormat(Cow<'static, str>),
 
-    #[error("Serialization failed.")]
+    #[error("Serialization failed: {0}")]
     SerializeError(Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
@@ -230,6 +230,9 @@ pub enum DecodeError {
 
     #[error("Parsing error from decoder: {0}")]
     ParseFailed(#[from] erased_serde::Error),
+
+    #[error("Other error reported from decoder: {0}")]
+    Other(#[from] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 /// Inbound frame type parsed by codec.
