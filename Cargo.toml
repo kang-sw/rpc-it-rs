@@ -25,14 +25,15 @@ parking_lot = "0.12.1"
 dashmap = "5.5.0"
 tokio = { version = "1.32.0", optional = true, features = ["io-util"] }
 memchr = { version = "2.5.0", optional = true }
+serde_json = { version = "1.0.105", optional = true, features = ["raw_value"] }
 
 [features]
-default = ["in-memory", "delim-framing"]
+default = ["in-memory", "delim-framing", "json-framing"]
 tokio = ["dep:tokio"]
 tokio-tungstenite = ["tokio"]
 wasm-bindgen-ws = []
 msgpack-rpc = []
-jsonrpc = []
-json-framing = []
+jsonrpc = ["dep:serde_json"]
+json-framing = ["dep:memchr"]
 delim-framing = ["dep:memchr"]
 in-memory = []

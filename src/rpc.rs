@@ -17,13 +17,13 @@ use std::{
 
 use crate::{
     codec::{self, Codec, DecodeError, Framing, FramingError},
-    transport::{AsyncReadFrame, AsyncWriteFrame, InboundMessage},
+    transport::{AsyncReadFrame, AsyncWriteFrame},
 };
 
 use async_lock::Mutex as AsyncMutex;
 use bitflags::bitflags;
 use bytes::{Bytes, BytesMut};
-use futures_util::{AsyncRead, Stream};
+use futures_util::AsyncRead;
 pub use req::RequestContext;
 pub use req::ResponseFuture;
 
@@ -919,7 +919,7 @@ pub trait Message {
 }
 
 pub trait MessageReqId: Message {
-    fn req_id(&self) -> &[u8];
+    fn req_id(&self) -> codec::ReqIdRef;
 }
 
 pub trait MessageMethodName: Message {
@@ -943,7 +943,7 @@ pub mod msg {
     use enum_as_inner::EnumAsInner;
 
     use crate::{
-        codec::{DecodeError, PredefinedResponseError},
+        codec::{DecodeError, PredefinedResponseError, ReqId, ReqIdRef},
         rpc::MessageReqId,
     };
 
@@ -984,8 +984,8 @@ pub mod msg {
     macro_rules! impl_req_id {
         ($t:ty) => {
             impl super::MessageReqId for $t {
-                fn req_id(&self) -> &[u8] {
-                    &self.h.buffer[self.req_id.clone()]
+                fn req_id(&self) -> ReqIdRef {
+                    self.req_id.to_ref(&self.h.buffer)
                 }
             }
         };
@@ -996,7 +996,7 @@ pub mod msg {
     pub struct RequestInner {
         pub(super) h: super::InboundBody,
         pub(super) method: Range<usize>,
-        pub(super) req_id: Range<usize>,
+        pub(super) req_id: ReqId,
     }
 
     impl_message!(RequestInner);
@@ -1017,6 +1017,14 @@ pub mod msg {
     }
 
     impl Request {
+        pub async fn response<T: serde::Serialize>(
+            self,
+            value: Result<&T, &T>,
+        ) -> Result<(), super::SendError> {
+            let mut buf = Default::default();
+            self.response_with_reuse(&mut buf, value).await
+        }
+
         /// Response with given value. If the value is `Err`, the response will be sent as error
         #[doc(hidden)]
         pub async fn response_with_reuse<T: serde::Serialize>(
@@ -1144,7 +1152,7 @@ pub mod msg {
     #[derive(Debug)]
     pub struct Response {
         pub(super) h: super::InboundBody,
-        pub(super) req_id: Range<usize>,
+        pub(super) req_id: ReqId,
 
         /// Should we interpret the payload as error object?
         pub(super) is_error: bool,

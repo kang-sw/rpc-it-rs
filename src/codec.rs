@@ -8,6 +8,7 @@ use std::{
     ops::Range,
 };
 
+use enum_as_inner::EnumAsInner;
 use erased_serde::{Deserializer, Serialize};
 
 /// Splits data stream into frames. For example, for implmenting JSON-RPC over TCP,
@@ -51,11 +52,25 @@ pub enum FramingError {
     Recoverable(usize),
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum RequestIdType {
-    U64,
-    Bytes,
-    Utf8String,
+#[derive(Debug, Clone, EnumAsInner)]
+pub enum ReqId {
+    U64(u64),
+    Bytes(Range<usize>),
+}
+
+#[derive(Debug, Clone, EnumAsInner)]
+pub enum ReqIdRef<'a> {
+    U64(u64),
+    Bytes(&'a [u8]),
+}
+
+impl ReqId {
+    pub fn to_ref<'a>(&self, buffer: &'a [u8]) -> ReqIdRef<'a> {
+        match self {
+            ReqId::U64(x) => ReqIdRef::U64(*x),
+            ReqId::Bytes(x) => ReqIdRef::Bytes(&buffer[x.clone()]),
+        }
+    }
 }
 
 /// Parses/Encodes data frame.
@@ -82,8 +97,8 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
     /// internally generated request ID. This generated ID will be fed to [`Codec::decode_inbound`]
     /// to match the response to the request.
     ///
-    /// The generated request ID doesn't need to be deterministic to the req_id_seqn, however, in
-    /// this case, the returned hash must not be duplicated on every function call.
+    /// It is best to the output hash be deterministic for input `req_id_hint`, but it is not
+    /// required.
     ///
     /// # Returns
     ///
@@ -109,7 +124,7 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
     /// - `write`: The writer to write the response to.
     fn encode_response(
         &self,
-        req_id: &[u8],
+        req_id: ReqIdRef,
         encode_as_error: bool,
         response: &dyn Serialize,
         write: &mut Vec<u8>,
@@ -121,7 +136,7 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
     /// Encodes predefined response error. See [`PredefinedResponseError`].
     fn encode_response_predefined(
         &self,
-        req_id: &[u8],
+        req_id: ReqIdRef,
         response: &PredefinedResponseError,
         write: &mut Vec<u8>,
     ) -> Result<(), EncodeError> {
@@ -200,6 +215,9 @@ pub enum EncodeError {
 
     #[error("Unsupported data format: {0}")]
     UnsupportedDataFormat(Cow<'static, str>),
+
+    #[error("Serialization failed.")]
+    SerializeError(Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -218,6 +236,6 @@ pub enum DecodeError {
 #[derive(Debug)]
 pub enum InboundFrameType {
     Notify { method: Range<usize> },
-    Request { method: Range<usize>, req_id: Range<usize> },
-    Response { req_id: Range<usize>, req_id_hash: u64, is_error: bool },
+    Request { method: Range<usize>, req_id: ReqId },
+    Response { req_id: ReqId, req_id_hash: u64, is_error: bool },
 }
