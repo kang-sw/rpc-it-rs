@@ -54,7 +54,9 @@ pub mod framing {
 pub mod msgpack_rpc {
     use std::{borrow::Cow, num::NonZeroU64};
 
+    use ::bytes::Buf;
     use derive_setters::Setters;
+    use serde::Deserialize;
 
     use crate::codec::{self, DecodeError::InvalidFormat, EncodeError};
 
@@ -130,7 +132,7 @@ pub mod msgpack_rpc {
             req_id: codec::ReqIdRef,
             encode_as_error: bool,
             response: &dyn erased_serde::Serialize,
-            mut write: &mut Vec<u8>,
+            write: &mut Vec<u8>,
         ) -> Result<(), EncodeError> {
             use rmp::encode::*;
             write_array_len(write, 4).unwrap();
@@ -194,17 +196,33 @@ pub mod msgpack_rpc {
             match (arr_len, msg_type) {
                 // Request
                 (4, 0) => {
-                    let req_id: u32 =
-                        read_int(rd).map_err(efmt("req_id: Non-msgpack integer format"))?;
-                    let method = read_str_from_slice(rd);
-                    // TODO: wip ..
+                    let req_id = read_int::<u32, _>(rd).map_err(efmt("req_id error"))?;
+                    let method_len = read_str_len(rd).map_err(efmt("method error"))?;
+                    rd.advance(method_len as _);
+
+                    let cursor_begin = rd.as_ptr() as usize - data.as_ptr() as usize;
+                    serde::de::IgnoredAny::deserialize(&mut rmp_serde::Deserializer::new(rd))
+                        .map_err(efmt("parameter read failed"))?;
+                    let cursor_end = data_read.as_ptr() as usize - data.as_ptr() as usize;
+
+                    Ok((
+                        codec::InboundFrameType::Request {
+                            method: cursor_begin..cursor_end,
+                            req_id: codec::ReqId::U64(req_id as _),
+                        },
+                        cursor_begin..cursor_end,
+                    ))
                 }
 
                 // Response
-                (4, 1) => {}
+                (4, 1) => {
+                    todo!()
+                }
 
                 // Notify
-                (3, 2) => {}
+                (3, 2) => {
+                    todo!()
+                }
 
                 (al, msg) => {
                     return Err(InvalidFormat(
@@ -212,8 +230,6 @@ pub mod msgpack_rpc {
                     ));
                 }
             }
-
-            todo!()
         }
 
         fn decode_payload<'a>(
@@ -223,8 +239,7 @@ pub mod msgpack_rpc {
                 &mut dyn erased_serde::Deserializer<'a>,
             ) -> Result<(), erased_serde::Error>,
         ) -> Result<(), codec::DecodeError> {
-            let _ = (payload, decode);
-            Err(codec::DecodeError::UnsupportedFeature("This codec is write-only.".into()))
+            todo!()
         }
     }
 }
