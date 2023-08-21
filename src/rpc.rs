@@ -235,9 +235,8 @@ pub struct WriteBuffer {
 }
 
 impl WriteBuffer {
-    pub(crate) fn prepare(&mut self) -> &mut Self {
+    pub(crate) fn prepare(&mut self) {
         self.value.clear();
-        self
     }
 }
 
@@ -1216,7 +1215,7 @@ mod inner {
     use crate::{
         codec::{self, Codec, InboundFrameType},
         rpc::{DeferredWrite, SendError},
-        transport::{AsyncFrameRead, AsyncFrameWrite, BufReader},
+        transport::{AsyncFrameRead, AsyncFrameWrite, FrameReader},
     };
 
     use super::{
@@ -1458,7 +1457,7 @@ mod inner {
             pin!(self, write);
 
             write.as_mut().begin_write_frame(buf.len())?;
-            let mut reader = BufReader::new(buf);
+            let mut reader = FrameReader::new(buf);
 
             while !reader.is_empty() {
                 poll_fn(|cx| write.as_mut().poll_write(cx, &mut reader)).await?;

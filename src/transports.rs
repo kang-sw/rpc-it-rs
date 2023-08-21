@@ -5,7 +5,7 @@ mod tokio_io {
     use bytes::Buf;
     use tokio::io::ReadBuf;
 
-    use crate::transport::BufReader;
+    use crate::transport::FrameReader;
 
     pub struct TokioWriteFrameWrapper<T> {
         inner: T,
@@ -31,7 +31,7 @@ mod tokio_io {
         fn poll_write(
             mut self: std::pin::Pin<&mut Self>,
             cx: &mut std::task::Context<'_>,
-            buf: &mut BufReader,
+            buf: &mut FrameReader,
         ) -> std::task::Poll<std::io::Result<()>> {
             if let Poll::Ready(n) = Pin::new(&mut self.inner).poll_write(cx, buf.as_slice())? {
                 buf.advance(n);
@@ -117,7 +117,7 @@ mod in_memory_ {
     use futures_util::task::AtomicWaker;
     use parking_lot::Mutex;
 
-    use crate::transport::{AsyncFrameRead, AsyncFrameWrite, BufReader};
+    use crate::transport::{AsyncFrameRead, AsyncFrameWrite, FrameReader};
 
     struct InMemoryInner {
         chunks: VecDeque<Bytes>,
@@ -146,7 +146,7 @@ mod in_memory_ {
         fn poll_write(
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
-            buf: &mut BufReader,
+            buf: &mut FrameReader,
         ) -> Poll<std::io::Result<()>> {
             let mut inner = self.0.lock();
             if inner.reader_dropped {

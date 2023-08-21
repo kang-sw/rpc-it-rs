@@ -7,18 +7,18 @@ pub use bytes::Bytes;
 pub use bytes::{Buf, BytesMut};
 use futures_util::{AsyncWrite, Stream};
 
-pub struct BufReader<'a> {
+pub struct FrameReader<'a> {
     inner: &'a mut BytesMut,
     read_offset: usize,
 }
 
-impl AsRef<[u8]> for BufReader<'_> {
+impl AsRef<[u8]> for FrameReader<'_> {
     fn as_ref(&self) -> &[u8] {
         self.chunk()
     }
 }
 
-impl<'a> Buf for BufReader<'a> {
+impl<'a> Buf for FrameReader<'a> {
     fn remaining(&self) -> usize {
         self.inner.len() - self.read_offset
     }
@@ -33,7 +33,7 @@ impl<'a> Buf for BufReader<'a> {
     }
 }
 
-impl<'a> BufReader<'a> {
+impl<'a> FrameReader<'a> {
     pub fn new(inner: &'a mut BytesMut) -> Self {
         Self { inner, read_offset: 0 }
     }
@@ -50,6 +50,10 @@ impl<'a> BufReader<'a> {
         self.read_offset
     }
 
+    pub fn advance(&mut self, cnt: usize) {
+        <Self as Buf>::advance(self, cnt);
+    }
+
     pub fn is_empty(&self) -> bool {
         self.read_offset == self.inner.len()
     }
@@ -63,23 +67,11 @@ pub trait AsyncFrameWrite: Send + 'static {
     }
 
     /// Write a frame to the underlying transport. It can be called multiple times to write a single
-    /// frame. In this case, the input buffer is subspan of original frame, which was advanced by
-    /// the return byte count of the previous call.
-    ///
-    /// In this case, it is recommended to indicate buffer advance by return value, not by advancing
-    /// the buffer itself. (to reuse the buffer again later).
-    ///
-    /// Modify buffer(e.g. split off the buffer) when you have to toss the buffer to the channel,
-    /// sink, other thread, etc ... Otherwise, treat it just as a read-only buffer.
-    ///
-    /// # Returns
-    ///
-    /// Regardless of the buffer is modified or not, the return value should be the number of bytes
-    /// written to the underlying transport.
+    /// frame. In this case, the input buffer should be advanced accordingly.
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut BufReader,
+        buf: &mut FrameReader,
     ) -> Poll<std::io::Result<()>>;
 
     /// Flush the underlying transport.
@@ -97,7 +89,7 @@ where
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut BufReader,
+        buf: &mut FrameReader,
     ) -> Poll<std::io::Result<()>> {
         match self.poll_write(cx, buf.as_ref())? {
             Poll::Ready(x) => {
