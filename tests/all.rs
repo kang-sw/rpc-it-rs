@@ -57,7 +57,7 @@ async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Sender) {
         let start_at = Instant::now();
         const N_CALLS: i32 = 40000;
         for i in 0..N_CALLS {
-            match i % 3 {
+            match i % 2 {
                 0 => {
                     // Verify 'Add' operation
                     let a = i * 1000;

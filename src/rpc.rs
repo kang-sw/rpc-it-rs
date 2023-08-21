@@ -172,7 +172,7 @@ enum DeferredWrite {
     ErrorResponse(msg::RequestInner, codec::PredefinedResponseError),
 
     /// Send request was deferred. This is used for non-blocking response, etc.
-    Raw(bytes::Bytes),
+    Raw(bytes::BytesMut),
 }
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -231,7 +231,7 @@ pub struct Sender(Arc<dyn Connection>);
 /// multiple RPC request/notification.
 #[derive(Debug, Clone, Default)]
 pub struct WriteBuffer {
-    value: Vec<u8>,
+    value: BytesMut,
 }
 
 impl WriteBuffer {
@@ -280,7 +280,7 @@ impl Sender {
         let slot_id = req.register_req(req_id_hash);
 
         let fut = ResponseFuture::new(&*self.0, slot_id);
-        self.0.__write_raw(&buf.value).await?;
+        self.0.__write_raw(&mut buf.value).await?;
 
         Ok(fut)
     }
@@ -295,7 +295,7 @@ impl Sender {
         buf.prepare();
 
         self.0.codec().encode_notify(method, params, &mut buf.value)?;
-        self.0.__write_raw(&buf.value).await?;
+        self.0.__write_raw(&mut buf.value).await?;
 
         Ok(())
     }
@@ -307,7 +307,7 @@ impl Sender {
         method: &str,
         params: &T,
     ) -> Result<(), SendError> {
-        let mut vec = Vec::new();
+        let mut vec = Default::default();
         self.0.codec().encode_notify(method, params, &mut vec)?;
         self.0
             .tx_drive()
@@ -1053,7 +1053,7 @@ pub mod msg {
                 &mut buf.value,
             )?;
 
-            conn.__write_raw(&buf.value).await?;
+            conn.__write_raw(&mut buf.value).await?;
             Ok(())
         }
 
@@ -1208,6 +1208,7 @@ mod inner {
     //! Internal driver context. It receives the request from the connection, and dispatches it to
     //! the handler.
 
+    use bytes::BytesMut;
     use capture_it::capture;
     use futures_util::{future::FusedFuture, FutureExt};
     use std::{future::poll_fn, num::NonZeroU64, sync::Arc};
@@ -1215,7 +1216,7 @@ mod inner {
     use crate::{
         codec::{self, Codec, InboundFrameType},
         rpc::{DeferredWrite, SendError},
-        transport::{AsyncFrameRead, AsyncFrameWrite},
+        transport::{AsyncFrameRead, AsyncFrameWrite, BufReader},
     };
 
     use super::{
@@ -1274,9 +1275,9 @@ mod inner {
                                 return Err(e);
                             }
                         }
-                        DeferredWrite::Raw(msg) => {
+                        DeferredWrite::Raw(mut msg) => {
                             let Some(this) = w_this.upgrade() else { break };
-                            this.dyn_ref().__write_raw(&msg).await?;
+                            this.dyn_ref().__write_raw(&mut msg).await?;
                         }
                     }
                 }
@@ -1449,18 +1450,18 @@ mod inner {
             buf.prepare();
 
             self.codec().encode_response_predefined(recv.req_id(), error, &mut buf.value)?;
-            self.__write_raw(&buf.value).await?;
+            self.__write_raw(&mut buf.value).await?;
             Ok(())
         }
 
-        pub(crate) async fn __write_raw(&self, mut buf: &[u8]) -> std::io::Result<()> {
+        pub(crate) async fn __write_raw(&self, buf: &mut BytesMut) -> std::io::Result<()> {
             pin!(self, write);
 
             write.as_mut().begin_write_frame(buf.len())?;
+            let mut reader = BufReader::new(buf);
 
-            while !buf.is_empty() {
-                let nwrite = poll_fn(|cx| write.as_mut().poll_write(cx, buf)).await?;
-                buf = &buf[nwrite..];
+            while !reader.is_empty() {
+                poll_fn(|cx| write.as_mut().poll_write(cx, &mut reader)).await?;
             }
 
             Ok(())

@@ -2,7 +2,10 @@
 mod tokio_io {
     use std::{pin::Pin, task::Poll};
 
+    use bytes::Buf;
     use tokio::io::ReadBuf;
+
+    use crate::transport::BufReader;
 
     pub struct TokioWriteFrameWrapper<T> {
         inner: T,
@@ -28,9 +31,14 @@ mod tokio_io {
         fn poll_write(
             mut self: std::pin::Pin<&mut Self>,
             cx: &mut std::task::Context<'_>,
-            buf: &[u8],
-        ) -> std::task::Poll<std::io::Result<usize>> {
-            Pin::new(&mut self.inner).poll_write(cx, buf)
+            buf: &mut BufReader,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if let Poll::Ready(n) = Pin::new(&mut self.inner).poll_write(cx, buf.as_slice())? {
+                buf.advance(n);
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
         }
 
         fn poll_flush(
@@ -105,14 +113,13 @@ mod in_memory_ {
         task::{Context, Poll},
     };
 
-    use bytes::{Bytes, BytesMut};
+    use bytes::Bytes;
     use futures_util::task::AtomicWaker;
     use parking_lot::Mutex;
 
-    use crate::transport::{AsyncFrameRead, AsyncFrameWrite};
+    use crate::transport::{AsyncFrameRead, AsyncFrameWrite, BufReader};
 
     struct InMemoryInner {
-        buffer: BytesMut,
         chunks: VecDeque<Bytes>,
         waker: AtomicWaker,
 
@@ -125,7 +132,6 @@ mod in_memory_ {
 
     pub fn new_in_memory() -> (InMemoryWriter, InMemoryReader) {
         let inner = Arc::new(Mutex::new(InMemoryInner {
-            buffer: BytesMut::new(),
             chunks: VecDeque::new(),
             waker: AtomicWaker::new(),
 
@@ -140,20 +146,16 @@ mod in_memory_ {
         fn poll_write(
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
-            buf: &[u8],
-        ) -> Poll<std::io::Result<usize>> {
+            buf: &mut BufReader,
+        ) -> Poll<std::io::Result<()>> {
             let mut inner = self.0.lock();
             if inner.reader_dropped {
                 return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
             }
 
-            inner.buffer.extend_from_slice(buf);
-
-            let chunk = inner.buffer.split().freeze();
-            inner.chunks.push_back(chunk);
-
+            inner.chunks.push_back(buf.take().freeze());
             inner.waker.wake();
-            Poll::Ready(Ok(buf.len()))
+            Poll::Ready(Ok(()))
         }
 
         fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
