@@ -1,6 +1,87 @@
 #[cfg(feature = "tokio")]
-mod tokio_ {
-    // TODO: Implement I/O on AsyncRead/AsyncWrite
+mod tokio_io {
+    use std::{pin::Pin, task::Poll};
+
+    use tokio::io::ReadBuf;
+
+    pub struct TokioWriteFrameWrapper<T> {
+        inner: T,
+    }
+
+    pub trait ToWriteFrame<T> {
+        fn to_write_frame(self) -> TokioWriteFrameWrapper<T>;
+    }
+
+    impl<T> ToWriteFrame<T> for T
+    where
+        T: tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        fn to_write_frame(self) -> TokioWriteFrameWrapper<T> {
+            TokioWriteFrameWrapper { inner: self }
+        }
+    }
+
+    impl<T> crate::transport::AsyncFrameWrite for TokioWriteFrameWrapper<T>
+    where
+        T: tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_close(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
+    pub struct TokioAsyncReadWrapper<T> {
+        inner: T,
+    }
+
+    pub trait ToAsyncRead<T> {
+        fn to_async_read(self) -> TokioAsyncReadWrapper<T>;
+    }
+
+    impl<T> ToAsyncRead<T> for T
+    where
+        T: tokio::io::AsyncRead + Unpin + Send + 'static,
+    {
+        fn to_async_read(self) -> TokioAsyncReadWrapper<T> {
+            TokioAsyncReadWrapper { inner: self }
+        }
+    }
+
+    impl<T> futures_util::AsyncRead for TokioAsyncReadWrapper<T>
+    where
+        T: tokio::io::AsyncRead + Unpin + Send + 'static,
+    {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut [u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            let mut buf = ReadBuf::new(buf);
+            if Pin::new(&mut self.inner).poll_read(cx, &mut buf)?.is_pending() {
+                Poll::Pending
+            } else {
+                Poll::Ready(Ok(buf.filled().len()))
+            }
+        }
+    }
 }
 
 #[cfg(feature = "tokio-tungstenite")]
