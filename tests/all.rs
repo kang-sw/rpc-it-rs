@@ -4,6 +4,24 @@ use futures_util::join;
 use rpc_it::{codec::Codec, kv_pairs, rpc::MessageMethodName, Message, RecvMsg};
 
 async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Sender) {
+    #[allow(unused)]
+    #[derive(serde::Deserialize, PartialEq, Eq, Debug)]
+    struct DropMeDe {
+        a: i32,
+        b: i32,
+        c: i32,
+        e: DropMeDeInner,
+    }
+
+    #[allow(unused)]
+    #[derive(serde::Deserialize, PartialEq, Eq, Debug)]
+    struct DropMeDeInner {
+        f: i32,
+        g: i32,
+        h: Vec<i32>,
+        k: [String; 2],
+    }
+
     let task_server = async move {
         while let Ok(msg) = server.recv().await {
             let RecvMsg::Request(req) = msg else { unreachable!() };
@@ -15,6 +33,20 @@ async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Sender) {
                 assert_eq!(method_name, format!("add-{a}-plus-{b}"));
                 req.response(Ok(a + b).as_ref()).await.expect("response failed");
             } else if method_name.starts_with("drop-me") {
+                assert_eq!(
+                    req.parse::<DropMeDe>().expect("parse failed"),
+                    DropMeDe {
+                        a: 1,
+                        b: 3,
+                        c: 4,
+                        e: DropMeDeInner {
+                            f: 5,
+                            g: 6,
+                            h: vec![7, 8, 9],
+                            k: ["alpha".into(), "beta".into()]
+                        },
+                    }
+                );
                 drop(req);
             } else {
             }
@@ -25,7 +57,7 @@ async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Sender) {
         let start_at = Instant::now();
         const N_CALLS: i32 = 40000;
         for i in 0..N_CALLS {
-            match i % 2 {
+            match i % 3 {
                 0 => {
                     // Verify 'Add' operation
                     let a = i * 1000;
@@ -49,8 +81,22 @@ async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Sender) {
                 }
                 1 => {
                     // Verify 'Dropped' error
+                    let ident_k = "k";
                     let req = client
-                        .request("drop-me", &kv_pairs!("a" = 1, "b" = 3, "c" = 4))
+                        .request(
+                            "drop-me",
+                            &kv_pairs!(
+                                "a" = 1,
+                                "b" = 3,
+                                "c" = 4,
+                                "e" = kv_pairs!(
+                                    "f" = 5,
+                                    "g" = 6,
+                                    "h" = [7, 8, 9],
+                                    ident_k = ["alpha", "beta"]
+                                )
+                            ),
+                        )
                         .await
                         .unwrap()
                         .await

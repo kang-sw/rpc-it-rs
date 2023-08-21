@@ -33,13 +33,8 @@ pub mod rpc;
 pub mod transport;
 pub mod transports;
 
-pub use rpc::{
-    msg::{Notify, RecvMsg, Request, Response},
-    Builder, Feature, InboundError, InboundEventSubscriber, Message, RecvError, RequestContext,
-    ResponseFuture, SendError, Sender, Transceiver, TryRecvError,
-};
-
-pub mod util {
+#[cfg(feature = "macros")]
+pub mod __util {
     use serde::ser::SerializeMap;
 
     pub fn iter_as_map<'a, I>(iter: I) -> impl serde::Serialize + 'a
@@ -76,6 +71,12 @@ pub mod util {
     }
 }
 
+pub use rpc::{
+    msg::{Notify, RecvMsg, Request, Response},
+    Builder, Feature, InboundError, InboundEventSubscriber, Message, RecvError, RequestContext,
+    ResponseFuture, SendError, Sender, Transceiver, TryRecvError,
+};
+
 /// Create a map from a list of key-value pairs.
 ///
 /// This is useful to quickly create a fixed-sized map for serialization.
@@ -83,7 +84,7 @@ pub mod util {
 #[macro_export]
 macro_rules! kv_pairs {
     ($($key:tt = $value:expr),*) => {
-        $crate::util::iter_as_map([$(
+        $crate::__util::iter_as_map([$(
             (&($key) as &dyn $crate::erased_serde::Serialize,
              &($value) as &dyn $crate::erased_serde::Serialize)
         ),*])
