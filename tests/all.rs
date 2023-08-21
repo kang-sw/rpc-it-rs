@@ -3,7 +3,7 @@ use std::time::Instant;
 use futures_util::join;
 use rpc_it::{codec::Codec, kv_pairs, rpc::MessageMethodName, Message, RecvMsg};
 
-async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Client) {
+async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Sender) {
     let task_server = async move {
         while let Ok(msg) = server.recv().await {
             let RecvMsg::Request(req) = msg else { unreachable!() };

@@ -35,8 +35,8 @@ pub mod transports;
 
 pub use rpc::{
     msg::{Notify, RecvMsg, Request, Response},
-    Builder, Client, Feature, InboundError, InboundEventSubscriber, Message, RecvError,
-    RequestContext, ResponseFuture, SendError, Transceiver, TryRecvError,
+    Builder, Feature, InboundError, InboundEventSubscriber, Message, RecvError, RequestContext,
+    ResponseFuture, SendError, Sender, Transceiver, TryRecvError,
 };
 
 pub mod util {

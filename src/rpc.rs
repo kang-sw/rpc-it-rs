@@ -180,10 +180,10 @@ enum DeferredWrite {
 /* ---------------------------------------------------------------------------------------------- */
 /// Bidirectional RPC handle. It can serve as both client and server.
 #[derive(Clone, Debug)]
-pub struct Transceiver(Client, flume::Receiver<msg::RecvMsg>);
+pub struct Transceiver(Sender, flume::Receiver<msg::RecvMsg>);
 
 impl std::ops::Deref for Transceiver {
-    type Target = Client;
+    type Target = Sender;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -191,11 +191,11 @@ impl std::ops::Deref for Transceiver {
 }
 
 impl Transceiver {
-    pub fn into_sender(self) -> Client {
+    pub fn into_sender(self) -> Sender {
         self.0
     }
 
-    pub fn clone_sender(&self) -> Client {
+    pub fn clone_sender(&self) -> Sender {
         self.0.clone()
     }
 
@@ -215,7 +215,7 @@ impl Transceiver {
     }
 }
 
-impl From<Transceiver> for Client {
+impl From<Transceiver> for Sender {
     fn from(value: Transceiver) -> Self {
         value.0
     }
@@ -223,7 +223,7 @@ impl From<Transceiver> for Client {
 
 /// Send-only handle. This holds strong reference to the connection.
 #[derive(Clone, Debug)]
-pub struct Client(Arc<dyn Connection>);
+pub struct Sender(Arc<dyn Connection>);
 
 /// Reused buffer over multiple RPC request/responses
 ///
@@ -241,7 +241,7 @@ impl WriteBuffer {
     }
 }
 
-impl Client {
+impl Sender {
     pub async fn request<'a, T: serde::Serialize>(
         &'a self,
         method: &str,
@@ -839,7 +839,7 @@ where
         });
 
         conn = this;
-        (Transceiver(Client(conn), rx_in_msg), fut_driver)
+        (Transceiver(Sender(conn), rx_in_msg), fut_driver)
     }
 }
 
