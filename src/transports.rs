@@ -91,16 +91,6 @@ mod tokio_io {
     }
 }
 
-#[cfg(feature = "tokio-tungstenite")]
-mod tokio_tungstenite_ {
-    // TODO: Implement I/O on splitted streams
-}
-
-#[cfg(feature = "wasm-bindgen-ws")]
-mod wasm_websocket_ {
-    // TODO: Implement I/O on splitted streams
-}
-
 #[cfg(feature = "in-memory")]
 pub use in_memory_::*;
 #[cfg(feature = "in-memory")]

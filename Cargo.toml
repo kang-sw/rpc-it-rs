@@ -32,8 +32,6 @@ rmp-serde = { version = "1.1.2", optional = true }
 [features]
 default = ["in-memory", "delim-framing", "json-framing", "macros"]
 tokio = ["dep:tokio"]
-tokio-tungstenite = ["tokio"]
-wasm-bindgen-ws = []
 msgpack-rpc = ["dep:rmp", "dep:rmp-serde", "dep:derive_setters"]
 jsonrpc = ["dep:serde_json"]
 json-framing = ["dep:memchr"]
