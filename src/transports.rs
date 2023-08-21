@@ -2,7 +2,6 @@
 mod tokio_io {
     use std::{pin::Pin, task::Poll};
 
-    use bytes::Buf;
     use tokio::io::ReadBuf;
 
     use crate::transport::FrameReader;
