@@ -61,17 +61,18 @@ pub mod msgpack_rpc {
     use crate::codec::{self, DecodeError::InvalidFormat, EncodeError};
 
     #[derive(Setters, Debug, Default)]
+    #[setters(prefix = "with_")]
     pub struct Codec {
         /// If specified, the codec will wrap the provided parameter to array automatically.
         /// Otherwise, the caller should wrap the parameter within array manually.
         ///
         /// > [Reference](https://github.com/msgpack-rpc/msgpack-rpc/blob/master/spec.md#params)
-        auto_param_array_wrap: bool,
+        auto_wrapping: bool,
 
         /// On deseiralization, if the parameter is an array with single element, the codec will
         /// unwrap the array and use the element as the parameter. Otherwise, the parameter will be
         /// deserialized as an array.
-        unwrap_mono_param_array: bool,
+        unwrap_mono_param: bool,
     }
 
     impl codec::Codec for Codec {
@@ -86,7 +87,7 @@ pub mod msgpack_rpc {
             write_uint(write, 2).unwrap();
             write_str(write, method).unwrap();
 
-            if self.auto_param_array_wrap {
+            if self.auto_wrapping {
                 write_array_len(write, 1).unwrap();
             }
 
@@ -114,7 +115,7 @@ pub mod msgpack_rpc {
             write_u32(write, as_32bit).unwrap();
             write_str(write, method).unwrap();
 
-            if self.auto_param_array_wrap {
+            if self.auto_wrapping {
                 write_array_len(write, 1).unwrap();
             }
 
@@ -180,48 +181,86 @@ pub mod msgpack_rpc {
             data: &[u8],
         ) -> Result<(codec::InboundFrameType, std::ops::Range<usize>), codec::DecodeError> {
             use rmp::decode::*;
-            let mut data_read = data;
-            let rd = &mut data_read;
+            let mut rd = data;
 
             fn efmt<T>(e: impl Into<Cow<'static, str>>) -> impl FnOnce(T) -> codec::DecodeError {
                 |_| InvalidFormat(e.into())
             }
 
-            let arr_len = read_array_len(rd).map_err(efmt("Non-msgpack array format"))?;
+            let arr_len = read_array_len(&mut rd).map_err(efmt("Non-msgpack array format"))?;
             if arr_len < 2 || arr_len > 4 {
                 return Err(InvalidFormat(format!("Invalid array length {arr_len}").into()));
             }
 
-            let msg_type: u32 = read_int(rd).map_err(efmt("Non-msgpack integer format"))?;
+            let offset_of = |s: &[u8]| s.as_ptr() as usize - data.as_ptr() as usize;
+            let skip_single_value = |rd: &mut &[u8]| {
+                serde::de::IgnoredAny::deserialize(&mut rmp_serde::Deserializer::new(rd))
+                    .map_err(efmt("parameter read failed"))
+            };
+
+            let msg_type: u32 = read_int(&mut rd).map_err(efmt("Non-msgpack integer format"))?;
             match (arr_len, msg_type) {
                 // Request
-                (4, 0) => {
-                    let req_id = read_int::<u32, _>(rd).map_err(efmt("req_id error"))?;
-                    let method_len = read_str_len(rd).map_err(efmt("method error"))?;
+                (4, 0) | (3, 2) => {
+                    let mut req_id = None;
+                    if msg_type == 0 {
+                        req_id = Some(read_int::<u32, _>(&mut rd).map_err(efmt("rd: not req_id"))?);
+                    };
+
+                    let method_len = read_str_len(&mut rd).map_err(efmt("rd: not method"))?;
+                    let method_offset = offset_of(rd);
                     rd.advance(method_len as _);
 
-                    let cursor_begin = rd.as_ptr() as usize - data.as_ptr() as usize;
-                    serde::de::IgnoredAny::deserialize(&mut rmp_serde::Deserializer::new(rd))
-                        .map_err(efmt("parameter read failed"))?;
-                    let cursor_end = data_read.as_ptr() as usize - data.as_ptr() as usize;
+                    // Now we're reading the payload ..
+                    if self.unwrap_mono_param {
+                        if 1 == read_array_len(&mut rd.clone())
+                            .map_err(efmt("rd: non-array param"))?
+                        {
+                            // Advance the cursor by array marker, to unwrap payload.
+                            read_array_len(&mut rd).ok();
+                        }
+                    }
+
+                    let (obj_begin, _, obj_end) =
+                        (offset_of(rd), skip_single_value(&mut rd)?, offset_of(rd));
 
                     Ok((
-                        codec::InboundFrameType::Request {
-                            method: cursor_begin..cursor_end,
-                            req_id: codec::ReqId::U64(req_id as _),
+                        if let Some(req_id) = req_id {
+                            codec::InboundFrameType::Request {
+                                method: method_offset..method_offset + method_len as usize,
+                                req_id: codec::ReqId::U64(req_id as _),
+                            }
+                        } else {
+                            codec::InboundFrameType::Notify {
+                                method: method_offset..method_offset + method_len as usize,
+                            }
                         },
-                        cursor_begin..cursor_end,
+                        obj_begin..obj_end,
                     ))
                 }
 
                 // Response
                 (4, 1) => {
-                    todo!()
-                }
+                    let req_id = read_int::<u32, _>(&mut rd).map_err(efmt("req_id error"))?;
+                    let is_error = if read_nil(&mut (rd.clone())).is_ok() {
+                        // Error was nil, so it's a success response.
+                        rd = &rd[1..];
+                        false
+                    } else {
+                        true
+                    };
 
-                // Notify
-                (3, 2) => {
-                    todo!()
+                    let (obj_begin, _, obj_end) =
+                        (offset_of(rd), skip_single_value(&mut rd)?, offset_of(rd));
+
+                    Ok((
+                        codec::InboundFrameType::Response {
+                            req_id: codec::ReqId::U64(req_id as _),
+                            req_id_hash: req_id as _,
+                            is_error,
+                        },
+                        obj_begin..obj_end,
+                    ))
                 }
 
                 (al, msg) => {
@@ -239,7 +278,10 @@ pub mod msgpack_rpc {
                 &mut dyn erased_serde::Deserializer<'a>,
             ) -> Result<(), erased_serde::Error>,
         ) -> Result<(), codec::DecodeError> {
-            todo!()
+            decode(&mut <dyn erased_serde::Deserializer>::erase(
+                &mut rmp_serde::Deserializer::new(payload),
+            ))?;
+            Ok(())
         }
     }
 }
@@ -373,17 +415,20 @@ pub mod jsonrpc {
             params: &dyn erased_serde::Serialize,
             write: &mut Vec<u8>,
         ) -> Result<std::num::NonZeroU64, codec::EncodeError> {
+            // Make sure the request ID rotate within 53 bits. (JS's max safe integer)
+            let req_id = req_id_hint.get() & ((1 << 53) - 1);
+
             serde_json::to_writer(
                 write,
                 &SerMsg {
                     method: Some(method),
-                    id: Some(MsgId::Int(req_id_hint.get())),
+                    id: Some(MsgId::Int(req_id)),
                     params: Some(params),
                     ..Default::default()
                 },
             )
             .map_err(|e| codec::EncodeError::SerializeError(e.into()))?;
-            Ok(req_id_hint)
+            Ok(req_id.try_into().unwrap())
         }
 
         fn encode_response(

@@ -1,16 +1,14 @@
 use std::time::Instant;
 
 use futures_util::join;
-use rpc_it::{kv_pairs, rpc::MessageMethodName, Message, RecvMsg};
+use rpc_it::{codec::Codec, kv_pairs, rpc::MessageMethodName, Message, RecvMsg};
 
-async fn test_basic_io(server: rpc_it::Transceiver, client: rpc_it::Client) {
+async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Client) {
     let task_server = async move {
         while let Ok(msg) = server.recv().await {
             let RecvMsg::Request(req) = msg else { unreachable!() };
 
             let method_name = req.method().expect("method name is invalid utf-8");
-            // println!("receving request: {}", method_name);
-
             if method_name.starts_with("add-") {
                 let [a, b] = req.parse::<[i32; 2]>().expect("parse failed");
 
@@ -74,9 +72,7 @@ async fn test_basic_io(server: rpc_it::Transceiver, client: rpc_it::Client) {
     join!(task_server, task_client);
 }
 
-#[cfg(all(feature = "in-memory", feature = "jsonrpc"))]
-#[tokio::test]
-async fn test_basic_io_jsonrpc() {
+async fn basic_io_test<T: Codec>(create_codec: impl Fn() -> T) {
     let (tx_server, rx_client) = rpc_it::transports::new_in_memory();
     let (tx_client, rx_server) = rpc_it::transports::new_in_memory();
 
@@ -85,7 +81,7 @@ async fn test_basic_io_jsonrpc() {
         .with_write(tx_server)
         .with_event_listener(LoggingSubscriber("server"))
         .with_feature(rpc_it::Feature::ENABLE_AUTO_RESPONSE)
-        .with_codec(rpc_it::codecs::jsonrpc::Codec::default())
+        .with_codec(create_codec())
         .build();
 
     tokio::spawn(task);
@@ -94,12 +90,29 @@ async fn test_basic_io_jsonrpc() {
         .with_read(rx_client)
         .with_write(tx_client)
         .with_event_listener(LoggingSubscriber("client"))
-        .with_codec(rpc_it::codecs::jsonrpc::Codec::default())
+        .with_codec(create_codec())
         .build();
 
     tokio::spawn(task);
 
-    test_basic_io(server, client.into_sender()).await;
+    request_test(server, client.into_sender()).await;
+}
+
+#[cfg(all(feature = "in-memory", feature = "jsonrpc"))]
+#[tokio::test]
+async fn test_basic_io_jsonrpc() {
+    basic_io_test(rpc_it::codecs::jsonrpc::Codec::default).await;
+}
+
+#[cfg(all(feature = "in-memory", feature = "msgpack-rpc"))]
+#[tokio::test]
+async fn test_basic_io_msgpack_rpc() {
+    basic_io_test(|| {
+        rpc_it::codecs::msgpack_rpc::Codec::default()
+            .with_auto_wrapping(true)
+            .with_unwrap_mono_param(true)
+    })
+    .await;
 }
 
 struct LoggingSubscriber(&'static str);
@@ -109,6 +122,7 @@ impl rpc_it::InboundEventSubscriber for LoggingSubscriber {
     }
 
     fn on_inbound_error(&self, error: rpc_it::InboundError) {
+        println!("{}", std::backtrace::Backtrace::capture());
         println!("[{}] inbound error: {:?}", self.0, error);
     }
 }
