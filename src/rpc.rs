@@ -264,9 +264,7 @@ impl Sender {
         method: &str,
         params: &T,
     ) -> Result<ResponseFuture, SendError> {
-        let Some(req) = self.0.reqs() else {
-            return Err(SendError::RequestDisabled)
-        };
+        let Some(req) = self.0.reqs() else { return Err(SendError::RequestDisabled) };
 
         buf.prepare();
         let req_id_hint = req.next_req_id_base();
@@ -278,7 +276,7 @@ impl Sender {
         // `ResponseFuture`.
         let slot_id = req.register_req(req_id_hash);
 
-        let fut = ResponseFuture::new(&*self.0, slot_id);
+        let fut = ResponseFuture::new(&self.0, slot_id);
         self.0.__write_raw(&mut buf.value).await?;
 
         Ok(fut)
@@ -341,10 +339,16 @@ impl Sender {
 }
 
 mod req {
-    use std::{num::NonZeroU64, sync::atomic::AtomicU64, task::Poll};
+    use std::{
+        borrow::Cow,
+        mem::replace,
+        num::NonZeroU64,
+        sync::{atomic::AtomicU64, Arc},
+        task::Poll,
+    };
 
     use dashmap::DashMap;
-    use futures_util::task::AtomicWaker;
+    use futures_util::{task::AtomicWaker, FutureExt};
     use parking_lot::Mutex;
 
     use crate::RecvError;
@@ -418,14 +422,30 @@ mod req {
     #[must_use = "futures do nothing unless you `.await` or poll them"]
     pub struct ResponseFuture<'a>(ResponseFutureInner<'a>);
 
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    pub struct OwnedResponseFuture(ResponseFuture<'static>);
+
     enum ResponseFutureInner<'a> {
-        Waiting(&'a dyn Connection, NonZeroU64),
+        Waiting(Cow<'a, Arc<dyn Connection>>, NonZeroU64),
         Finished,
     }
 
     impl<'a> ResponseFuture<'a> {
-        pub(super) fn new(handle: &'a dyn Connection, slot_id: RequestSlotId) -> Self {
-            Self(ResponseFutureInner::Waiting(handle, slot_id.0))
+        pub(super) fn new(handle: &'a Arc<dyn Connection>, slot_id: RequestSlotId) -> Self {
+            Self(ResponseFutureInner::Waiting(Cow::Borrowed(handle), slot_id.0))
+        }
+
+        pub fn to_owned(mut self) -> OwnedResponseFuture {
+            let state = replace(&mut self.0, ResponseFutureInner::Finished);
+
+            match state {
+                ResponseFutureInner::Waiting(conn, id) => OwnedResponseFuture(ResponseFuture(
+                    ResponseFutureInner::Waiting(Cow::Owned(conn.into_owned()), id),
+                )),
+                ResponseFutureInner::Finished => {
+                    OwnedResponseFuture(ResponseFuture(ResponseFutureInner::Finished))
+                }
+            }
         }
     }
 
@@ -469,15 +489,33 @@ mod req {
         }
     }
 
+    impl std::future::Future for OwnedResponseFuture {
+        type Output = Result<msg::Response, RecvError>;
+
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            self.0.poll_unpin(cx)
+        }
+    }
+
     impl futures_util::future::FusedFuture for ResponseFuture<'_> {
         fn is_terminated(&self) -> bool {
             matches!(self.0, ResponseFutureInner::Finished)
         }
     }
 
+    impl futures_util::future::FusedFuture for OwnedResponseFuture {
+        fn is_terminated(&self) -> bool {
+            self.0.is_terminated()
+        }
+    }
+
     impl Drop for ResponseFuture<'_> {
         fn drop(&mut self) {
-            let ResponseFutureInner::Waiting(conn, hash)  = self.0 else { return };
+            let state = std::mem::replace(&mut self.0, ResponseFutureInner::Finished);
+            let ResponseFutureInner::Waiting(conn, hash) = state else { return };
             let reqs = conn.reqs().unwrap();
             assert!(
                 reqs.waiters.remove(&hash).is_some(),
