@@ -8,6 +8,9 @@ description = "RPC library for my own demand."
 license = "MIT"
 exclude = ["doc/"]
 
+[workspace]
+members = ["macros"]
+
 # --------------------------------------------- Deps --------------------------------------------- #
 [dependencies]
 thiserror = "1"
