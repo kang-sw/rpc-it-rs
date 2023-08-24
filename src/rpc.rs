@@ -240,9 +240,40 @@ impl WriteBuffer {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum CallError {
+    #[error("Failed to send request: {0}")]
+    SendFailed(#[from] SendError),
+
+    #[error("Failed to receive response: {0}")]
+    RecvFailed(#[from] RecvError),
+
+    #[error("Remote returned invalid return type: {0}")]
+    ParseFailed(DecodeError, msg::Response),
+
+    #[error("Remote returned error response")]
+    ErrorResponse(msg::Response),
+}
+
 impl Sender {
-    pub async fn request<'a, T: serde::Serialize>(
-        &'a self,
+    pub async fn call<R: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        params: &impl serde::Serialize,
+    ) -> Result<R, CallError> {
+        let msg = self.request(method, params).await?.await?;
+        if msg.is_error {
+            return Err(CallError::ErrorResponse(msg));
+        }
+
+        match msg.parse() {
+            Ok(value) => Ok(value),
+            Err(err) => Err(CallError::ParseFailed(err, msg)),
+        }
+    }
+
+    pub async fn request<T: serde::Serialize>(
+        &self,
         method: &str,
         params: &T,
     ) -> Result<ResponseFuture, SendError> {

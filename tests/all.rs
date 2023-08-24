@@ -68,7 +68,7 @@ async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Sender) {
                     let req = client.request(&method_name, &(a, b)).await;
                     // println!("req sent");
 
-                    let resp = req.expect("request failed").await;
+                    let resp = req.expect("request failed").to_owned().await;
                     // println!("response received");
 
                     let value = resp
@@ -83,7 +83,7 @@ async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Sender) {
                     // Verify 'Dropped' error
                     let ident_k = "k";
                     let req = client
-                        .request(
+                        .call::<()>(
                             "drop-me",
                             &kv_pairs!(
                                 "a" = 1,
@@ -97,12 +97,9 @@ async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Sender) {
                                 )
                             ),
                         )
-                        .await
-                        .unwrap()
-                        .await
-                        .unwrap();
+                        .await;
 
-                    assert!(req.is_error());
+                    assert!(req.is_err());
                 }
                 _ => unreachable!(),
             }

@@ -524,10 +524,10 @@ pub mod jsonrpc {
                 // ID, (Error | Result) => Response
                 (Some(_id), None, None, e, r) if e.is_some() ^ r.is_some() => {
                     let MsgId::Int(req_id) = f.id.unwrap() else {
-						return Err(codec::DecodeError::InvalidFormat(
-							"We don't use string request ID types.".into(),
-						))
-					};
+                        return Err(codec::DecodeError::InvalidFormat(
+                            "We don't use string request ID types.".into(),
+                        ));
+                    };
 
                     (
                         InboundFrameType::Response {
