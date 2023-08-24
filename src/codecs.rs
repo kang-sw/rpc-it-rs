@@ -43,11 +43,6 @@ pub mod framing {
     pub fn by_delim(delim: &[u8]) -> impl Framing {
         DelimeterFraming { cursor: 0, finder: memmem::Finder::new(delim).into_owned() }
     }
-
-    /// TODO: Implment framing by root object/array
-    #[cfg(feature = "json-framing")]
-    #[derive(Debug)]
-    struct JsonFraming {}
 }
 
 #[cfg(feature = "msgpack-rpc")]
@@ -477,7 +472,7 @@ pub mod jsonrpc {
             response: &codec::PredefinedResponseError,
             write: &mut BytesMut,
         ) -> Result<(), codec::EncodeError> {
-            // TODO: New type for predefined response error?
+            // XXX: New type for predefined response error?
             self.encode_response(req_id, true, response, write)
         }
 

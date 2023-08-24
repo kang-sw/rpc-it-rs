@@ -1,6 +1,6 @@
 [package]
 name = "rpc-it"
-version = "0.4.0-alpha.2"
+version = "0.4.0"
 edition = "2021"
 repository = "https://github.com/kang-sw/rpc-it-rs"
 authors = ["kang-sw <ki6080@gmail.com>"]
@@ -30,11 +30,10 @@ rmp = { version = "0.8.12", optional = true }
 rmp-serde = { version = "1.1.2", optional = true }
 
 [features]
-default = ["in-memory", "delim-framing", "json-framing", "macros"]
+default = ["in-memory", "delim-framing", "macros"]
 tokio = ["dep:tokio"]
 msgpack-rpc = ["dep:rmp", "dep:rmp-serde", "dep:derive_setters"]
 jsonrpc = ["dep:serde_json"]
-json-framing = ["dep:memchr"]
 delim-framing = ["dep:memchr"]
 in-memory = []
 macros = []
