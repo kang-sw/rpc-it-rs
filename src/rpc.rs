@@ -38,13 +38,13 @@ bitflags! {
         ///
         /// If you don't want any undesired response to be sent, or you're creating a client handle,
         /// which usually does not receive any request, you can disable this feature.
-        const ENABLE_AUTO_RESPONSE =            1 << 01;
+        const ENABLE_AUTO_RESPONSE =            1 << 1;
 
         /// Do not receive any request from the remote end.
-        const NO_RECEIVE_REQUEST =              1 << 02;
+        const NO_RECEIVE_REQUEST =              1 << 2;
 
         /// Do not receive any notification from the remote end.
-        const NO_RECEIVE_NOTIFY =               1 << 03;
+        const NO_RECEIVE_NOTIFY =               1 << 3;
     }
 }
 
@@ -131,7 +131,7 @@ pub trait GetRequestContext: std::fmt::Debug + Send + Sync + 'static {
 
 impl GetRequestContext for Arc<RequestContext> {
     fn get_req_con(&self) -> Option<&RequestContext> {
-        Some(&*self)
+        Some(self)
     }
 }
 
@@ -351,7 +351,7 @@ impl Sender {
         self.0.codec().encode_notify(method, params, &mut vec)?;
         self.0
             .tx_drive()
-            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(vec.into())))
+            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(vec)))
             .map_err(|_| SendError::Disconnected)
     }
 
@@ -435,7 +435,9 @@ mod req {
         #[must_use]
         pub(super) fn register_req(&self, req_id_hash: NonZeroU64) -> RequestSlotId {
             let slot = RequestSlot { waker: AtomicWaker::new(), value: Mutex::new(None) };
-            self.waiters.insert(req_id_hash, slot).map(|_| panic!("Request ID collision"));
+            if self.waiters.insert(req_id_hash, slot).is_some() {
+                panic!("Request ID collision")
+            }
             RequestSlotId(req_id_hash)
         }
 
@@ -514,7 +516,7 @@ mod req {
                     }
 
                     let mut value = None;
-                    conn.reqs().unwrap().waiters.remove_if(&hash, |_, elem| {
+                    conn.reqs().unwrap().waiters.remove_if(hash, |_, elem| {
                         if let Some(v) = elem.value.lock().take() {
                             value = Some(v);
                             true
@@ -526,9 +528,9 @@ mod req {
 
                     if let Some(value) = value {
                         self.0 = Finished;
-                        return Poll::Ready(Ok(value));
+                        Poll::Ready(Ok(value))
                     } else {
-                        return Poll::Pending;
+                        Poll::Pending
                     }
                 }
 
@@ -1439,7 +1441,6 @@ mod inner {
 
             // Just try to close the channel
             if !close_from_remote {
-                drop(read); // Just explicitly drop the read stream
                 ev_subs.on_close(true, Ok(())); // We're closing this
             }
 

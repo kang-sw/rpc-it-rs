@@ -48,8 +48,7 @@ async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Sender) {
                     }
                 );
                 drop(req);
-            } else {
-            }
+            } 
         }
     };
 
