@@ -75,10 +75,14 @@ pub trait AsyncFrameWrite: Send + 'static {
     ) -> Poll<std::io::Result<()>>;
 
     /// Flush the underlying transport.
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>>;
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
 
     /// Close the underlying transport.
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>>;
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
 }
 
 /// Futures adaptor for [`AsyncWriteFrame`]

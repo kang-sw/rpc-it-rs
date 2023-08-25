@@ -9,6 +9,8 @@ license = "MIT"
 exclude = ["doc/"]
 
 [dependencies]
+proc-macro2 = "1.0.66"
+syn = "2.0.29"
 
 
 [lib]
