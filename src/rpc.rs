@@ -655,7 +655,7 @@ impl Default for Builder<(), (), (), EmptyEventListener, ()> {
 }
 
 impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
-    /// Specify codec to use
+    /// Specify codec to use.
     pub fn with_codec<C1: Codec>(
         self,
         codec: impl Into<Arc<C1>>,
@@ -1191,6 +1191,40 @@ pub mod msg {
                     ))
                     .ok();
             }
+        }
+    }
+
+    /* -------------------------------------- Typed Request ------------------------------------- */
+    #[derive(Debug)]
+    pub struct TypedRequest<T, E>(Request, std::marker::PhantomData<(T, E)>);
+
+    impl<T, E> TypedRequest<T, E>
+    where
+        T: serde::Serialize,
+        E: serde::Serialize,
+    {
+        pub fn new(req: Request) -> Self {
+            Self(req, Default::default())
+        }
+
+        pub fn into_request(self) -> Request {
+            self.0
+        }
+
+        pub async fn ok(self, value: &T) -> Result<(), super::SendError> {
+            self.0.response(Ok(value)).await
+        }
+
+        pub async fn err(self, value: &E) -> Result<(), super::SendError> {
+            self.0.response(Err(value)).await
+        }
+    }
+
+    impl std::ops::Deref for TypedRequest<(), ()> {
+        type Target = Request;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
         }
     }
 
