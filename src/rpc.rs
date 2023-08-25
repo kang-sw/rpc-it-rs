@@ -246,6 +246,9 @@ pub enum CallError {
     SendFailed(#[from] SendError),
 
     #[error("Failed to receive response: {0}")]
+    FlushFailed(#[from] std::io::Error),
+
+    #[error("Failed to receive response: {0}")]
     RecvFailed(#[from] RecvError),
 
     #[error("Remote returned invalid return type: {0}")]
@@ -256,12 +259,18 @@ pub enum CallError {
 }
 
 impl Sender {
+    /// A shortcut for request, flush, and receive response.
     pub async fn call<R: serde::de::DeserializeOwned>(
         &self,
         method: &str,
         params: &impl serde::Serialize,
     ) -> Result<R, CallError> {
-        let msg = self.request(method, params).await?.await?;
+        let response = self.request(method, params).await?;
+
+        self.0.__flush().await?;
+
+        let msg = response.await?;
+
         if msg.is_error {
             return Err(CallError::ErrorResponse(msg));
         }
@@ -272,6 +281,8 @@ impl Sender {
         }
     }
 
+    /// Send request, and create response future which will be resolved when the response is
+    /// received.
     pub async fn request<T: serde::Serialize>(
         &self,
         method: &str,
@@ -280,6 +291,7 @@ impl Sender {
         self.request_with_reuse(&mut Default::default(), method, params).await
     }
 
+    /// Send notification message.
     pub async fn notify<T: serde::Serialize>(
         &self,
         method: &str,
@@ -356,6 +368,11 @@ impl Sender {
     /// true, as the close operation is lazy.
     pub fn close(self) -> bool {
         self.0.tx_drive().send(InboundDriverDirective::Close).is_ok()
+    }
+
+    /// Flush underlying write stream.
+    pub async fn flush(&self) -> std::io::Result<()> {
+        self.0.__flush().await
     }
 
     /// Is sending request enabled?
