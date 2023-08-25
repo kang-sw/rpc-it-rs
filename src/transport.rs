@@ -76,11 +76,13 @@ pub trait AsyncFrameWrite: Send + 'static {
 
     /// Flush the underlying transport.
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let _ = (cx,);
         Poll::Ready(Ok(()))
     }
 
     /// Close the underlying transport.
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let _ = (cx,);
         Poll::Ready(Ok(()))
     }
 }
