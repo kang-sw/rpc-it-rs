@@ -40,6 +40,8 @@ jsonrpc = ["dep:serde_json"]
 delim-framing = ["dep:memchr"]
 in-memory = []
 macros = []
+service = []
+service-macros = ["service"]
 
 [dev-dependencies]
 serde_json = "1.0.105"

@@ -33,6 +33,9 @@ pub mod rpc;
 pub mod transport;
 pub mod transports;
 
+#[cfg(feature = "service")]
+pub(crate) mod service;
+
 #[cfg(feature = "macros")]
 pub mod __util {
     use serde::ser::SerializeMap;

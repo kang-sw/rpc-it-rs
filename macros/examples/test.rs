@@ -1,5 +1,7 @@
 use rpc_it_macros::show_streams;
 
+fn main() {}
+
 // Example: Basic function
 #[show_streams]
 fn invoke1() {}
