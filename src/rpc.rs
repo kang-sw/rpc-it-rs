@@ -307,19 +307,7 @@ impl Sender {
         method: &str,
         params: &T,
     ) -> Result<ResponseFuture, SendError> {
-        let Some(req) = self.0.reqs() else { return Err(SendError::RequestDisabled) };
-
-        buf.prepare();
-        let req_id_hint = req.next_req_id_base();
-        let req_id_hash =
-            self.0.codec().encode_request(method, req_id_hint, params, &mut buf.value)?;
-
-        // Registering request always preceded than sending request. If request was not sent due to
-        // I/O issue or cancellation, the request will be unregistered on the drop of the
-        // `ResponseFuture`.
-        let slot_id = req.register_req(req_id_hash);
-
-        let fut = ResponseFuture::new(&self.0, slot_id);
+        let fut = self.prepare_request(buf, method, params)?;
         self.0.__write_raw(&mut buf.value).await?;
 
         Ok(fut)
@@ -340,8 +328,27 @@ impl Sender {
         Ok(())
     }
 
-    /// Send deferred notification. This method is non-blocking, as the message will be sent in the
-    /// background task.
+    /// Sends a request and returns a future that will be resolved when the response is received.
+    ///
+    /// This method is non-blocking, as the message writing will be deferred to the background
+    pub fn request_deferred<T: serde::Serialize>(
+        &self,
+        method: &str,
+        params: &T,
+    ) -> Result<ResponseFuture, SendError> {
+        let mut buffer = Default::default();
+        let fut = self.prepare_request(&mut buffer, method, params);
+
+        self.0
+            .tx_drive()
+            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(buffer.value)))
+            .map_err(|_| SendError::Disconnected)?;
+
+        fut
+    }
+
+    /// Send deferred notification. This method is non-blocking, as the message writing will be
+    /// deferred to the background driver worker.
     pub fn notify_deferred<T: serde::Serialize>(
         &self,
         method: &str,
@@ -353,6 +360,27 @@ impl Sender {
             .tx_drive()
             .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(vec)))
             .map_err(|_| SendError::Disconnected)
+    }
+
+    fn prepare_request<T: serde::Serialize>(
+        &self,
+        buf: &mut WriteBuffer,
+        method: &str,
+        params: &T,
+    ) -> Result<ResponseFuture, SendError> {
+        let Some(req) = self.0.reqs() else { return Err(SendError::RequestDisabled) };
+
+        buf.prepare();
+        let req_id_hint = req.next_req_id_base();
+        let req_id_hash =
+            self.0.codec().encode_request(method, req_id_hint, params, &mut buf.value)?;
+
+        // Registering request always preceded than sending request. If request was not sent due to
+        // I/O issue or cancellation, the request will be unregistered on the drop of the
+        // `ResponseFuture`.
+        let slot_id = req.register_req(req_id_hash);
+
+        Ok(ResponseFuture::new(&self.0, slot_id))
     }
 
     /// Check if the connection is disconnected.
@@ -559,6 +587,20 @@ mod req {
     impl futures_util::future::FusedFuture for OwnedResponseFuture {
         fn is_terminated(&self) -> bool {
             self.0.is_terminated()
+        }
+    }
+
+    impl std::ops::Deref for OwnedResponseFuture {
+        type Target = ResponseFuture<'static>;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl std::ops::DerefMut for OwnedResponseFuture {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.0
         }
     }
 
@@ -1039,11 +1081,11 @@ pub mod msg {
     use enum_as_inner::EnumAsInner;
 
     use crate::{
-        codec::{DecodeError, PredefinedResponseError, ReqId, ReqIdRef},
+        codec::{DecodeError, EncodeError, PredefinedResponseError, ReqId, ReqIdRef},
         rpc::MessageReqId,
     };
 
-    use super::{Connection, Message};
+    use super::{Connection, DeferredWrite, Message, WriteBuffer};
 
     macro_rules! impl_message {
         ($t:ty) => {
@@ -1124,22 +1166,11 @@ pub mod msg {
         /// Response with given value. If the value is `Err`, the response will be sent as error
         #[doc(hidden)]
         pub async fn response_with_reuse<T: serde::Serialize>(
-            mut self,
+            self,
             buf: &mut super::WriteBuffer,
             value: Result<&T, &T>,
         ) -> Result<(), super::SendError> {
-            let (inner, conn) = self.body.take().unwrap();
-            buf.prepare();
-
-            let encode_as_error = value.is_err();
-            let value = value.unwrap_or_else(|x| x);
-            inner.codec().encode_response(
-                inner.req_id(),
-                encode_as_error,
-                value,
-                &mut buf.value,
-            )?;
-
+            let conn = self.prepare_response(buf, value)?;
             conn.__write_raw(&mut buf.value).await?;
             Ok(())
         }
@@ -1177,6 +1208,86 @@ pub mod msg {
             let (inner, conn) = self.body.take().unwrap();
             conn.__send_err_predef(&mut Default::default(), &inner, &err).await
         }
+
+        /* ---------------------------------- Deferred Version ---------------------------------- */
+        #[doc(hidden)]
+        pub fn response_deferred_with_reuse<T: serde::Serialize>(
+            self,
+            buffer: &mut WriteBuffer,
+            value: Result<&T, &T>,
+        ) -> Result<(), super::SendError> {
+            buffer.prepare();
+            let conn = self.prepare_response(buffer, value).unwrap();
+
+            conn.tx_drive()
+                .send(super::InboundDriverDirective::DeferredWrite(
+                    DeferredWrite::Raw(buffer.value.split()).into(),
+                ))
+                .map_err(|_| super::SendError::Disconnected)
+        }
+
+        pub fn response_deferred<T: serde::Serialize>(
+            self,
+            value: Result<&T, &T>,
+        ) -> Result<(), super::SendError> {
+            self.response_deferred_with_reuse(&mut Default::default(), value)
+        }
+
+        pub fn abort_deferred(self) -> Result<(), super::SendError> {
+            self.error_predefined_deferred(PredefinedResponseError::Aborted)
+        }
+
+        pub fn error_parse_failed_deferred<T>(self) -> Result<(), super::SendError> {
+            let err = PredefinedResponseError::ParseFailed(std::any::type_name::<T>());
+            self.error_predefined_deferred(err)
+        }
+
+        pub fn error_internal_deferred(
+            self,
+            errc: i32,
+            detail: impl Into<Option<String>>,
+        ) -> Result<(), super::SendError> {
+            let err = if let Some(detail) = detail.into() {
+                PredefinedResponseError::InternalDetailed(errc, detail)
+            } else {
+                PredefinedResponseError::Internal(errc)
+            };
+
+            self.error_predefined_deferred(err)
+        }
+
+        fn error_predefined_deferred(
+            mut self,
+            err: super::codec::PredefinedResponseError,
+        ) -> Result<(), super::SendError> {
+            let (inner, conn) = self.body.take().unwrap();
+            conn.tx_drive()
+                .send(super::InboundDriverDirective::DeferredWrite(
+                    DeferredWrite::ErrorResponse(inner, err).into(),
+                ))
+                .map_err(|_| super::SendError::Disconnected)
+        }
+
+        /* ------------------------------------ Inner Methods ----------------------------------- */
+        fn prepare_response<T: serde::Serialize>(
+            mut self,
+            buf: &mut super::WriteBuffer,
+            value: Result<&T, &T>,
+        ) -> Result<Arc<dyn Connection>, EncodeError> {
+            let (inner, conn) = self.body.take().unwrap();
+            buf.prepare();
+
+            let encode_as_error = value.is_err();
+            let value = value.unwrap_or_else(|x| x);
+            inner.codec().encode_response(
+                inner.req_id(),
+                encode_as_error,
+                value,
+                &mut buf.value,
+            )?;
+
+            Ok(conn.clone())
+        }
     }
 
     impl Drop for Request {
@@ -1191,40 +1302,6 @@ pub mod msg {
                     ))
                     .ok();
             }
-        }
-    }
-
-    /* -------------------------------------- Typed Request ------------------------------------- */
-    #[derive(Debug)]
-    pub struct TypedRequest<T, E>(Request, std::marker::PhantomData<(T, E)>);
-
-    impl<T, E> TypedRequest<T, E>
-    where
-        T: serde::Serialize,
-        E: serde::Serialize,
-    {
-        pub fn new(req: Request) -> Self {
-            Self(req, Default::default())
-        }
-
-        pub fn into_request(self) -> Request {
-            self.0
-        }
-
-        pub async fn ok(self, value: &T) -> Result<(), super::SendError> {
-            self.0.response(Ok(value)).await
-        }
-
-        pub async fn err(self, value: &E) -> Result<(), super::SendError> {
-            self.0.response(Err(value)).await
-        }
-    }
-
-    impl std::ops::Deref for TypedRequest<(), ()> {
-        type Target = Request;
-
-        fn deref(&self) -> &Self::Target {
-            &self.0
         }
     }
 
