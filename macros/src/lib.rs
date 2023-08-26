@@ -116,7 +116,6 @@ pub fn service(
 
             use rpc_it::service as __sv;
             use rpc_it::service::macro_utils as __mc;
-            use std::sync as __sc;
             use rpc_it::serde;
 
             #vis trait Service: Send + Sync + 'static + Clone {
@@ -192,7 +191,7 @@ fn generate_loader_item(
     if let Some(receiver) = method.sig.receiver() {
         if receiver.reference.is_some() && receiver.colon_token.is_none() {
             if receiver.mutability.is_some() {
-                emit_error!(receiver, "Only `&self` or `self: Arc<Self>` is allowed");
+                emit_error!(receiver, "Only `&self` is allowed");
                 return None;
             }
 
