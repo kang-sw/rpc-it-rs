@@ -7,6 +7,8 @@ pub use bytes::Bytes;
 pub use bytes::{Buf, BytesMut};
 use futures_util::{AsyncWrite, Stream};
 
+/* --------------------------------------------- -- --------------------------------------------- */
+
 pub struct FrameReader<'a> {
     inner: &'a mut BytesMut,
     read_offset: usize,
@@ -43,7 +45,19 @@ impl<'a> FrameReader<'a> {
     }
 
     pub fn take(&mut self) -> BytesMut {
-        self.inner.split_off(self.read_offset)
+        let read_offset = std::mem::take(&mut self.read_offset);
+        if self.inner.capacity() > self.inner.len() * 2 {
+            // NOTE: In this case, assumes that the buffer is actively reused.
+            // - In this case, if the consumer wants to retrieve `Vec<u8>` from output BytesMut,
+            //   it may deeply clone the underlying buffer since the buffer ownership is currently
+            //   shared.
+            self.inner.split_off(read_offset)
+        } else {
+            // Buffer maybe automatically expanded over write operation, so we assume that the
+            // buffer won't be reused. In this case, we can just take the whole buffer, and take
+            // the ownership of the buffer to minimize copy.
+            std::mem::take(&mut self.inner)
+        }
     }
 
     pub fn advanced(&self) -> usize {
@@ -58,6 +72,8 @@ impl<'a> FrameReader<'a> {
         self.read_offset == self.inner.len()
     }
 }
+
+/* --------------------------------------------- -- --------------------------------------------- */
 
 pub trait AsyncFrameWrite: Send + 'static {
     /// Called before writing a frame. This can be used to deal with writing cancellation.
@@ -114,6 +130,8 @@ where
         self.poll_close(cx)
     }
 }
+
+/* --------------------------------------------- -- --------------------------------------------- */
 
 pub trait AsyncFrameRead: Send + Sync + 'static {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<Bytes>>;
