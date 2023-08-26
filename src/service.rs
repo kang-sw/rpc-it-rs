@@ -1,14 +1,12 @@
 use std::{collections::HashMap, error::Error, fmt::Debug, pin::Pin, task::Poll};
 
-use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    codec::DecodeError, rpc::MessageMethodName, Message, Notify, RecvMsg, Request, ResponseError,
-    TypedCallError,
+    codec::DecodeError, rpc::MessageMethodName, Message, Notify, RecvMsg, Request, TypedCallError,
 };
 
-pub struct ServiceBuilder<T>(Service<T>);
+pub struct ServiceBuilder<T = ExactMatchRouter>(Service<T>);
 
 pub struct Service<T> {
     router: T,
@@ -70,7 +68,8 @@ where
             + 'static
             + Send
             + Sync,
-    ) where
+    ) -> Result<(), RegisterError>
+    where
         Req: for<'de> Deserialize<'de>,
         Rep: Serialize,
         Err: Serialize,
@@ -89,7 +88,7 @@ where
             func(param, request)?;
             Ok(())
         })));
-        self.0.router.register(patterns, index).unwrap();
+        self.0.router.register(patterns, index)
     }
 
     pub fn register_notify_handler<Noti>(
@@ -99,7 +98,8 @@ where
             + 'static
             + Send
             + Sync,
-    ) where
+    ) -> Result<(), RegisterError>
+    where
         Noti: for<'de> Deserialize<'de>,
     {
         let index = self.0.methods.len();
@@ -114,7 +114,7 @@ where
             func(param)?;
             Ok(())
         })));
-        self.0.router.register(patterns, index).unwrap();
+        self.0.router.register(patterns, index)
     }
 
     pub fn build(mut self) -> Service<T> {

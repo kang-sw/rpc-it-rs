@@ -24,7 +24,8 @@ use syn::{
 ///   multiple routes for the same method.
 /// - `with_reuse`: Generate `*_with_reuse` series of methods. This is useful when you want to
 ///   optimize buffer allocation over multiple consecutive calls.
-///
+/// - `skip`: Do not generate any code from this. This is useful when you need just a trait method,
+///   which can be used another default implementations.
 ///
 #[proc_macro_error]
 #[proc_macro_attribute]
@@ -58,13 +59,14 @@ pub fn service(
 
     let module_name = format!("{}", ast.ident.to_string().to_case(Case::Snake));
     let module_name = Ident::new(&module_name, proc_macro2::Span::call_site());
+    let original_vis = &ast.vis;
     let vis = match ast.vis.clone() {
         vis @ (syn::Visibility::Public(_) | syn::Visibility::Restricted(_)) => vis,
         syn::Visibility::Inherited => syn::Visibility::Restricted(VisRestricted {
             pub_token: Token![pub](proc_macro2::Span::call_site()),
             paren_token: Default::default(),
             in_token: None,
-            path: Box::new(syn::parse2::<syn::Path>(quote!(self)).unwrap()),
+            path: Box::new(syn::parse2::<syn::Path>(quote!(super)).unwrap()),
         }),
     };
 
@@ -106,9 +108,11 @@ pub fn service(
     let trait_signatures = generate_trait_signatures(&functions, &attrs);
 
     let output = quote!(
-        #vis mod #module_name {
+        #original_vis mod #module_name {
             #![allow(unused_parens)]
             #![allow(unused)]
+
+            use super::*;
 
             use rpc_it::service as __sv;
             use rpc_it::service::macro_utils as __mc;
@@ -120,37 +124,35 @@ pub fn service(
                 #(#non_functions)*
             }
 
-            #vis struct Loader;
-            impl Loader {
-                #vis fn load_stateful<T:Service, R: __sv::Router>(
-                    __this: __sc::Arc<T>,
-                    __service: &mut __sv::ServiceBuilder<R>
-                ) -> __mc::RegisterResult {
-                    #(#statefuls;)*
-                    Ok(())
-                }
-
-                #vis fn load_stateless<'__l_a, T:Service>(
-                    __service: &'__l_a mut __sv::ServiceBuilder<__sv::ExactMatchRouter>
-                ) -> __mc::RegisterResult {
-                    #(#statelesses;)*
-                    Ok(())
-                }
-
-                #vis fn load<T:Service>(
-                    __this: T,
-                    __service: &mut __sv::ServiceBuilder<__sv::ExactMatchRouter>
-                ) -> __mc::RegisterResult {
-                    Self::load_stateful(__sc::Arc::new(__this), __service)
-                         .and_then(|_| Self::load_stateless::<T>(__service))
-                }
+            #vis fn load_service_stateful_only<T:Service, R: __sv::Router>(
+                __this: __sc::Arc<T>,
+                __service: &mut __sv::ServiceBuilder<R>
+            ) -> __mc::RegisterResult {
+                #(#statefuls;)*
+                Ok(())
             }
 
-            #vis struct Proxy<'a>(std::borrow::Cow<'a, rpc_it::Transceiver>);
+            #vis fn load_service_stateless_only<T:Service>(
+                __service: &mut __sv::ServiceBuilder<__sv::ExactMatchRouter>
+            ) -> __mc::RegisterResult {
+                #(#statelesses;)*
+                Ok(())
+            }
 
-            impl<'a> Proxy<'a> {
-                #vis fn new(inner: impl Into<std::borrow::Cow<'a, rpc_it::Transceiver>>) -> Self {
-                    Self(inner.into())
+            #vis fn load_service<T:Service>(
+                __this: __sc::Arc<T>,
+                __service: &mut __sv::ServiceBuilder<__sv::ExactMatchRouter>
+            ) -> __mc::RegisterResult {
+                load_service_stateful_only(__this, __service)?;
+                load_service_stateless_only::<T>(__service)?;
+                Ok(())
+            }
+
+            #vis struct Client(rpc_it::Sender);
+
+            impl Client {
+                #vis fn new(inner: rpc_it::Sender) -> Self {
+                    Self(inner)
                 }
 
                 #(#call_binds)*
@@ -239,10 +241,12 @@ fn generate_loader_item(
 
     Some(if is_stateless {
         let strm = if output.is_notify() {
-            quote!(__service.register_notify_handler(#route_paths, |__req: #tup_inputs| {
-                T::#ident(#unpack);
-                Ok(())
-            }))
+            quote!(
+                __service.register_notify_handler(#route_paths, |__req: #tup_inputs| {
+                    T::#ident(#unpack);
+                    Ok(())
+                })?
+            )
         } else {
             let treq = output.typed_req();
 
@@ -257,14 +261,14 @@ fn generate_loader_item(
                         let __result = T::#ident(#unpack);
                         #rval;
                         Ok(())
-                    })
+                    })?
                 )
             } else {
                 quote!(
                     __service.register_request_handler(#route_paths, |__req: #tup_inputs, __rep: #treq| {
                         T::#ident(#unpack, __rep);
                         Ok(())
-                    })
+                    })?
                 )
             }
         };
@@ -277,7 +281,7 @@ fn generate_loader_item(
                 __service.register_notify_handler(#route_paths, move |__req: #tup_inputs| {
                     T::#ident(#this_param, #unpack);
                     Ok(())
-                })
+                })?
             )
         } else {
             let treq = output.typed_req();
@@ -294,7 +298,7 @@ fn generate_loader_item(
                         let __result = T::#ident(#this_param, #unpack);
                         #rval;
                         Ok(())
-                    })
+                    })?
                 )
             } else {
                 quote!(
@@ -302,7 +306,7 @@ fn generate_loader_item(
                     __service.register_request_handler(#route_paths, move |__req: #tup_inputs, __rep: #treq| {
                         T::#ident(#this_param, #unpack, __rep);
                         Ok(())
-                    })
+                    })?
                 )
             }
         };
@@ -468,6 +472,7 @@ fn generate_trait_signatures(items: &[TraitItemFn], attrs: &[MethodAttrs]) -> To
 #[derive(Default)]
 struct MethodAttrs {
     async_fn: bool,
+    skip: bool,
     routes: Vec<syn::LitStr>,
     with_reuse: bool,
 }
@@ -480,6 +485,8 @@ fn method_attrs(method: &mut TraitItemFn) -> MethodAttrs {
             syn::Meta::Path(path) => {
                 if path.is_ident("async_fn") {
                     attrs.async_fn = true;
+                } else if path.is_ident("skip") {
+                    attrs.skip = true;
                 } else if path.is_ident("with_reuse") {
                     attrs.with_reuse = true;
                 } else {

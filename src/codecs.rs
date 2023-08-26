@@ -1,47 +1,47 @@
 pub mod framing {
-    use memchr::memmem;
-
-    use crate::codec::{self, Framing};
-
-    /// Splits a buffer into frames by byte sequence delimeter
     #[cfg(feature = "delim-framing")]
-    #[derive(Debug)]
-    struct DelimeterFraming {
-        finder: memmem::Finder<'static>,
-        cursor: usize,
-    }
+    pub mod delim {
+        use memchr::memmem;
 
-    #[cfg(feature = "delim-framing")]
-    impl Framing for DelimeterFraming {
-        fn try_framing(
-            &mut self,
-            buffer: &[u8],
-        ) -> Result<Option<codec::FramingAdvanceResult>, codec::FramingError> {
-            let buf = &buffer[self.cursor..];
-            if let Some(pos) = self.finder.find(buf) {
-                let valid_data_end = self.cursor + pos;
-                let next_frame_start = valid_data_end + self.finder.needle().len();
-                self.cursor = next_frame_start;
-                Ok(Some(codec::FramingAdvanceResult { valid_data_end, next_frame_start }))
-            } else {
-                // Remain some margin to not miss the delimeter
-                self.cursor += buffer.len().saturating_sub(self.finder.needle().len());
-                Ok(None)
+        use crate::codec::{self, Framing};
+
+        /// Splits a buffer into frames by byte sequence delimeter
+        #[derive(Debug)]
+        struct DelimeterFraming {
+            finder: memmem::Finder<'static>,
+            cursor: usize,
+        }
+
+        impl Framing for DelimeterFraming {
+            fn try_framing(
+                &mut self,
+                buffer: &[u8],
+            ) -> Result<Option<codec::FramingAdvanceResult>, codec::FramingError> {
+                let buf = &buffer[self.cursor..];
+                if let Some(pos) = self.finder.find(buf) {
+                    let valid_data_end = self.cursor + pos;
+                    let next_frame_start = valid_data_end + self.finder.needle().len();
+                    self.cursor = next_frame_start;
+                    Ok(Some(codec::FramingAdvanceResult { valid_data_end, next_frame_start }))
+                } else {
+                    // Remain some margin to not miss the delimeter
+                    self.cursor += buffer.len().saturating_sub(self.finder.needle().len());
+                    Ok(None)
+                }
+            }
+
+            fn advance(&mut self) {
+                self.cursor = 0;
+            }
+
+            fn next_buffer_size(&self) -> Option<std::num::NonZeroUsize> {
+                None
             }
         }
 
-        fn advance(&mut self) {
-            self.cursor = 0;
+        pub fn by_delim(delim: &[u8]) -> impl Framing {
+            DelimeterFraming { cursor: 0, finder: memmem::Finder::new(delim).into_owned() }
         }
-
-        fn next_buffer_size(&self) -> Option<std::num::NonZeroUsize> {
-            None
-        }
-    }
-
-    #[cfg(feature = "delim-framing")]
-    pub fn by_delim(delim: &[u8]) -> impl Framing {
-        DelimeterFraming { cursor: 0, finder: memmem::Finder::new(delim).into_owned() }
     }
 }
 
