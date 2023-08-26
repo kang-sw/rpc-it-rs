@@ -4,12 +4,20 @@ use rpc_it::{ExactMatchRouter, ServiceBuilder};
 use rpc_it_macros::service;
 
 #[service]
-pub trait MyService {
+pub(crate) trait MyService {
     fn add(a: i32, b: i32) -> i32 {
         a + b
     }
 
     fn div(a: i32, b: i32) -> Result<i32, String>;
+
+    fn neg(v: i32) -> i32 {
+        -v
+    }
+
+    fn notify_mono(a: i32) {}
+
+    fn notify_zero() {}
 
     #[routes = "hello"]
     #[routes = "hello2"]

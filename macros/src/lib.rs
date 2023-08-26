@@ -5,8 +5,8 @@ use proc_macro2::TokenStream;
 use proc_macro_error::{abort, emit_error, proc_macro_error};
 use quote::quote;
 use syn::{
-    spanned::Spanned, GenericArgument, Ident, ReturnType, Token, TraitItem, TraitItemFn, Type,
-    VisRestricted,
+    spanned::Spanned, FnArg, GenericArgument, Ident, Pat, ReturnType, Token, TraitItem,
+    TraitItemFn, Type, VisRestricted, Visibility,
 };
 
 /// Defines new RPC service
@@ -62,9 +62,6 @@ pub fn service(
     attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    println!("attr .. \"{}\"", attr.to_string());
-    println!("item .. \"{}\"", item.to_string());
-
     let tokens = proc_macro2::TokenStream::from(item);
 
     /*
@@ -114,11 +111,12 @@ pub fn service(
         }
     }
 
-    let signatures = ast.items.iter().filter_map(generate_call_stubs).collect::<Vec<_>>();
+    let signatures =
+        ast.items.iter().filter_map(|x| generate_call_stubs(x, &vis)).collect::<Vec<_>>();
     let trait_signatures = generate_trait_signatures(&ast.items);
 
     let output = quote!(
-        mod #module_name {
+        #vis mod #module_name {
             #![allow(unused_parens)]
 
             use rpc_it::service as __sv;
@@ -336,8 +334,95 @@ fn generate_loader_item(
     })
 }
 
-fn generate_call_stubs(item: &TraitItem) -> Option<TokenStream> {
-    None
+fn generate_call_stubs(item: &TraitItem, vis: &Visibility) -> Option<TokenStream> {
+    let TraitItem::Fn(method) = item else { return None };
+    let has_receiver = method.sig.receiver().is_some();
+
+    let inputs = method
+        .sig
+        .inputs
+        .iter()
+        .skip(if has_receiver { 1 } else { 0 })
+        .enumerate()
+        .map(|(index, arg)| {
+            let FnArg::Typed(pat) = arg else { abort!(arg, "unexpected argument type") };
+            if !matches!(*pat.pat, Pat::Ident(_)) {
+                abort!(arg, "Function argument pattern must be named identifier.");
+            }
+
+            // let mut pat = pat.clone();
+            // pat.pat = Pat::Ident(syn::PatIdent {
+            //     attrs: Vec::new(),
+            //     by_ref: None,
+            //     ident: Ident::new(&format!("__arg_{}", index), pat.span()),
+            //     mutability: None,
+            //     subpat: None,
+            // })
+            // .into();
+
+            pat
+        })
+        .collect::<Vec<_>>();
+
+    let input_ref_args = inputs.iter().map(|x| *x).cloned().map(|mut x| {
+        x.ty = match *x.ty {
+            ty @ Type::Reference(_) => ty.into(),
+            other => Type::Reference(syn::TypeReference {
+                and_token: Token![&](other.span()),
+                lifetime: None,
+                mutability: None,
+                elem: other.into(),
+            })
+            .into(),
+        };
+        x
+    });
+    let input_ref_arg_tokens = quote!(#(#input_ref_args),*);
+
+    let input_idents = inputs
+        .iter()
+        .map(|x| *x)
+        .cloned()
+        .map(|x| {
+            let syn::Pat::Ident(syn::PatIdent { ident, .. }) = &*x.pat else { unreachable!() };
+            ident.clone()
+        })
+        .collect::<Vec<_>>();
+
+    let method_ident = &method.sig.ident;
+    let method_str = method_ident.to_string();
+    let output = OutputType::new(&method.sig.output);
+
+    let new_ident_suffixed =
+        |sfx: &str| syn::Ident::new(&format!("{}_{}", method_ident, sfx), method_ident.span());
+    let method_ident_deferred = new_ident_suffixed("deferred");
+    let method_ident_with_reuse = new_ident_suffixed("with_reuse");
+    let method_ident_deferred_with_reuse = new_ident_suffixed("deferred_with_reuse");
+
+    Some(if output.is_notify() {
+        quote!(
+            #vis async fn #method_ident(&self, #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
+                self.0.notify(#method_str, &(#(#input_idents),*)).await
+            }
+
+
+            #vis async fn #method_ident_deferred(&self, #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
+                self.0.notify_deferred(#method_str, &(#(#input_idents),*))
+            }
+
+            #[doc(hidden)]
+            #vis async fn #method_ident_with_reuse(&self, buffer: &mut rpc_it::rpc::WriteBuffer,  #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
+                self.0.notify_with_reuse(buffer, #method_str, &(#(#input_idents),*)).await
+            }
+
+            #[doc(hidden)]
+            #vis async fn #method_ident_deferred_with_reuse(&self, buffer: &mut rpc_it::rpc::WriteBuffer,  #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
+                self.0.notify_deferred_with_reuse(buffer, #method_str, &(#(#input_idents),*))
+            }
+        )
+    } else {
+        quote!()
+    })
 }
 
 fn generate_trait_signatures(items: &[TraitItem]) -> TokenStream {
@@ -382,6 +467,11 @@ fn generate_trait_signatures(items: &[TraitItem]) -> TokenStream {
     });
 
     quote!(#(#tokens)*)
+}
+
+struct MethodAttrs {
+    is_pseudo_async: bool,
+    routes: Vec<syn::LitStr>,
 }
 
 fn is_method_pseudo_async(method: &TraitItemFn) -> bool {
