@@ -242,6 +242,11 @@ impl WriteBuffer {
     pub(crate) fn prepare(&mut self) {
         self.value.clear();
     }
+
+    pub fn reserve(&mut self, size: usize) {
+        self.value.clear();
+        self.value.reserve(size);
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
