@@ -8,7 +8,7 @@ use crate::{
 
 pub struct ServiceBuilder<T = ExactMatchRouter>(Service<T>);
 
-pub struct Service<T> {
+pub struct Service<T = ExactMatchRouter> {
     router: T,
     methods: Vec<InboundHandler>,
 }
