@@ -119,20 +119,20 @@ pub fn service(
             use std::sync as __sc;
             use rpc_it::serde;
 
-            #vis trait Service: Send + Sync + 'static {
+            #vis trait Service: Send + Sync + 'static + Clone {
                 #trait_signatures
                 #(#non_functions)*
             }
 
-            #vis fn load_service_stateful_only<T:Service, R: __sv::Router>(
-                __this: __sc::Arc<T>,
+            #vis fn load_service_stateful_only<T: Service, R: __sv::Router>(
+                __this: T,
                 __service: &mut __sv::ServiceBuilder<R>
             ) -> __mc::RegisterResult {
                 #(#statefuls;)*
                 Ok(())
             }
 
-            #vis fn load_service_stateless_only<T:Service>(
+            #vis fn load_service_stateless_only<T: Service>(
                 __service: &mut __sv::ServiceBuilder<__sv::ExactMatchRouter>
             ) -> __mc::RegisterResult {
                 #(#statelesses;)*
@@ -140,7 +140,7 @@ pub fn service(
             }
 
             #vis fn load_service<T:Service>(
-                __this: __sc::Arc<T>,
+                __this: T,
                 __service: &mut __sv::ServiceBuilder<__sv::ExactMatchRouter>
             ) -> __mc::RegisterResult {
                 load_service_stateful_only(__this, __service)?;

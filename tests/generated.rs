@@ -28,7 +28,7 @@ async fn execute_service(x: Transceiver) {
     let mut sb = ServiceBuilder::default();
 
     let my_state = Arc::new(AtomicU32::default());
-    impl test_service::Service for AtomicU32 {
+    impl test_service::Service for Arc<AtomicU32> {
         fn add(a: u32, b: u32) -> u32 {
             a + b
         }
