@@ -103,8 +103,8 @@ pub fn service(
         let Some(loaded) = generate_loader_item(item, &mut name_table) else { continue };
 
         match loaded {
-            LoaderOutput::StateFul(stateful) => statefuls.push(stateful),
-            LoaderOutput::StateLess(stateless) => statelesses.push(stateless),
+            LoaderOutput::Stateful(stateful) => statefuls.push(stateful),
+            LoaderOutput::Stateless(stateless) => statelesses.push(stateless),
         }
     }
 
@@ -172,8 +172,8 @@ pub fn service(
 }
 
 enum LoaderOutput {
-    StateFul(TokenStream),
-    StateLess(TokenStream),
+    Stateful(TokenStream),
+    Stateless(TokenStream),
 }
 
 fn generate_loader_item(
@@ -269,7 +269,7 @@ fn generate_loader_item(
         } else {
             quote!()
         };
-        LoaderOutput::StateLess(strm)
+        LoaderOutput::Stateless(strm)
     } else {
         let strm = if output.is_notify() {
             quote!(
@@ -286,7 +286,7 @@ fn generate_loader_item(
         } else {
             quote!()
         };
-        LoaderOutput::StateLess(strm)
+        LoaderOutput::Stateful(strm)
     })
 }
 
