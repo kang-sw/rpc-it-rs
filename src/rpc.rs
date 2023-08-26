@@ -366,15 +366,7 @@ impl Sender {
         method: &str,
         params: &T,
     ) -> Result<ResponseFuture, SendError> {
-        let mut buffer = Default::default();
-        let fut = self.prepare_request(&mut buffer, method, params);
-
-        self.0
-            .tx_drive()
-            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(buffer.value)))
-            .map_err(|_| SendError::Disconnected)?;
-
-        fut
+        self.request_deferred_with_reuse(&mut Default::default(), method, params)
     }
 
     /// Send deferred notification. This method is non-blocking, as the message writing will be
@@ -384,11 +376,45 @@ impl Sender {
         method: &str,
         params: &T,
     ) -> Result<(), SendError> {
-        let mut vec = Default::default();
-        self.0.codec().encode_notify(method, params, &mut vec)?;
+        self.notify_deferred_with_reuse(&mut Default::default(), method, params)
+    }
+
+    /// Sends a request and returns a future that will be resolved when the response is received.
+    ///
+    /// This method is non-blocking, as the message writing will be deferred to the background
+    #[doc(hidden)]
+    pub fn request_deferred_with_reuse<T: serde::Serialize>(
+        &self,
+        buffer: &mut WriteBuffer,
+        method: &str,
+        params: &T,
+    ) -> Result<ResponseFuture, SendError> {
+        buffer.prepare();
+        let fut = self.prepare_request(buffer, method, params);
+
         self.0
             .tx_drive()
-            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(vec)))
+            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(buffer.value.split())))
+            .map_err(|_| SendError::Disconnected)?;
+
+        fut
+    }
+
+    /// Send deferred notification. This method is non-blocking, as the message writing will be
+    /// deferred to the background driver worker.
+    #[doc(hidden)]
+    pub fn notify_deferred_with_reuse<T: serde::Serialize>(
+        &self,
+        buffer: &mut WriteBuffer,
+        method: &str,
+        params: &T,
+    ) -> Result<(), SendError> {
+        buffer.prepare();
+        self.0.codec().encode_notify(method, params, &mut buffer.value)?;
+
+        self.0
+            .tx_drive()
+            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(buffer.value.split())))
             .map_err(|_| SendError::Disconnected)
     }
 
