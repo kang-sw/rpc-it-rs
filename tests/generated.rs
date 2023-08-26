@@ -6,8 +6,13 @@ use rpc_it::{codec::Codec, Sender, ServiceBuilder, Transceiver};
 
 #[rpc_it::service]
 trait TestService {
+    #[skip]
+    fn get_int_id(&self) -> u32;
     fn add(a: u32, b: u32) -> u32;
-    fn get_id(&self) -> u32;
+    fn get_id(&self) -> u32 {
+        self.get_int_id()
+    }
+
     fn id_added(&self, id: u32) -> u32;
     fn update_id(&self, new_id: u32);
 
@@ -28,10 +33,6 @@ async fn execute_service(x: Transceiver) {
             a + b
         }
 
-        fn get_id(&self) -> u32 {
-            self.load(std::sync::atomic::Ordering::Relaxed)
-        }
-
         fn id_added(&self, id: u32) -> u32 {
             id + self.fetch_add(id, std::sync::atomic::Ordering::Relaxed)
         }
@@ -46,6 +47,10 @@ async fn execute_service(x: Transceiver) {
             rep: rpc_it::TypedRequest<String, ()>,
         ) {
             rep.ok(&concat(&values)).ok();
+        }
+
+        fn get_int_id(&self) -> u32 {
+            self.load(std::sync::atomic::Ordering::Relaxed)
         }
     }
 

@@ -173,6 +173,10 @@ fn generate_loader_item(
     attrs: &MethodAttrs,
     used_route_table: &mut HashSet<String>,
 ) -> Option<LoaderOutput> {
+    if attrs.skip {
+        return None;
+    }
+
     let mut is_self_ref = false;
     let mut is_stateless = false;
 
@@ -319,6 +323,10 @@ fn generate_call_stubs(
     attrs: &MethodAttrs,
     vis: &Visibility,
 ) -> Option<TokenStream> {
+    if attrs.skip {
+        return None;
+    }
+
     let has_receiver = method.sig.receiver().is_some();
 
     let inputs = method
@@ -438,7 +446,7 @@ fn generate_trait_signatures(items: &[TraitItemFn], attrs: &[MethodAttrs]) -> To
         // XXX: When static async method is stabilized, add support for it.
         // - For now, to not corrupt the async keyword usage, we only allow declaring pseudo-async
         //   method through method attribute
-        if !attrs.async_fn {
+        if !attrs.async_fn || attrs.skip {
             return TraitItem::Fn(method);
         }
 
