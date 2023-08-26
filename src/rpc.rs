@@ -174,6 +174,9 @@ enum DeferredWrite {
 
     /// Send request was deferred. This is used for non-blocking response, etc.
     Raw(bytes::BytesMut),
+
+    /// Send flush request from background
+    Flush,
 }
 
 /* ---------------------------------------------------------------------------------------------- */
@@ -457,6 +460,11 @@ impl Sender {
     /// Flush underlying write stream.
     pub async fn flush(&self) -> std::io::Result<()> {
         self.0.__flush().await
+    }
+
+    /// Perform flush from background task.
+    pub fn flush_deferred(&self) -> bool {
+        self.0.tx_drive().send(InboundDriverDirective::DeferredWrite(DeferredWrite::Flush)).is_ok()
     }
 
     /// Is sending request enabled?
@@ -1578,9 +1586,9 @@ mod inner {
             let fut_bg_sender = capture!([w_this], async move {
                 let mut pool = super::WriteBuffer::default();
                 while let Ok(msg) = rx_bg_sender.recv_async().await {
+                    let Some(this) = w_this.upgrade() else { break };
                     match msg {
                         DeferredWrite::ErrorResponse(req, err) => {
-                            let Some(this) = w_this.upgrade() else { break };
                             let err = this.dyn_ref().__send_err_predef(&mut pool, &req, &err).await;
 
                             // Ignore all other error types, as this message is triggered
@@ -1590,8 +1598,10 @@ mod inner {
                             }
                         }
                         DeferredWrite::Raw(mut msg) => {
-                            let Some(this) = w_this.upgrade() else { break };
                             this.dyn_ref().__write_raw(&mut msg).await?;
+                        }
+                        DeferredWrite::Flush => {
+                            this.dyn_ref().__flush().await?;
                         }
                     }
                 }
