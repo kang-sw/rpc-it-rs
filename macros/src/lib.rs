@@ -148,11 +148,20 @@ pub fn service(
                 Ok(())
             }
 
+            #[derive(Debug, Clone)]
             #vis struct Client(rpc_it::Sender);
 
             impl Client {
                 #vis fn new(inner: rpc_it::Sender) -> Self {
                     Self(inner)
+                }
+
+                #vis fn into_inner(self) -> rpc_it::Sender {
+                    self.0
+                }
+
+                #vis fn inner(&self) -> &rpc_it::Sender {
+                    &self.0
                 }
 
                 #(#call_binds)*
