@@ -1,9 +1,18 @@
 use std::time::Instant;
 
 use futures_util::join;
-use rpc_it::{codec::Codec, kv_pairs, rpc::MessageMethodName, Message, RecvMsg};
+use rpc_it::{
+    codec::Codec,
+    kv_pairs,
+    rpc::{CallError, MessageMethodName},
+    Message, RecvMsg,
+};
 
-async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Sender) {
+async fn request_test(
+    server: rpc_it::Transceiver,
+    client: rpc_it::Sender,
+    support_predef_err: bool,
+) {
     #[allow(unused)]
     #[derive(serde::Deserialize, PartialEq, Eq, Debug)]
     struct DropMeDe {
@@ -67,15 +76,16 @@ async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Sender) {
                     let req = client.request(&method_name, &(a, b)).await;
                     // println!("req sent");
 
-                    let resp = req.expect("request failed").to_owned().await;
-                    // println!("response received");
+                    let resp = req
+                        .expect("request failed")
+                        .to_owned()
+                        .await
+                        .expect("receiving response failed");
 
-                    let value = resp
-                        .expect("receiving response failed")
-                        .parse::<i32>()
-                        .expect("parsing retunred value failed");
+                    let value = resp.parse::<i32>().expect("parsing retunred value failed");
+                    assert_eq!(value, a + b);
 
-                    // print!("{} + {} = {} ... \r", a, b, value);
+                    let value = resp.result::<i32, ()>().unwrap();
                     assert_eq!(value, a + b);
                 }
                 1 => {
@@ -98,7 +108,18 @@ async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Sender) {
                         )
                         .await;
 
-                    assert!(req.is_err());
+                    let CallError::ErrorResponse(resp) = req.expect_err("request failed") else {
+                        unreachable!()
+                    };
+
+                    assert!(resp.is_error());
+                    let err = resp.result::<(), ()>().unwrap_err();
+
+                    if support_predef_err {
+                        assert!(err.into_predefined().unwrap().is_unhandled());
+                    } else {
+                        assert!(err.is_decode_error());
+                    }
                 }
                 _ => unreachable!(),
             }
@@ -114,7 +135,7 @@ async fn request_test(server: rpc_it::Transceiver, client: rpc_it::Sender) {
     join!(task_server, task_client);
 }
 
-async fn basic_io_test<T: Codec>(create_codec: impl Fn() -> T) {
+async fn basic_io_test<T: Codec>(create_codec: impl Fn() -> T, supports_predef: bool) {
     let (tx_server, rx_client) = rpc_it::transports::new_in_memory();
     let (tx_client, rx_server) = rpc_it::transports::new_in_memory();
 
@@ -137,23 +158,26 @@ async fn basic_io_test<T: Codec>(create_codec: impl Fn() -> T) {
 
     tokio::spawn(task);
 
-    request_test(server, client.into_sender()).await;
+    request_test(server, client.into_sender(), supports_predef).await;
 }
 
 #[cfg(all(feature = "in-memory", feature = "jsonrpc"))]
 #[tokio::test]
 async fn test_basic_io_jsonrpc() {
-    basic_io_test(rpc_it::codecs::jsonrpc::Codec::default).await;
+    basic_io_test(rpc_it::codecs::jsonrpc::Codec::default, false).await;
 }
 
 #[cfg(all(feature = "in-memory", feature = "msgpack-rpc"))]
 #[tokio::test]
 async fn test_basic_io_msgpack_rpc() {
-    basic_io_test(|| {
-        rpc_it::codecs::msgpack_rpc::Codec::default()
-            .with_auto_wrapping(true)
-            .with_unwrap_mono_param(true)
-    })
+    basic_io_test(
+        || {
+            rpc_it::codecs::msgpack_rpc::Codec::default()
+                .with_auto_wrapping(true)
+                .with_unwrap_mono_param(true)
+        },
+        true,
+    )
     .await;
 }
 

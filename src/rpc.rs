@@ -1180,9 +1180,14 @@ pub mod msg {
             self.error_predefined(PredefinedResponseError::Aborted).await
         }
 
+        /// Notify handler received notify handler ...
+        pub async fn error_notify_handler(self) -> Result<(), super::SendError> {
+            self.error_predefined(PredefinedResponseError::NotifyHandler).await
+        }
+
         /// Response with 'parse failed' predefined error type.
         pub async fn error_parse_failed<T>(self) -> Result<(), super::SendError> {
-            let err = PredefinedResponseError::ParseFailed(std::any::type_name::<T>());
+            let err = PredefinedResponseError::ParseFailed(std::any::type_name::<T>().into());
             self.error_predefined(err).await
         }
 
@@ -1237,8 +1242,12 @@ pub mod msg {
             self.error_predefined_deferred(PredefinedResponseError::Aborted)
         }
 
+        pub fn error_notify_handler_deferred(self) -> Result<(), super::SendError> {
+            self.error_predefined_deferred(PredefinedResponseError::NotifyHandler)
+        }
+
         pub fn error_parse_failed_deferred<T>(self) -> Result<(), super::SendError> {
-            let err = PredefinedResponseError::ParseFailed(std::any::type_name::<T>());
+            let err = PredefinedResponseError::ParseFailed(std::any::type_name::<T>().into());
             self.error_predefined_deferred(err)
         }
 
@@ -1380,13 +1389,30 @@ pub mod msg {
 
         pub fn result<'a, T: serde::Deserialize<'a>, E: serde::Deserialize<'a>>(
             &'a self,
-        ) -> Result<Result<T, E>, DecodeError> {
-            if self.is_error {
-                self.parse().map(Err)
+        ) -> Result<T, ResponseError<T>> {
+            if !self.is_error {
+                Ok(self.parse()?)
             } else {
-                self.parse().map(Ok)
+                let codec = self.codec();
+                if let Some(predef) = codec.try_decode_predef_error(self.payload()) {
+                    Err(ResponseError::Predefined(predef))
+                } else {
+                    Err(ResponseError::Typed(self.parse()?))
+                }
             }
         }
+    }
+
+    #[derive(EnumAsInner, Debug, thiserror::Error)]
+    pub enum ResponseError<T> {
+        #[error("Requested type returned")]
+        Typed(T),
+
+        #[error("Predefined error returned: {0}")]
+        Predefined(PredefinedResponseError),
+
+        #[error("Decode error: {0}")]
+        DecodeError(#[from] DecodeError),
     }
 }
 

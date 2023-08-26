@@ -34,7 +34,7 @@ pub mod transport;
 pub mod transports;
 
 #[cfg(feature = "service")]
-pub(crate) mod service;
+pub mod service;
 
 #[cfg(feature = "macros")]
 pub mod __util {

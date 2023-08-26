@@ -91,7 +91,7 @@ pub mod msgpack_rpc {
 
             params
                 .erased_serialize(&mut <dyn erased_serde::Serializer>::erase(
-                    &mut rmp_serde::Serializer::new(write).with_human_readable(),
+                    &mut rmp_serde::Serializer::new(write).with_struct_map(),
                 ))
                 .unwrap();
 
@@ -122,7 +122,7 @@ pub mod msgpack_rpc {
 
             params
                 .erased_serialize(&mut <dyn erased_serde::Serializer>::erase(
-                    &mut rmp_serde::Serializer::new(write).with_human_readable(),
+                    &mut rmp_serde::Serializer::new(write).with_struct_map(),
                 ))
                 .unwrap();
 
@@ -142,19 +142,19 @@ pub mod msgpack_rpc {
             write_array_len(write, 4).unwrap();
 
             write_uint(write, 1).unwrap();
-            write_u32(
+            write_uint(
                 write,
                 *req_id
                     .as_u64()
                     .ok_or(EncodeError::UnsupportedDataFormat("unsupported non-integer".into()))?
-                    as _,
+                    as u32 as _,
             )
             .unwrap();
 
             let serialize = |v: &mut dyn std::io::Write| {
                 response
                     .erased_serialize(&mut <dyn erased_serde::Serializer>::erase(
-                        &mut rmp_serde::Serializer::new(v).with_human_readable(),
+                        &mut rmp_serde::Serializer::new(v).with_struct_map(),
                     ))
                     .unwrap();
             };
@@ -168,15 +168,6 @@ pub mod msgpack_rpc {
             }
 
             Ok(())
-        }
-
-        fn encode_response_predefined(
-            &self,
-            req_id: codec::ReqIdRef,
-            response: &codec::PredefinedResponseError,
-            write: &mut BytesMut,
-        ) -> Result<(), EncodeError> {
-            self.encode_response(req_id, true, response, write)
         }
 
         fn decode_inbound(
@@ -474,6 +465,15 @@ pub mod jsonrpc {
         ) -> Result<(), codec::EncodeError> {
             // XXX: New type for predefined response error?
             self.encode_response(req_id, true, response, write)
+        }
+
+        fn try_decode_predef_error<'a>(
+            &self,
+            payload: &'a [u8],
+        ) -> Option<codec::PredefinedResponseError> {
+            // TODO: Support predefined error decoding
+            let _ = payload;
+            None
         }
 
         fn decode_inbound(
