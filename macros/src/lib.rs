@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashSet};
+use std::collections::HashSet;
 
 use convert_case::{Case, Casing};
 use proc_macro2::TokenStream;
@@ -29,7 +29,7 @@ use syn::{
 #[proc_macro_error]
 #[proc_macro_attribute]
 pub fn service(
-    attr: proc_macro::TokenStream,
+    _attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
     let tokens = proc_macro2::TokenStream::from(item);
@@ -146,9 +146,13 @@ pub fn service(
                 }
             }
 
-            #vis struct Stub<'a>(std::borrow::Cow<'a, rpc_it::Transceiver>);
+            #vis struct Proxy<'a>(std::borrow::Cow<'a, rpc_it::Transceiver>);
 
-            impl<'a> Stub<'a> {
+            impl<'a> Proxy<'a> {
+                #vis fn new(inner: impl Into<std::borrow::Cow<'a, rpc_it::Transceiver>>) -> Self {
+                    Self(inner.into())
+                }
+
                 #(#call_binds)*
             }
         }
@@ -318,23 +322,11 @@ fn generate_call_stubs(
         .inputs
         .iter()
         .skip(if has_receiver { 1 } else { 0 })
-        .enumerate()
-        .map(|(index, arg)| {
+        .map(|arg| {
             let FnArg::Typed(pat) = arg else { abort!(arg, "unexpected argument type") };
             if !matches!(*pat.pat, Pat::Ident(_)) {
                 abort!(arg, "Function argument pattern must be named identifier.");
             }
-
-            // let mut pat = pat.clone();
-            // pat.pat = Pat::Ident(syn::PatIdent {
-            //     attrs: Vec::new(),
-            //     by_ref: None,
-            //     ident: Ident::new(&format!("__arg_{}", index), pat.span()),
-            //     mutability: None,
-            //     subpat: None,
-            // })
-            // .into();
-
             pat
         })
         .collect::<Vec<_>>();
@@ -369,12 +361,15 @@ fn generate_call_stubs(
     let output = OutputType::new(&method.sig.output);
 
     let new_ident_suffixed =
-        |sfx: &str| syn::Ident::new(&format!("{}_{}", method_ident, sfx), method_ident.span());
+        |sfx: &str| syn::Ident::new(&format!("{0}_{1}", method_ident, sfx), method_ident.span());
+    let new_ident_prefixed =
+        |sfx: &str| syn::Ident::new(&format!("{1}_{0}", method_ident, sfx), method_ident.span());
     let method_ident_deferred = new_ident_suffixed("deferred");
-    let method_ident_with_reuse = new_ident_suffixed("with_reuse");
-    let method_ident_deferred_with_reuse = new_ident_suffixed("deferred_with_reuse");
 
     Some(if output.is_notify() {
+        let method_ident_with_reuse = new_ident_suffixed("with_reuse");
+        let method_ident_deferred_with_reuse = new_ident_suffixed("deferred_with_reuse");
+
         let reuse_version = attrs.with_reuse.then(|| quote!(
             #[doc(hidden)]
             #vis async fn #method_ident_with_reuse(&self, buffer: &mut rpc_it::rpc::WriteBuffer,  #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
@@ -400,12 +395,13 @@ fn generate_call_stubs(
             #reuse_version
         )
     } else {
-        let reuse_version = attrs.with_reuse.then(|| quote!());
         let (ok_tok, err_tok) = match &output {
             OutputType::Response(ok, err) => (quote!(#ok), quote!(#err)),
             OutputType::ResponseNoErr(ok) => (quote!(#ok), quote!(())),
             OutputType::Notify => unreachable!(),
         };
+
+        let method_ident_request = new_ident_prefixed("request");
 
         quote!(
             #vis async fn #method_ident(&self, #input_ref_arg_tokens)
@@ -414,7 +410,19 @@ fn generate_call_stubs(
                 self.0.call_with_err(#method_str, &(#(#input_idents),*)).await
             }
 
-            #reuse_version
+            #vis async fn #method_ident_request(&self, #input_ref_arg_tokens)
+                -> Result<rpc_it::TypedResponse<#ok_tok, #err_tok>, rpc_it::SendError>
+            {
+                let resp = self.0.request(#method_str, &(#(#input_idents),*)).await?;
+                Ok(rpc_it::TypedResponse::new(resp.to_owned()))
+            }
+
+            #vis async fn #method_ident_deferred(&self, #input_ref_arg_tokens)
+                -> Result<rpc_it::TypedResponse<#ok_tok, #err_tok>, rpc_it::SendError>
+            {
+                let resp = self.0.request_deferred(#method_str, &(#(#input_idents),*))?;
+                Ok(rpc_it::TypedResponse::new(resp.to_owned()))
+            }
         )
     })
 }
@@ -536,12 +544,6 @@ impl OutputType {
 
     fn is_notify(&self) -> bool {
         matches!(self, Self::Notify)
-    }
-
-    fn gen_client_recv(&self) -> TokenStream {
-        assert!(!self.is_notify());
-
-        todo!()
     }
 
     fn typed_req(&self) -> Type {

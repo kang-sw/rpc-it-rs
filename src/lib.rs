@@ -33,6 +33,9 @@ pub mod rpc;
 pub mod transport;
 pub mod transports;
 
+#[cfg(feature = "service-macros")]
+pub use rpc_it_macros::service;
+
 #[cfg(feature = "service")]
 pub mod service;
 
@@ -86,7 +89,7 @@ pub use serde::de::IgnoredAny;
 #[cfg(feature = "service")]
 pub use service::{
     ExactMatchRouter, RegisterError, RouteMessageError, Router, Service, ServiceBuilder,
-    TypedRequest,
+    TypedRequest, TypedResponse,
 };
 
 /// Create a map from a list of key-value pairs.
