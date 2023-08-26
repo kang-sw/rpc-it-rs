@@ -23,6 +23,7 @@ pub(crate) trait MyService {
     #[routes = "hello2"]
     fn notify(a: i32, b: i32);
 
+    #[with_reuse]
     fn notify_my_name(a: &str, b: &str);
 
     fn amplify(&self, a: i32, b: i32) -> i32 {

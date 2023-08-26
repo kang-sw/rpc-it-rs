@@ -1,8 +1,12 @@
-use std::{collections::HashMap, error::Error, fmt::Debug};
+use std::{collections::HashMap, error::Error, fmt::Debug, pin::Pin, task::Poll};
 
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 
-use crate::{codec::DecodeError, rpc::MessageMethodName, Message, Notify, RecvMsg, Request};
+use crate::{
+    codec::DecodeError, rpc::MessageMethodName, Message, Notify, RecvMsg, Request, ResponseError,
+    TypedCallError,
+};
 
 pub struct ServiceBuilder<T>(Service<T>);
 
@@ -209,6 +213,37 @@ impl<T, E> std::ops::Deref for TypedRequest<T, E> {
 /* ------------------------------------ Typed Response Future ----------------------------------- */
 #[derive(Debug)]
 pub struct TypedResponse<T, E>(crate::OwnedResponseFuture, std::marker::PhantomData<(T, E)>);
+
+impl<T, E> std::future::Future for TypedResponse<T, E>
+where
+    T: serde::de::DeserializeOwned + Unpin,
+    E: serde::de::DeserializeOwned + Unpin,
+{
+    type Output = Result<T, TypedCallError<E>>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let Poll::Ready(msg) = Pin::new(&mut this.0).poll(cx)? else { return Poll::Pending };
+        Poll::Ready(Ok(msg.result::<T, E>()?))
+    }
+}
+
+impl<T, E> TypedResponse<T, E>
+where
+    T: serde::de::DeserializeOwned + Unpin,
+    E: serde::de::DeserializeOwned + Unpin,
+{
+    pub fn new(fut: crate::OwnedResponseFuture) -> Self {
+        Self(fut, Default::default())
+    }
+
+    pub fn try_recv(&mut self) -> Result<Option<T>, TypedCallError<E>> {
+        match self.0.try_recv()? {
+            None => Ok(None),
+            Some(msg) => Ok(Some(msg.result::<T, E>()?)),
+        }
+    }
+}
 
 /* --------------------------------- Basic Router Implementation -------------------------------- */
 #[derive(Debug, Default, Clone)]

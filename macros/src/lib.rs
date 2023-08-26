@@ -15,46 +15,16 @@ use syn::{
 ///
 /// The trait name will be converted to snake_case module, and all related definitions will be
 /// defined inside the module.
-/// ```
-/// #[rpc_it_macros::service]
-/// pub trait MyService {
-///   fn add(&self, a: i32, b: i32) -> i32;
-///   
-///   #[route += "div-2"]
-///   #[route += "div3/*"]
-///   #[route += "div44"]
-///   fn div(&self, a: i32, b: i32) -> Result<i32, String>;
 ///
-///   /// Treated as notify (no return type)
-///   fn print(&self) {
-///     // Default implementation can be provided.
-///   }
+/// # Available Attributes For Methods
 ///
-///   /// May define stateless methods.
-///   fn print_stateless() {}
-///  
-///   /// Treated as request (return type is `()`).
-///   fn print_confirm(&self) -> () {}
-/// }
+/// - `async_fn`: For requests(which has `->` return type), this passes the request object to the
+///   handler, instead of waiting return value.
+/// - `routes = "..."`: Additional routes for the method. This is useful when you want to have
+///   multiple routes for the same method.
+/// - `with_reuse`: Generate `*_with_reuse` series of methods. This is useful when you want to
+///   optimize buffer allocation over multiple consecutive calls.
 ///
-/// pub struct MyServiceImpl;
-///
-/// impl my_service::Service for MyServiceImpl {
-///   fn add(&self, a: i32, b: i32) -> i32 { a + b }
-///   fn div(&self, a: i32, b: i32) -> Result<i32, String> {
-///     if b == 0 { Err("failed!".into()) }
-///     else { Ok(a / b) }
-///   }
-/// }
-///
-/// let mut service = rpc_it::service::ServiceBuilder::<rpc_it::service::ExactMatchRouter>::default();
-///
-/// // Loads only stateless methods.
-/// my_service::Loader::load_stateless(&mut service);
-///
-/// // Loads all methods.
-/// my_service::Loader::new(MyServiceImpl).load(&mut service);
-/// ```
 ///
 #[proc_macro_error]
 #[proc_macro_attribute]
@@ -100,24 +70,45 @@ pub fn service(
 
     let mut statefuls = Vec::new();
     let mut statelesses = Vec::new();
+    let mut call_binds = Vec::new();
     let mut name_table = HashSet::new();
 
-    for item in &ast.items {
-        let Some(loaded) = generate_loader_item(item, &mut name_table) else { continue };
+    let (functions, attrs): (Vec<_>, Vec<_>) = ast
+        .items
+        .iter()
+        .filter_map(|x| if let TraitItem::Fn(x) = x { Some(x) } else { None })
+        .map(|x| {
+            let mut x = x.clone();
+            let attrs = method_attrs(&mut x);
+            (x, attrs)
+        })
+        .unzip();
 
-        match loaded {
-            LoaderOutput::Stateful(stateful) => statefuls.push(stateful),
-            LoaderOutput::Stateless(stateless) => statelesses.push(stateless),
+    let non_functions = ast
+        .items
+        .iter()
+        .filter_map(|x| if let TraitItem::Fn(_) = x { None } else { Some(x) })
+        .collect::<Vec<_>>();
+
+    for item in functions.iter().zip(&attrs) {
+        if let Some(loaded) = generate_loader_item(item.0, item.1, &mut name_table) {
+            match loaded {
+                LoaderOutput::Stateful(stateful) => statefuls.push(stateful),
+                LoaderOutput::Stateless(stateless) => statelesses.push(stateless),
+            }
+        }
+
+        if let Some(caller) = generate_call_stubs(item.0, item.1, &vis) {
+            call_binds.push(caller);
         }
     }
 
-    let signatures =
-        ast.items.iter().filter_map(|x| generate_call_stubs(x, &vis)).collect::<Vec<_>>();
-    let trait_signatures = generate_trait_signatures(&ast.items);
+    let trait_signatures = generate_trait_signatures(&functions, &attrs);
 
     let output = quote!(
         #vis mod #module_name {
             #![allow(unused_parens)]
+            #![allow(unused)]
 
             use rpc_it::service as __sv;
             use rpc_it::service::macro_utils as __mc;
@@ -126,6 +117,7 @@ pub fn service(
 
             #vis trait Service: Send + Sync + 'static {
                 #trait_signatures
+                #(#non_functions)*
             }
 
             #vis struct Loader;
@@ -157,17 +149,7 @@ pub fn service(
             #vis struct Stub<'a>(std::borrow::Cow<'a, rpc_it::Transceiver>);
 
             impl<'a> Stub<'a> {
-                #(#signatures)*
-
-                async fn __call<Req, Rep, Err>(&self, method:&str, req: &Req)
-                    -> Result<Rep, rpc_it::TypedCallError<Err>>
-                where
-                    Req: serde::Serialize,
-                    Rep: serde::de::DeserializeOwned,
-                    Err: serde::de::DeserializeOwned,
-                {
-                    self.0.call_with_err(method, req).await
-                }
+                #(#call_binds)*
             }
         }
     );
@@ -181,10 +163,10 @@ enum LoaderOutput {
 }
 
 fn generate_loader_item(
-    item: &TraitItem,
+    method: &TraitItemFn,
+    attrs: &MethodAttrs,
     used_route_table: &mut HashSet<String>,
 ) -> Option<LoaderOutput> {
-    let TraitItem::Fn(method) = item else { return None };
     let mut is_self_ref = false;
     let mut is_stateless = false;
 
@@ -204,22 +186,12 @@ fn generate_loader_item(
     };
 
     // Additional routes
-    let is_pseudo_async = is_method_pseudo_async(method);
-    let mut routes = Vec::new();
+    let is_pseudo_async = attrs.async_fn;
+    let mut routes = Vec::with_capacity(1 + attrs.routes.len());
     let ident = &method.sig.ident;
     routes.push(method.sig.ident.to_string());
 
-    for attr in &method.attrs {
-        let syn::Meta::NameValue(x) = &attr.meta else { continue };
-        let syn::Expr::Lit(syn::ExprLit { lit, .. }) = &x.value else {
-            emit_error!(attr, "unexpected attribute");
-            continue;
-        };
-        let syn::Lit::Str(route) = lit else {
-            emit_error!(lit, "unexpected non-string literal attribute");
-            continue;
-        };
-
+    for route in &attrs.routes {
         routes.push(route.value());
     }
 
@@ -334,8 +306,11 @@ fn generate_loader_item(
     })
 }
 
-fn generate_call_stubs(item: &TraitItem, vis: &Visibility) -> Option<TokenStream> {
-    let TraitItem::Fn(method) = item else { return None };
+fn generate_call_stubs(
+    method: &TraitItemFn,
+    attrs: &MethodAttrs,
+    vis: &Visibility,
+) -> Option<TokenStream> {
     let has_receiver = method.sig.receiver().is_some();
 
     let inputs = method
@@ -400,6 +375,18 @@ fn generate_call_stubs(item: &TraitItem, vis: &Visibility) -> Option<TokenStream
     let method_ident_deferred_with_reuse = new_ident_suffixed("deferred_with_reuse");
 
     Some(if output.is_notify() {
+        let reuse_version = attrs.with_reuse.then(|| quote!(
+            #[doc(hidden)]
+            #vis async fn #method_ident_with_reuse(&self, buffer: &mut rpc_it::rpc::WriteBuffer,  #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
+                self.0.notify_with_reuse(buffer, #method_str, &(#(#input_idents),*)).await
+            }
+
+            #[doc(hidden)]
+            #vis async fn #method_ident_deferred_with_reuse(&self, buffer: &mut rpc_it::rpc::WriteBuffer,  #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
+                self.0.notify_deferred_with_reuse(buffer, #method_str, &(#(#input_idents),*))
+            }
+        ));
+
         quote!(
             #vis async fn #method_ident(&self, #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
                 self.0.notify(#method_str, &(#(#input_idents),*)).await
@@ -410,45 +397,46 @@ fn generate_call_stubs(item: &TraitItem, vis: &Visibility) -> Option<TokenStream
                 self.0.notify_deferred(#method_str, &(#(#input_idents),*))
             }
 
-            #[doc(hidden)]
-            #vis async fn #method_ident_with_reuse(&self, buffer: &mut rpc_it::rpc::WriteBuffer,  #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
-                self.0.notify_with_reuse(buffer, #method_str, &(#(#input_idents),*)).await
-            }
-
-            #[doc(hidden)]
-            #vis async fn #method_ident_deferred_with_reuse(&self, buffer: &mut rpc_it::rpc::WriteBuffer,  #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
-                self.0.notify_deferred_with_reuse(buffer, #method_str, &(#(#input_idents),*))
-            }
+            #reuse_version
         )
     } else {
-        quote!()
+        let reuse_version = attrs.with_reuse.then(|| quote!());
+        let (ok_tok, err_tok) = match &output {
+            OutputType::Response(ok, err) => (quote!(#ok), quote!(#err)),
+            OutputType::ResponseNoErr(ok) => (quote!(#ok), quote!(())),
+            OutputType::Notify => unreachable!(),
+        };
+
+        quote!(
+            #vis async fn #method_ident(&self, #input_ref_arg_tokens)
+                -> Result<#ok_tok, rpc_it::TypedCallError<#err_tok>>
+            {
+                self.0.call_with_err(#method_str, &(#(#input_idents),*)).await
+            }
+
+            #reuse_version
+        )
     })
 }
 
-fn generate_trait_signatures(items: &[TraitItem]) -> TokenStream {
-    let tokens = items.iter().map(|item| {
-        let TraitItem::Fn(method) = item else { return Cow::Borrowed(item) };
-        let is_pseudo_async_method = is_method_pseudo_async(method);
-
+fn generate_trait_signatures(items: &[TraitItemFn], attrs: &[MethodAttrs]) -> TokenStream {
+    let tokens = items.iter().zip(attrs).map(|(method, attrs)| {
         let mut method = method.clone();
-        method.attrs.clear();
-
-        // Find 'async' attribute
 
         // XXX: When static async method is stabilized, add support for it.
         // - For now, to not corrupt the async keyword usage, we only allow declaring pseudo-async
         //   method through method attribute
-        if !is_pseudo_async_method {
-            return Cow::Owned(TraitItem::Fn(method));
+        if !attrs.async_fn {
+            return TraitItem::Fn(method);
         }
 
         if method.default.is_some() {
-            abort!(item, "You can't provide default implementation for async handler");
+            abort!(method, "You can't provide default implementation for async handler");
         }
 
         let outputs = OutputType::new(&method.sig.output);
         if outputs.is_notify() {
-            abort!(item, "Only request handler can be async!");
+            abort!(method, "Only request handler can be async!");
         }
 
         method.sig.inputs.push(syn::FnArg::Typed(syn::PatType {
@@ -463,27 +451,57 @@ fn generate_trait_signatures(items: &[TraitItem]) -> TokenStream {
         }));
 
         method.sig.output = ReturnType::Default;
-        Cow::Owned(TraitItem::Fn(method))
+        TraitItem::Fn(method)
     });
 
     quote!(#(#tokens)*)
 }
 
+#[derive(Default)]
 struct MethodAttrs {
-    is_pseudo_async: bool,
+    async_fn: bool,
     routes: Vec<syn::LitStr>,
+    with_reuse: bool,
 }
 
-fn is_method_pseudo_async(method: &TraitItemFn) -> bool {
-    let mut is_async = false;
-    for attr in &method.attrs {
-        let syn::Meta::Path(path) = &attr.meta else { continue };
-        if path.is_ident("async_fn") {
-            is_async = true;
-            break;
+fn method_attrs(method: &mut TraitItemFn) -> MethodAttrs {
+    let mut attrs = MethodAttrs::default();
+
+    for attr in std::mem::take(&mut method.attrs) {
+        match &attr.meta {
+            syn::Meta::Path(path) => {
+                if path.is_ident("async_fn") {
+                    attrs.async_fn = true;
+                } else if path.is_ident("with_reuse") {
+                    attrs.with_reuse = true;
+                } else {
+                    emit_error!(attr, "unexpected attribute")
+                }
+            }
+
+            syn::Meta::List(_) => {
+                emit_error!(attr, "unexpected attribute")
+            }
+
+            syn::Meta::NameValue(kv) => {
+                if kv.path.get_ident().is_some_and(|x| x == "routes") {
+                    let syn::Expr::Lit(syn::ExprLit { lit, .. }) = &kv.value else {
+                        emit_error!(attr, "unexpected attribute");
+                        continue;
+                    };
+                    let syn::Lit::Str(route) = lit else {
+                        emit_error!(lit, "unexpected non-string literal attribute");
+                        continue;
+                    };
+                    attrs.routes.push(route.clone());
+                } else {
+                    emit_error!(attr, "unexpected attribute")
+                }
+            }
         }
     }
-    is_async
+
+    attrs
 }
 
 enum OutputType {
