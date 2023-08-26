@@ -25,7 +25,7 @@ use bytes::{Bytes, BytesMut};
 use enum_as_inner::EnumAsInner;
 use futures_util::AsyncRead;
 pub use req::RequestContext;
-pub use req::ResponseFuture;
+pub use req::{OwnedResponseFuture, ResponseFuture};
 
 /* ---------------------------------------------------------------------------------------------- */
 /*                                          FEATURE FLAGS                                         */
@@ -554,11 +554,14 @@ mod req {
 
     /// When dropped, the response handler will be unregistered from the queue.
     #[must_use = "futures do nothing unless you `.await` or poll them"]
+    #[derive(Debug)]
     pub struct ResponseFuture<'a>(ResponseFutureInner<'a>);
 
     #[must_use = "futures do nothing unless you `.await` or poll them"]
+    #[derive(Debug)]
     pub struct OwnedResponseFuture(ResponseFuture<'static>);
 
+    #[derive(Debug)]
     enum ResponseFutureInner<'a> {
         Waiting(Cow<'a, Arc<dyn Connection>>, NonZeroU64),
         Finished,
@@ -579,6 +582,37 @@ mod req {
                 ResponseFutureInner::Finished => {
                     OwnedResponseFuture(ResponseFuture(ResponseFutureInner::Finished))
                 }
+            }
+        }
+
+        pub fn try_recv(&mut self) -> Result<Option<msg::Response>, RecvError> {
+            use ResponseFutureInner::*;
+
+            match &mut self.0 {
+                Waiting(conn, hash) => {
+                    if conn.__is_disconnected() {
+                        // Let the 'drop' trait erase the request from the queue.
+                        return Err(RecvError::Disconnected);
+                    }
+
+                    let mut value = None;
+                    conn.reqs().unwrap().waiters.remove_if(hash, |_, elem| {
+                        if let Some(v) = elem.value.lock().take() {
+                            value = Some(v);
+                            true
+                        } else {
+                            false
+                        }
+                    });
+
+                    if value.is_some() {
+                        self.0 = Finished;
+                    }
+
+                    Ok(value)
+                }
+
+                Finished => Ok(None),
             }
         }
     }

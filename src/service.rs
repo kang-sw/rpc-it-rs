@@ -1,6 +1,5 @@
-use std::{collections::HashMap, error::Error, fmt::Debug, sync::Arc};
+use std::{collections::HashMap, error::Error, fmt::Debug};
 
-use enum_as_inner::EnumAsInner;
 use serde::{Deserialize, Serialize};
 
 use crate::{codec::DecodeError, rpc::MessageMethodName, Message, Notify, RecvMsg, Request};
@@ -206,6 +205,10 @@ impl<T, E> std::ops::Deref for TypedRequest<T, E> {
         &self.0
     }
 }
+
+/* ------------------------------------ Typed Response Future ----------------------------------- */
+#[derive(Debug)]
+pub struct TypedResponse<T, E>(crate::OwnedResponseFuture, std::marker::PhantomData<(T, E)>);
 
 /* --------------------------------- Basic Router Implementation -------------------------------- */
 #[derive(Debug, Default, Clone)]

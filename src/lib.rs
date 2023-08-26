@@ -76,8 +76,9 @@ pub mod __util {
 
 pub use rpc::{
     msg::{Notify, RecvMsg, Request, Response, ResponseError},
-    Builder, CallError, Feature, InboundError, InboundEventSubscriber, Message, RecvError,
-    RequestContext, ResponseFuture, SendError, Sender, Transceiver, TryRecvError, TypedCallError,
+    Builder, CallError, Feature, InboundError, InboundEventSubscriber, Message,
+    OwnedResponseFuture, RecvError, RequestContext, ResponseFuture, SendError, Sender, Transceiver,
+    TryRecvError, TypedCallError,
 };
 
 pub use serde::de::IgnoredAny;
