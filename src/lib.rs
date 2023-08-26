@@ -80,6 +80,8 @@ pub use rpc::{
     RequestContext, ResponseFuture, SendError, Sender, Transceiver, TryRecvError, TypedCallError,
 };
 
+pub use serde::de::IgnoredAny;
+
 #[cfg(feature = "service")]
 pub use service::{
     ExactMatchRouter, RegisterError, RouteMessageError, Router, Service, ServiceBuilder,
