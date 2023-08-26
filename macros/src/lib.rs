@@ -20,12 +20,13 @@ use syn::{
 ///
 /// - `async_fn`: For requests(which has `->` return type), this passes the request object to the
 ///   handler, instead of waiting return value.
-/// - `routes = "..."`: Additional routes for the method. This is useful when you want to have
+/// - `aliases = "..."`: Additional routes for the method. This is useful when you want to have
 ///   multiple routes for the same method.
 /// - `with_reuse`: Generate `*_with_reuse` series of methods. This is useful when you want to
 ///   optimize buffer allocation over multiple consecutive calls.
 /// - `skip`: Do not generate any code from this. This is useful when you need just a trait method,
 ///   which can be used another default implementations.
+/// - `route`: Rename routing for caller
 ///
 #[proc_macro_error]
 #[proc_macro_attribute]
@@ -205,11 +206,17 @@ fn generate_loader_item(
 
     // Additional routes
     let is_pseudo_async = attrs.async_fn;
-    let mut routes = Vec::with_capacity(1 + attrs.routes.len());
+    let mut routes = Vec::with_capacity(1 + attrs.aliases.len());
     let ident = &method.sig.ident;
-    routes.push(method.sig.ident.to_string());
+    routes.push(
+        attrs
+            .route
+            .as_ref()
+            .map(syn::LitStr::value)
+            .unwrap_or_else(|| method.sig.ident.to_string()),
+    );
 
-    for route in &attrs.routes {
+    for route in &attrs.aliases {
         routes.push(route.value());
     }
 
@@ -377,8 +384,10 @@ fn generate_call_stubs(
         .collect::<Vec<_>>();
 
     let method_ident = &method.sig.ident;
-    let method_str = method_ident.to_string();
     let output = OutputType::new(&method.sig.output);
+
+    let method_str =
+        attrs.route.as_ref().map(syn::LitStr::value).unwrap_or_else(|| method_ident.to_string());
 
     let new_ident_suffixed =
         |sfx: &str| syn::Ident::new(&format!("{0}_{1}", method_ident, sfx), method_ident.span());
@@ -489,8 +498,9 @@ fn generate_trait_signatures(items: &[TraitItemFn], attrs: &[MethodAttrs]) -> To
 struct MethodAttrs {
     async_fn: bool,
     skip: bool,
-    routes: Vec<syn::LitStr>,
+    aliases: Vec<syn::LitStr>,
     with_reuse: bool,
+    route: Option<syn::LitStr>,
 }
 
 fn method_attrs(method: &mut TraitItemFn) -> MethodAttrs {
@@ -515,16 +525,27 @@ fn method_attrs(method: &mut TraitItemFn) -> MethodAttrs {
             }
 
             syn::Meta::NameValue(kv) => {
-                if kv.path.get_ident().is_some_and(|x| x == "routes") {
-                    let syn::Expr::Lit(syn::ExprLit { lit, .. }) = &kv.value else {
-                        emit_error!(attr, "unexpected attribute");
-                        continue;
-                    };
+                let Some(ident) = kv.path.get_ident() else {
+                    emit_error!(attr, "unexpected attribute");
+                    continue;
+                };
+                let syn::Expr::Lit(syn::ExprLit { lit, .. }) = &kv.value else {
+                    emit_error!(attr, "unexpected attribute");
+                    continue;
+                };
+
+                if ident == "aliases" {
                     let syn::Lit::Str(route) = lit else {
                         emit_error!(lit, "unexpected non-string literal attribute");
                         continue;
                     };
-                    attrs.routes.push(route.clone());
+                    attrs.aliases.push(route.clone());
+                } else if ident == "route" {
+                    let syn::Lit::Str(route) = lit else {
+                        emit_error!(lit, "unexpected non-string literal attribute");
+                        continue;
+                    };
+                    attrs.route = Some(route.clone());
                 } else {
                     emit_error!(attr, "unexpected attribute")
                 }
