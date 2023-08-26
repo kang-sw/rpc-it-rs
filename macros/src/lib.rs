@@ -4,7 +4,10 @@ use convert_case::{Case, Casing};
 use proc_macro2::TokenStream;
 use proc_macro_error::{abort, emit_error, proc_macro_error};
 use quote::quote;
-use syn::{spanned::Spanned, GenericArgument, Token, TraitItem, TraitItemFn, Type, VisRestricted};
+use syn::{
+    spanned::Spanned, GenericArgument, Ident, ReturnType, Token, TraitItem, TraitItemFn, Type,
+    VisRestricted,
+};
 
 /// Defines new RPC service
 ///
@@ -82,9 +85,12 @@ pub fn service(
             }
     */
 
-    let ast = syn::parse2::<syn::ItemTrait>(tokens).unwrap();
+    let Ok(ast) = syn::parse2::<syn::ItemTrait>(tokens) else {
+        return proc_macro::TokenStream::new();
+    };
+
     let module_name = format!("{}", ast.ident.to_string().to_case(Case::Snake));
-    let module_name = syn::Ident::new(&module_name, proc_macro2::Span::call_site());
+    let module_name = Ident::new(&module_name, proc_macro2::Span::call_site());
     let vis = match ast.vis.clone() {
         vis @ (syn::Visibility::Public(_) | syn::Visibility::Restricted(_)) => vis,
         syn::Visibility::Inherited => syn::Visibility::Restricted(VisRestricted {
@@ -108,7 +114,7 @@ pub fn service(
         }
     }
 
-    let signatures = ast.items.iter().filter_map(generate_call_sig_item).collect::<Vec<_>>();
+    let signatures = ast.items.iter().filter_map(generate_call_stubs).collect::<Vec<_>>();
     let trait_signatures = generate_trait_signatures(&ast.items);
 
     let output = quote!(
@@ -120,7 +126,7 @@ pub fn service(
             use std::sync as __sc;
             use rpc_it::serde;
 
-            #vis trait Service {
+            #vis trait Service: Send + Sync + 'static {
                 #trait_signatures
             }
 
@@ -130,14 +136,14 @@ pub fn service(
                     __this: __sc::Arc<T>,
                     __service: &mut __sv::ServiceBuilder<R>
                 ) -> __mc::RegisterResult {
-                    #(#statefuls);*
+                    #(#statefuls;)*
                     Ok(())
                 }
 
                 #vis fn load_stateless<'__l_a, T:Service>(
                     __service: &'__l_a mut __sv::ServiceBuilder<__sv::ExactMatchRouter>
                 ) -> __mc::RegisterResult {
-                    #(#statelesses);*
+                    #(#statelesses;)*
                     Ok(())
                 }
 
@@ -200,6 +206,7 @@ fn generate_loader_item(
     };
 
     // Additional routes
+    let is_pseudo_async = is_method_pseudo_async(method);
     let mut routes = Vec::new();
     let ident = &method.sig.ident;
     routes.push(method.sig.ident.to_string());
@@ -262,53 +269,97 @@ fn generate_loader_item(
                 T::#ident(#unpack);
                 Ok(())
             }))
-        } else if method.sig.asyncness.is_none() {
-            quote!(
-                // __service.register_request_handler(#route_paths, |__req: #tup_inputs, )
-            )
         } else {
-            quote!()
+            let treq = output.typed_req();
+
+            if !is_pseudo_async {
+                let rval = output.handle_sync_retval_to_response(Ident::new(
+                    "__result",
+                    method.sig.output.span(),
+                ));
+
+                quote!(
+                    __service.register_request_handler(#route_paths, |__req: #tup_inputs, __rep: #treq| {
+                        let __result = T::#ident(#unpack);
+                        #rval;
+                        Ok(())
+                    })
+                )
+            } else {
+                quote!(
+                    __service.register_request_handler(#route_paths, |__req: #tup_inputs, __rep: #treq| {
+                        T::#ident(#unpack, __rep);
+                        Ok(())
+                    })
+                )
+            }
         };
         LoaderOutput::Stateless(strm)
     } else {
+        let this_param = if is_self_ref { quote!(&__this_2) } else { quote!(__this_2.clone()) };
         let strm = if output.is_notify() {
             quote!(
                 let __this_2 = __this.clone();
                 __service.register_notify_handler(#route_paths, move |__req: #tup_inputs| {
-                    T::#ident(&__this_2, #unpack);
+                    T::#ident(#this_param, #unpack);
                     Ok(())
                 })
             )
-        } else if method.sig.asyncness.is_none() {
-            quote!(
-                // __service.register_request_handler(#route_paths, |__req: #tup_inputs, )
-            )
         } else {
-            quote!()
+            let treq = output.typed_req();
+
+            if !is_pseudo_async {
+                let rval = output.handle_sync_retval_to_response(Ident::new(
+                    "__result",
+                    method.sig.output.span(),
+                ));
+
+                quote!(
+                    let __this_2 = __this.clone();
+                    __service.register_request_handler(#route_paths, move |__req: #tup_inputs, __rep: #treq| {
+                        let __result = T::#ident(#this_param, #unpack);
+                        #rval;
+                        Ok(())
+                    })
+                )
+            } else {
+                quote!(
+                    let __this_2 = __this.clone();
+                    __service.register_request_handler(#route_paths, move |__req: #tup_inputs, __rep: #treq| {
+                        T::#ident(#this_param, #unpack, __rep);
+                        Ok(())
+                    })
+                )
+            }
         };
         LoaderOutput::Stateful(strm)
     })
 }
 
-fn generate_call_sig_item(item: &TraitItem) -> Option<TokenStream> {
+fn generate_call_stubs(item: &TraitItem) -> Option<TokenStream> {
     None
 }
 
 fn generate_trait_signatures(items: &[TraitItem]) -> TokenStream {
     let tokens = items.iter().map(|item| {
         let TraitItem::Fn(method) = item else { return Cow::Borrowed(item) };
+        let is_pseudo_async_method = is_method_pseudo_async(method);
+
         let mut method = method.clone();
         method.attrs.clear();
 
-        if method.sig.asyncness.is_none() {
+        // Find 'async' attribute
+
+        // XXX: When static async method is stabilized, add support for it.
+        // - For now, to not corrupt the async keyword usage, we only allow declaring pseudo-async
+        //   method through method attribute
+        if !is_pseudo_async_method {
             return Cow::Owned(TraitItem::Fn(method));
         }
 
         if method.default.is_some() {
             abort!(item, "You can't provide default implementation for async handler");
         }
-
-        method.sig.asyncness = None;
 
         let outputs = OutputType::new(&method.sig.output);
         if outputs.is_notify() {
@@ -323,13 +374,26 @@ fn generate_trait_signatures(items: &[TraitItem]) -> TokenStream {
                 underscore_token: Token![_](method.sig.output.span()),
             })
             .into(),
-            ty: outputs.typed_handler().into(),
+            ty: outputs.typed_req().into(),
         }));
 
+        method.sig.output = ReturnType::Default;
         Cow::Owned(TraitItem::Fn(method))
     });
 
     quote!(#(#tokens)*)
+}
+
+fn is_method_pseudo_async(method: &TraitItemFn) -> bool {
+    let mut is_async = false;
+    for attr in &method.attrs {
+        let syn::Meta::Path(path) = &attr.meta else { continue };
+        if path.is_ident("async_fn") {
+            is_async = true;
+            break;
+        }
+    }
+    is_async
 }
 
 enum OutputType {
@@ -355,7 +419,7 @@ impl OutputType {
         };
 
         let mut type_iter = ang.args.iter();
-        let [Some(ok), _, Some(err)] = std::array::from_fn(|_| type_iter.next()) else {
+        let [Some(ok), Some(err)] = std::array::from_fn(|_| type_iter.next()) else {
             return fb();
         };
 
@@ -372,21 +436,36 @@ impl OutputType {
         todo!()
     }
 
-    fn typed_handler(&self) -> Type {
+    fn typed_req(&self) -> Type {
         match self {
             OutputType::Notify => unimplemented!(),
+
             OutputType::ResponseNoErr(x) => {
-                syn::parse2(quote!(rpc_it::TypedRequest<#x, rpc_it::IgnoredAny>)).unwrap()
+                syn::parse2(quote!(rpc_it::TypedRequest<#x, ()>)).unwrap()
             }
+
             OutputType::Response(r, e) => {
                 syn::parse2(quote!(rpc_it::TypedRequest<#r, #e>)).unwrap()
             }
         }
     }
 
-    fn gen_server_send(&self) -> TokenStream {
-        assert!(!self.is_notify());
+    fn handle_sync_retval_to_response(&self, ident: Ident) -> TokenStream {
+        match self {
+            OutputType::Notify => unimplemented!(),
 
-        todo!()
+            OutputType::ResponseNoErr(_) => {
+                quote!(__rep.ok(&#ident)?;)
+            }
+
+            OutputType::Response(_, _) => {
+                quote!(
+                    match #ident {
+                        Ok(x) => __rep.ok(&x)?,
+                        Err(e) => __rep.err(&e)?,
+                    }
+                )
+            }
+        }
     }
 }

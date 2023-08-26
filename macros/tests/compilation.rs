@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rpc_it::{ExactMatchRouter, ServiceBuilder};
 use rpc_it_macros::service;
 
@@ -19,10 +21,38 @@ pub trait MyService {
         a + b
     }
 
-    async fn amplify_2(&self, a: i32, b: i32) -> i32;
+    #[async_fn]
+    fn amplify_2(&self, a: i32, b: i32) -> i32;
+
+    #[async_fn]
+    fn amplify_3(self: &std::sync::Arc<Self>, a: i32, b: i32) -> i32;
 
     fn introduce(&self) -> i32 {
         0
+    }
+}
+
+struct MyServiceImpl;
+
+impl my_service::Service for MyServiceImpl {
+    fn div(a: i32, b: i32) -> Result<i32, String> {
+        todo!()
+    }
+
+    fn notify(a: i32, b: i32) {
+        todo!()
+    }
+
+    fn notify_my_name(a: &str, b: &str) {
+        todo!()
+    }
+
+    fn amplify_2(&self, a: i32, b: i32, _: rpc_it::TypedRequest<i32, ()>) {
+        todo!()
+    }
+
+    fn amplify_3(self: &std::sync::Arc<Self>, a: i32, b: i32, _: rpc_it::TypedRequest<i32, ()>) {
+        todo!()
     }
 }
 
