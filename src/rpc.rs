@@ -22,6 +22,7 @@ use crate::{
 use async_lock::Mutex as AsyncMutex;
 use bitflags::bitflags;
 use bytes::{Bytes, BytesMut};
+use enum_as_inner::EnumAsInner;
 use futures_util::AsyncRead;
 pub use req::RequestContext;
 pub use req::ResponseFuture;
@@ -258,6 +259,21 @@ pub enum CallError {
     ErrorResponse(msg::Response),
 }
 
+#[derive(Debug, EnumAsInner, thiserror::Error)]
+pub enum TypedCallError<E> {
+    #[error("Failed to send request: {0}")]
+    SendFailed(#[from] super::SendError),
+
+    #[error("Failed to receive response: {0}")]
+    FlushFailed(#[from] std::io::Error),
+
+    #[error("Failed to receive response: {0}")]
+    RecvFailed(#[from] super::RecvError),
+
+    #[error("Remote returned error response")]
+    Response(#[from] super::ResponseError<E>),
+}
+
 impl Sender {
     /// A shortcut for request, flush, and receive response.
     pub async fn call<R: serde::de::DeserializeOwned>(
@@ -279,6 +295,20 @@ impl Sender {
             Ok(value) => Ok(value),
             Err(err) => Err(CallError::ParseFailed(err, msg)),
         }
+    }
+
+    /// A shortcut for strictly typed request
+    pub async fn call_with_err<R: serde::de::DeserializeOwned, E: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        params: &impl serde::Serialize,
+    ) -> Result<R, TypedCallError<E>> {
+        let response = self.request(method, params).await?;
+
+        self.0.__flush().await?;
+
+        let msg = response.await?;
+        Ok(msg.result()?)
     }
 
     /// Send request, and create response future which will be resolved when the response is
@@ -1389,7 +1419,7 @@ pub mod msg {
 
         pub fn result<'a, T: serde::Deserialize<'a>, E: serde::Deserialize<'a>>(
             &'a self,
-        ) -> Result<T, ResponseError<T>> {
+        ) -> Result<T, ResponseError<E>> {
             if !self.is_error {
                 Ok(self.parse()?)
             } else {

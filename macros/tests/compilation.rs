@@ -1,25 +1,12 @@
-use rpc_it_macros::show_streams;
+use rpc_it_macros::service;
 
-// Example: Basic function
-#[show_streams]
-fn invoke1() {}
-// out: attr: ""
-// out: item: "fn invoke1() {}"
+#[service]
+pub trait MyService {
+    fn add(a: i32, b: i32) -> i32 {
+        a + b
+    }
 
-// Example: Attribute with input
-#[show_streams(bar)]
-fn invoke2() {}
-// out: attr: "bar"
-// out: item: "fn invoke2() {}"
+    fn div(a: i32, b: i32) -> Result<i32, String>;
+}
 
-// Example: Multiple tokens in the input
-#[show_streams(multiple => tokens)]
-fn invoke3() {}
-// out: attr: "multiple => tokens"
-// out: item: "fn invoke3() {}"
-
-// Example:
-#[show_streams { delimiters }]
-fn invoke4() {}
-// out: attr: "delimiters"
-// out: item: "fn invoke4() {}"
+fn foo() {}

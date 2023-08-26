@@ -1,5 +1,6 @@
-use std::{collections::HashMap, error::Error, fmt::Debug};
+use std::{collections::HashMap, error::Error, fmt::Debug, sync::Arc};
 
+use enum_as_inner::EnumAsInner;
 use serde::{Deserialize, Serialize};
 
 use crate::{codec::DecodeError, rpc::MessageMethodName, Message, Notify, RecvMsg, Request};
@@ -26,7 +27,7 @@ impl<T: Debug> Debug for Service<T> {
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum RouterRegisterError {
+pub enum RegisterError {
     #[error("Given key is already registered")]
     AlreadyRegistered,
     #[error("Invalid routing key: {0}")]
@@ -35,7 +36,7 @@ pub enum RouterRegisterError {
 
 pub trait Router: Send + Sync + 'static {
     /// Register a routing key with the given index.
-    fn register(&mut self, patterns: &[&str], index: usize) -> Result<(), RouterRegisterError>;
+    fn register(&mut self, patterns: &[&str], index: usize) -> Result<(), RegisterError>;
 
     /// Finish the registration process. All errors must've been reported through `register`, thus
     /// this method should never fail.
@@ -43,6 +44,12 @@ pub trait Router: Send + Sync + 'static {
 
     /// Route the given routing key to an index.
     fn route(&self, routing_key: &str) -> Option<usize>;
+}
+
+impl<T: Default + Router> Default for ServiceBuilder<T> {
+    fn default() -> Self {
+        Self::new(T::default())
+    }
 }
 
 impl<T> ServiceBuilder<T>
@@ -153,6 +160,11 @@ pub enum RouteMessageError {
     HandlerError(#[from] Box<dyn Error + Send + Sync + 'static>),
 }
 
+#[doc(hidden)]
+pub mod macro_utils {
+    pub type RegisterResult = Result<(), super::RegisterError>;
+}
+
 /* ---------------------------------------- Typed Request --------------------------------------- */
 #[derive(Debug)]
 pub struct TypedRequest<T, E>(Request, std::marker::PhantomData<(T, E)>);
@@ -202,10 +214,10 @@ pub struct ExactMatchRouter {
 }
 
 impl Router for ExactMatchRouter {
-    fn register(&mut self, pattern: &[&str], index: usize) -> Result<(), RouterRegisterError> {
+    fn register(&mut self, pattern: &[&str], index: usize) -> Result<(), RegisterError> {
         for pat in pattern.into_iter().copied() {
             if self.routes.contains_key(pat) {
-                return Err(RouterRegisterError::AlreadyRegistered);
+                return Err(RegisterError::AlreadyRegistered);
             }
 
             self.routes.insert(pat.to_owned(), index);

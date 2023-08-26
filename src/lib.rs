@@ -75,9 +75,15 @@ pub mod __util {
 }
 
 pub use rpc::{
-    msg::{Notify, RecvMsg, Request, Response},
-    Builder, Feature, InboundError, InboundEventSubscriber, Message, RecvError, RequestContext,
-    ResponseFuture, SendError, Sender, Transceiver, TryRecvError,
+    msg::{Notify, RecvMsg, Request, Response, ResponseError},
+    Builder, CallError, Feature, InboundError, InboundEventSubscriber, Message, RecvError,
+    RequestContext, ResponseFuture, SendError, Sender, Transceiver, TryRecvError, TypedCallError,
+};
+
+#[cfg(feature = "service")]
+pub use service::{
+    ExactMatchRouter, RegisterError, RouteMessageError, Router, Service, ServiceBuilder,
+    TypedRequest,
 };
 
 /// Create a map from a list of key-value pairs.
