@@ -15,9 +15,12 @@ pub struct Service<T = ExactMatchRouter> {
     methods: Vec<InboundHandler>,
 }
 
+#[cfg(test)]
+static_assertions::assert_impl_all!(Service<ExactMatchRouter>: Send, Sync);
+
 enum InboundHandler {
-    Request(Box<dyn Fn(Request) -> Result<(), RouteMessageError>>),
-    Notify(Box<dyn Fn(Notify) -> Result<(), RouteMessageError>>),
+    Request(Box<dyn Fn(Request) -> Result<(), RouteMessageError> + Send + Sync + 'static>),
+    Notify(Box<dyn Fn(Notify) -> Result<(), RouteMessageError> + Send + Sync + 'static>),
 }
 
 impl<T: Debug> Debug for Service<T> {
