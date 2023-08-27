@@ -518,11 +518,6 @@ impl Sender {
     pub fn get_feature_flags(&self) -> Feature {
         self.0.feature_flag()
     }
-
-    /// Get UserData
-    pub fn user_data<T: UserData>(&self) -> Option<&T> {
-        self.0.user_data().as_any().downcast_ref()
-    }
 }
 
 mod req {
@@ -1239,11 +1234,26 @@ pub trait MessageMethodName: Message {
     }
 }
 
-pub trait MessageUserData {
+pub trait ExtractUserData {
+    fn extract_sender(&self) -> Sender;
     fn user_data_raw(&self) -> &dyn UserData;
     fn user_data_owned(&self) -> OwnedUserData;
     fn user_data<T: UserData>(&self) -> Option<&T> {
         self.user_data_raw().as_any().downcast_ref()
+    }
+}
+
+impl ExtractUserData for Sender {
+    fn extract_sender(&self) -> Sender {
+        self.clone()
+    }
+
+    fn user_data_raw(&self) -> &dyn UserData {
+        self.0.user_data()
+    }
+
+    fn user_data_owned(&self) -> OwnedUserData {
+        OwnedUserData(self.0.clone())
     }
 }
 
@@ -1265,7 +1275,7 @@ pub mod msg {
         rpc::MessageReqId,
     };
 
-    use super::{Connection, DeferredWrite, Message, MessageUserData, UserData, WriteBuffer};
+    use super::{Connection, DeferredWrite, ExtractUserData, Message, UserData, WriteBuffer};
 
     macro_rules! impl_message {
         ($t:ty) => {
@@ -1334,12 +1344,15 @@ pub mod msg {
         }
     }
 
-    impl MessageUserData for Request {
+    impl ExtractUserData for Request {
         fn user_data_raw(&self) -> &dyn UserData {
             self.body.as_ref().unwrap().1.user_data()
         }
         fn user_data_owned(&self) -> super::OwnedUserData {
             super::OwnedUserData(self.body.as_ref().unwrap().1.clone())
+        }
+        fn extract_sender(&self) -> crate::Sender {
+            super::Sender(self.body.as_ref().unwrap().1.clone())
         }
     }
 
@@ -1514,13 +1527,17 @@ pub mod msg {
     impl_message!(Notify);
     impl_method_name!(Notify);
 
-    impl MessageUserData for Notify {
+    impl ExtractUserData for Notify {
         fn user_data_raw(&self) -> &dyn UserData {
             self.sender.user_data()
         }
 
         fn user_data_owned(&self) -> super::OwnedUserData {
             super::OwnedUserData(self.sender.clone())
+        }
+
+        fn extract_sender(&self) -> crate::Sender {
+            super::Sender(self.sender.clone())
         }
     }
 
@@ -1532,7 +1549,7 @@ pub mod msg {
         Notify(Notify),
     }
 
-    impl MessageUserData for RecvMsg {
+    impl ExtractUserData for RecvMsg {
         fn user_data_raw(&self) -> &dyn UserData {
             match self {
                 Self::Request(x) => x.user_data_raw(),
@@ -1544,6 +1561,13 @@ pub mod msg {
             match self {
                 Self::Request(x) => x.user_data_owned(),
                 Self::Notify(x) => x.user_data_owned(),
+            }
+        }
+
+        fn extract_sender(&self) -> crate::Sender {
+            match self {
+                Self::Request(x) => x.extract_sender(),
+                Self::Notify(x) => x.extract_sender(),
             }
         }
     }

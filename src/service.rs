@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     codec::DecodeError,
-    rpc::{MessageMethodName, MessageUserData, UserData},
+    rpc::{ExtractUserData, MessageMethodName, UserData},
     Message, Notify, RecvMsg, Request, TypedCallError,
 };
 
@@ -69,11 +69,7 @@ where
     pub fn register_request_handler<Req, Rep, Err>(
         &mut self,
         patterns: &[&str],
-        func: impl Fn(
-                &dyn UserData,
-                Req,
-                TypedRequest<Rep, Err>,
-            ) -> Result<(), Box<dyn Error + Send + Sync + 'static>>
+        func: impl Fn(TypedRequest<Rep, Err>, Req) -> Result<(), Box<dyn Error + Send + Sync + 'static>>
             + 'static
             + Send
             + Sync,
@@ -94,9 +90,7 @@ where
                 }
             };
 
-            let user = request.user_data_owned();
-            func(&user, param, request)?;
-
+            func(request, param)?;
             Ok(())
         })));
         self.0.router.register(patterns, index)
@@ -105,7 +99,7 @@ where
     pub fn register_notify_handler<Noti>(
         &mut self,
         patterns: &[&str],
-        func: impl Fn(&dyn UserData, Noti) -> Result<(), Box<dyn Error + Send + Sync + 'static>>
+        func: impl Fn(crate::Notify, Noti) -> Result<(), Box<dyn Error + Send + Sync + 'static>>
             + 'static
             + Send
             + Sync,
@@ -114,15 +108,15 @@ where
         Noti: for<'de> Deserialize<'de>,
     {
         let index = self.0.methods.len();
-        self.0.methods.push(InboundHandler::Notify(Box::new(move |request| {
-            let param = match request.parse::<Noti>() {
+        self.0.methods.push(InboundHandler::Notify(Box::new(move |msg| {
+            let param = match msg.parse::<Noti>() {
                 Ok(x) => x,
                 Err(e) => {
                     return Err(RouteMessageError::ParseError(e));
                 }
             };
 
-            func(request.user_data_raw(), param)?;
+            func(msg, param)?;
             Ok(())
         })));
         self.0.router.register(patterns, index)
@@ -183,13 +177,17 @@ pub mod macro_utils {
 #[derive(Debug)]
 pub struct TypedRequest<T, E>(Request, std::marker::PhantomData<(T, E)>);
 
-impl<T, E> MessageUserData for TypedRequest<T, E> {
+impl<T, E> ExtractUserData for TypedRequest<T, E> {
     fn user_data_raw(&self) -> &dyn UserData {
         self.0.user_data_raw()
     }
 
     fn user_data_owned(&self) -> crate::rpc::OwnedUserData {
         self.0.user_data_owned()
+    }
+
+    fn extract_sender(&self) -> crate::Sender {
+        self.0.extract_sender()
     }
 }
 

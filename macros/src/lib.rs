@@ -24,7 +24,6 @@ use syn::{
 /// # Available Attributes for Methods
 ///
 /// - `sync`: Force generation of synchronous functions
-/// - `no_user_data`: Do not insert user-data parameter to the function.
 /// - `aliases = "..."`: Additional routes for the method. This is useful when you want to have
 ///   multiple routes for the same method.
 /// - `with_reuse`: Generate `*_with_reuse` series of methods. This is useful when you want to
@@ -123,6 +122,7 @@ pub fn service(
             use rpc_it::service as __sv;
             use rpc_it::service::macro_utils as __mc;
             use rpc_it::serde;
+            use rpc_it::ExtractUserData;
 
             #vis trait Service: Send + Sync + 'static + Clone {
                 #trait_signatures
@@ -248,11 +248,12 @@ fn generate_loader_item(
     let tup_inputs = quote!((#(#inputs),*));
     let route_paths = quote!(&[#(#routes),*]);
     let unpack = if inputs.len() == 1 {
-        quote!(__req)
+        let tok_ref = is_ref[0].then(|| quote!(&));
+        quote!(#tok_ref __req)
     } else {
         let vals = (0..inputs.len()).map(|x| syn::Index::from(x));
-        let ident = is_ref.iter().map(|x| if *x { quote!(&) } else { quote!() });
-        quote!(#( #ident __req.#vals ),*)
+        let tok_ref = is_ref.iter().map(|x| if *x { quote!(&) } else { quote!() });
+        quote!(#( #tok_ref __req.#vals ),*)
     };
 
     for r in routes {
@@ -262,8 +263,6 @@ fn generate_loader_item(
     }
 
     let output = OutputType::new(&method.sig.output);
-    let usr_ident = quote_spanned!(method.span() => __user);
-    let usrx = (!attrs.no_user_data).then(|| quote!(#usr_ident,));
 
     let tok_this_clone = (!is_stateless).then(|| quote!(let __this_2 = __this.clone();));
     let tok_this_param = (!is_stateless).then(|| quote!(&__this_2,));
@@ -271,22 +270,23 @@ fn generate_loader_item(
     let strm = if output.is_notify() {
         quote!(
             #tok_this_clone
-            __service.register_notify_handler(#route_paths, move |#usr_ident, __req: #tup_inputs| {
-                T::#ident(#tok_this_param #usrx #unpack);
+            __service.register_notify_handler(#route_paths, move |__src, __req: #tup_inputs| {
+                T::#ident(#tok_this_param __src, #unpack);
                 Ok(())
             })?
         )
     } else {
-        let treq = output.typed_req();
-
+        let type_out = output.typed_req();
         if is_sync_func {
-            let rval = output
-                .handle_sync_retval_to_response(Ident::new("__result", method.sig.output.span()));
+            let rval = output.handle_sync_retval_to_response(
+                Ident::new("__src", method.sig.output.span()),
+                Ident::new("__result", method.sig.output.span()),
+            );
 
             quote!(
                 #tok_this_clone
-                __service.register_request_handler(#route_paths, move |#usr_ident, __req: #tup_inputs, __rep: #treq| {
-                    let __result = T::#ident(#tok_this_param #usrx #unpack);
+                __service.register_request_handler(#route_paths, move |__src: #type_out, __req: #tup_inputs| {
+                    let __result = T::#ident(#tok_this_param __src.user_data_owned(), #unpack);
                     #rval;
                     Ok(())
                 })?
@@ -294,8 +294,8 @@ fn generate_loader_item(
         } else {
             quote!(
                 #tok_this_clone
-                __service.register_request_handler(#route_paths, move |#usr_ident, __req: #tup_inputs, __rep: #treq| {
-                    T::#ident(#tok_this_param #usrx #unpack, __rep);
+                __service.register_request_handler(#route_paths, move |__src: #type_out, __req: #tup_inputs| {
+                    T::#ident(#tok_this_param __src, #unpack);
                     Ok(())
                 })?
             )
@@ -438,39 +438,20 @@ fn generate_trait_signatures(items: &[TraitItemFn], attrs: &[MethodAttrs]) -> To
             return TraitItem::Fn(method);
         }
 
-        if !attrs.no_user_data {
-            // TODO: insert user after receiver argument
-            let has_receiver = method.sig.receiver().is_some();
-            let insert_at = if has_receiver { 1 } else { 0 };
-
-            method.sig.inputs.insert(
-                insert_at,
-                syn::parse_quote_spanned!(method.sig.output.span() => _: &dyn rpc_it::UserData),
-            );
-        }
-
-        if attrs.sync {
-            // Use as-is
-            return TraitItem::Fn(method);
-        }
-
-        if out.is_notify() {
-            // Don't need to touch anymore.
-            return TraitItem::Fn(method);
-        }
-
-        let last_param_ident = if let Some(body) = &method.default {
+        let req_param_ident = if let Some(body) =
+            method.default.as_ref().filter(|_| !attrs.sync && !out.is_notify())
+        {
             let span = body.span();
             let id_req = Ident::new("___rq", span);
-            let id_rval = Ident::new("___returned_value", span);
+            let payload: syn::Expr = syn::parse_quote_spanned!(span => (move || #body)());
             let response = match out {
                 OutputType::Notify => unreachable!(),
                 OutputType::ResponseNoErr(_) => {
-                    quote_spanned!(span => #id_req.ok(&#id_rval).ok();)
+                    quote_spanned!(span => #id_req.ok(&#payload).ok();)
                 }
                 OutputType::Response(_, _) => {
                     quote_spanned!(
-                        span => match #id_rval {
+                        span => match #payload {
                             Ok(x) => #id_req.ok(&x).ok(),
                             Err(e) => #id_req.err(&e).ok(),
                         }
@@ -481,7 +462,6 @@ fn generate_trait_signatures(items: &[TraitItemFn], attrs: &[MethodAttrs]) -> To
             method.default = Some(syn::parse_quote_spanned!(
                 span =>
                 {
-                    let #id_rval = (move || #body)();
                     #response;
                 }
             ));
@@ -500,19 +480,35 @@ fn generate_trait_signatures(items: &[TraitItemFn], attrs: &[MethodAttrs]) -> To
             })
         };
 
-        let outputs = OutputType::new(&method.sig.output);
-        if outputs.is_notify() {
-            abort!(method, "Only request handler can be async!");
+        {
+            let has_receiver = method.sig.receiver().is_some();
+            let insert_at = if has_receiver { 1 } else { 0 };
+
+            if out.is_notify() {
+                method.sig.inputs.insert(
+                    insert_at,
+                    syn::parse_quote_spanned!(method.sig.output.span() => _: rpc_it::Notify),
+                );
+            } else if !attrs.sync {
+                method.sig.inputs.insert(
+                    insert_at,
+                    syn::FnArg::Typed(syn::PatType {
+                        attrs: Vec::new(),
+                        colon_token: Default::default(),
+                        pat: req_param_ident.into(),
+                        ty: out.typed_req().into(),
+                    }),
+                );
+
+                method.sig.output = ReturnType::Default;
+            } else {
+                method.sig.inputs.insert(
+                    insert_at,
+                    syn::parse_quote_spanned!(method.sig.output.span() => _: rpc_it::OwnedUserData),
+                );
+            }
         }
 
-        method.sig.inputs.push(syn::FnArg::Typed(syn::PatType {
-            attrs: Vec::new(),
-            colon_token: Default::default(),
-            pat: last_param_ident.into(),
-            ty: outputs.typed_req().into(),
-        }));
-
-        method.sig.output = ReturnType::Default;
         TraitItem::Fn(method)
     });
 
@@ -523,7 +519,6 @@ fn generate_trait_signatures(items: &[TraitItemFn], attrs: &[MethodAttrs]) -> To
 struct MethodAttrs {
     sync: bool,
     skip: bool,
-    no_user_data: bool,
     aliases: Vec<syn::LitStr>,
     with_reuse: bool,
     route: Option<syn::LitStr>,
@@ -536,9 +531,11 @@ fn method_attrs(method: &mut TraitItemFn) -> MethodAttrs {
         match &attr.meta {
             syn::Meta::Path(path) => {
                 if path.is_ident("sync") {
+                    if matches!(method.sig.output, ReturnType::Default) {
+                        emit_error!(attr, "'sync' attribute is only allowed for requests");
+                    }
+
                     attrs.sync = true;
-                } else if path.is_ident("no_user_data") {
-                    attrs.no_user_data = true;
                 } else if path.is_ident("skip") {
                     attrs.skip = true;
                 } else if path.is_ident("with_reuse") {
@@ -632,19 +629,19 @@ impl OutputType {
         }
     }
 
-    fn handle_sync_retval_to_response(&self, ident: Ident) -> TokenStream {
+    fn handle_sync_retval_to_response(&self, req_ident: Ident, val_ident: Ident) -> TokenStream {
         match self {
             OutputType::Notify => unimplemented!(),
 
             OutputType::ResponseNoErr(_) => {
-                quote!(__rep.ok(&#ident)?;)
+                quote!(#req_ident.ok(&#val_ident)?;)
             }
 
             OutputType::Response(_, _) => {
                 quote!(
-                    match #ident {
-                        Ok(x) => __rep.ok(&x)?,
-                        Err(e) => __rep.err(&e)?,
+                    match #val_ident {
+                        Ok(x) => #req_ident.ok(&x)?,
+                        Err(e) => #req_ident.err(&e)?,
                     }
                 )
             }

@@ -8,29 +8,22 @@ use rpc_it::{codec::Codec, ExactMatchRouter, Sender, ServiceBuilder, Transceiver
 trait TestService {
     #[sync]
     #[skip]
-    #[no_user_data]
     fn get_int_id(&self) -> u32;
 
     #[sync]
     #[route = "Add.MyName.IsAdded"]
-    #[no_user_data]
     fn add(a: u32, b: u32) -> u32;
 
     #[sync]
-    #[no_user_data]
     fn get_id(&self) -> u32 {
         self.get_int_id()
     }
 
     #[sync]
-    #[no_user_data]
     fn id_added(&self, id: u32) -> u32;
 
-    #[sync]
-    #[no_user_data]
     fn update_id(&self, new_id: u32);
 
-    #[no_user_data]
     fn concat_str_with_id(&self, values: (i32, i32, String)) -> String;
 }
 
@@ -46,28 +39,28 @@ async fn execute_service(x: Transceiver) {
     let my_state = MyNewType(AtomicU32::default().into());
 
     impl test_service::Service for MyNewType {
-        fn add(a: u32, b: u32) -> u32 {
+        fn get_int_id(&self) -> u32 {
+            self.0.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        fn add(_: rpc_it::OwnedUserData, a: u32, b: u32) -> u32 {
             a + b
         }
 
-        fn id_added(&self, id: u32) -> u32 {
+        fn id_added(&self, _: rpc_it::OwnedUserData, id: u32) -> u32 {
             id + self.0.fetch_add(id, std::sync::atomic::Ordering::Relaxed)
         }
 
-        fn update_id(&self, new_id: u32) {
+        fn update_id(&self, _: rpc_it::Notify, new_id: u32) {
             self.0.store(new_id, std::sync::atomic::Ordering::Relaxed);
         }
 
         fn concat_str_with_id(
             &self,
+            x: rpc_it::TypedRequest<String, ()>,
             values: (i32, i32, String),
-            rep: rpc_it::TypedRequest<String, ()>,
         ) {
-            rep.ok(&concat(&values)).ok();
-        }
-
-        fn get_int_id(&self) -> u32 {
-            self.0.load(std::sync::atomic::Ordering::Relaxed)
+            x.ok(&concat(&values)).ok();
         }
     }
 
