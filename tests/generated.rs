@@ -6,19 +6,31 @@ use rpc_it::{codec::Codec, Sender, ServiceBuilder, Transceiver};
 
 #[rpc_it::service]
 trait TestService {
+    #[sync]
     #[skip]
+    #[no_user_data]
     fn get_int_id(&self) -> u32;
 
+    #[sync]
     #[route = "Add.MyName.IsAdded"]
+    #[no_user_data]
     fn add(a: u32, b: u32) -> u32;
+
+    #[sync]
+    #[no_user_data]
     fn get_id(&self) -> u32 {
         self.get_int_id()
     }
 
+    #[sync]
+    #[no_user_data]
     fn id_added(&self, id: u32) -> u32;
+
+    #[sync]
+    #[no_user_data]
     fn update_id(&self, new_id: u32);
 
-    #[async_fn]
+    #[no_user_data]
     fn concat_str_with_id(&self, values: (i32, i32, String)) -> String;
 }
 

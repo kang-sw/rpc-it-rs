@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use convert_case::{Case, Casing};
 use proc_macro2::TokenStream;
 use proc_macro_error::{abort, emit_error, proc_macro_error};
-use quote::quote;
+use quote::{quote, quote_spanned};
 use syn::{
     spanned::Spanned, FnArg, GenericArgument, Ident, Pat, ReturnType, Token, TraitItem,
     TraitItemFn, Type, VisRestricted, Visibility,
@@ -16,10 +16,15 @@ use syn::{
 /// The trait name will be converted to snake_case module, and all related definitions will be
 /// defined inside the module.
 ///
-/// # Available Attributes For Methods
+/// # Available Attributes for Traits
 ///
-/// - `async_fn`: For requests(which has `->` return type), this passes the request object to the
-///   handler, instead of waiting return value.
+/// - `no_service`: Do not generate service-related code (TODO)
+/// - `no_client`: Do not generate client-related code (TODO)
+///
+/// # Available Attributes for Methods
+///
+/// - `sync`: Force generation of synchronous functions
+/// - `no_user_data`: Do not insert user-data parameter to the function.
 /// - `aliases = "..."`: Additional routes for the method. This is useful when you want to have
 ///   multiple routes for the same method.
 /// - `with_reuse`: Generate `*_with_reuse` series of methods. This is useful when you want to
@@ -205,7 +210,7 @@ fn generate_loader_item(
     };
 
     // Additional routes
-    let is_pseudo_async = attrs.async_fn;
+    let is_sync_func = attrs.sync;
     let mut routes = Vec::with_capacity(1 + attrs.aliases.len());
     let ident = &method.sig.ident;
     routes.push(
@@ -257,80 +262,47 @@ fn generate_loader_item(
     }
 
     let output = OutputType::new(&method.sig.output);
+    let usr_ident = quote_spanned!(method.span() => __user);
+    let usrx = (!attrs.no_user_data).then(|| quote!(#usr_ident,));
 
-    Some(if is_stateless {
-        let strm = if output.is_notify() {
-            quote!(
-                __service.register_notify_handler(#route_paths, |__req: #tup_inputs| {
-                    T::#ident(#unpack);
-                    Ok(())
-                })?
-            )
-        } else {
-            let treq = output.typed_req();
+    let tok_this_clone = (!is_stateless).then(|| quote!(let __this_2 = __this.clone();));
+    let tok_this_param = (!is_stateless).then(|| quote!(&__this_2,));
 
-            if !is_pseudo_async {
-                let rval = output.handle_sync_retval_to_response(Ident::new(
-                    "__result",
-                    method.sig.output.span(),
-                ));
-
-                quote!(
-                    __service.register_request_handler(#route_paths, |__req: #tup_inputs, __rep: #treq| {
-                        let __result = T::#ident(#unpack);
-                        #rval;
-                        Ok(())
-                    })?
-                )
-            } else {
-                quote!(
-                    __service.register_request_handler(#route_paths, |__req: #tup_inputs, __rep: #treq| {
-                        T::#ident(#unpack, __rep);
-                        Ok(())
-                    })?
-                )
-            }
-        };
-        LoaderOutput::Stateless(strm)
+    let strm = if output.is_notify() {
+        quote!(
+            #tok_this_clone
+            __service.register_notify_handler(#route_paths, move |#usr_ident, __req: #tup_inputs| {
+                T::#ident(#tok_this_param #usrx #unpack);
+                Ok(())
+            })?
+        )
     } else {
-        let this_param = if is_self_ref { quote!(&__this_2) } else { quote!(__this_2.clone()) };
-        let strm = if output.is_notify() {
+        let treq = output.typed_req();
+
+        if is_sync_func {
+            let rval = output
+                .handle_sync_retval_to_response(Ident::new("__result", method.sig.output.span()));
+
             quote!(
-                let __this_2 = __this.clone();
-                __service.register_notify_handler(#route_paths, move |__req: #tup_inputs| {
-                    T::#ident(#this_param, #unpack);
+                #tok_this_clone
+                __service.register_request_handler(#route_paths, move |#usr_ident, __req: #tup_inputs, __rep: #treq| {
+                    let __result = T::#ident(#tok_this_param #usrx #unpack);
+                    #rval;
                     Ok(())
                 })?
             )
         } else {
-            let treq = output.typed_req();
+            quote!(
+                #tok_this_clone
+                __service.register_request_handler(#route_paths, move |#usr_ident, __req: #tup_inputs, __rep: #treq| {
+                    T::#ident(#tok_this_param #usrx #unpack, __rep);
+                    Ok(())
+                })?
+            )
+        }
+    };
 
-            if !is_pseudo_async {
-                let rval = output.handle_sync_retval_to_response(Ident::new(
-                    "__result",
-                    method.sig.output.span(),
-                ));
-
-                quote!(
-                    let __this_2 = __this.clone();
-                    __service.register_request_handler(#route_paths, move |__req: #tup_inputs, __rep: #treq| {
-                        let __result = T::#ident(#this_param, #unpack);
-                        #rval;
-                        Ok(())
-                    })?
-                )
-            } else {
-                quote!(
-                    let __this_2 = __this.clone();
-                    __service.register_request_handler(#route_paths, move |__req: #tup_inputs, __rep: #treq| {
-                        T::#ident(#this_param, #unpack, __rep);
-                        Ok(())
-                    })?
-                )
-            }
-        };
-        LoaderOutput::Stateful(strm)
-    })
+    Some(if is_stateless { LoaderOutput::Stateless(strm) } else { LoaderOutput::Stateful(strm) })
 }
 
 fn generate_call_stubs(
@@ -459,17 +431,74 @@ fn generate_call_stubs(
 fn generate_trait_signatures(items: &[TraitItemFn], attrs: &[MethodAttrs]) -> TokenStream {
     let tokens = items.iter().zip(attrs).map(|(method, attrs)| {
         let mut method = method.clone();
+        let out = OutputType::new(&method.sig.output);
 
-        // XXX: When static async method is stabilized, add support for it.
-        // - For now, to not corrupt the async keyword usage, we only allow declaring pseudo-async
-        //   method through method attribute
-        if !attrs.async_fn || attrs.skip {
+        if attrs.skip {
+            // Use as-is
             return TraitItem::Fn(method);
         }
 
-        if method.default.is_some() {
-            abort!(method, "You can't provide default implementation for async handler");
+        if !attrs.no_user_data {
+            // TODO: insert user after receiver argument
+            let has_receiver = method.sig.receiver().is_some();
+            let insert_at = if has_receiver { 1 } else { 0 };
+
+            method.sig.inputs.insert(
+                insert_at,
+                syn::parse_quote_spanned!(method.sig.output.span() => _: &dyn rpc_it::UserData),
+            );
         }
+
+        if attrs.sync {
+            // Use as-is
+            return TraitItem::Fn(method);
+        }
+
+        if out.is_notify() {
+            // Don't need to touch anymore.
+            return TraitItem::Fn(method);
+        }
+
+        let last_param_ident = if let Some(body) = &method.default {
+            let span = body.span();
+            let id_req = Ident::new("___rq", span);
+            let id_rval = Ident::new("___returned_value", span);
+            let response = match out {
+                OutputType::Notify => unreachable!(),
+                OutputType::ResponseNoErr(_) => {
+                    quote_spanned!(span => #id_req.ok(&#id_rval).ok();)
+                }
+                OutputType::Response(_, _) => {
+                    quote_spanned!(
+                        span => match #id_rval {
+                            Ok(x) => #id_req.ok(&x).ok(),
+                            Err(e) => #id_req.err(&e).ok(),
+                        }
+                    )
+                }
+            };
+
+            method.default = Some(syn::parse_quote_spanned!(
+                span =>
+                {
+                    let #id_rval = (move || #body)();
+                    #response;
+                }
+            ));
+
+            syn::Pat::Ident(syn::PatIdent {
+                attrs: Vec::new(),
+                by_ref: None,
+                mutability: None,
+                subpat: None,
+                ident: id_req,
+            })
+        } else {
+            syn::Pat::Wild(syn::PatWild {
+                attrs: Vec::new(),
+                underscore_token: Token![_](method.sig.output.span()),
+            })
+        };
 
         let outputs = OutputType::new(&method.sig.output);
         if outputs.is_notify() {
@@ -479,11 +508,7 @@ fn generate_trait_signatures(items: &[TraitItemFn], attrs: &[MethodAttrs]) -> To
         method.sig.inputs.push(syn::FnArg::Typed(syn::PatType {
             attrs: Vec::new(),
             colon_token: Default::default(),
-            pat: syn::Pat::Wild(syn::PatWild {
-                attrs: Vec::new(),
-                underscore_token: Token![_](method.sig.output.span()),
-            })
-            .into(),
+            pat: last_param_ident.into(),
             ty: outputs.typed_req().into(),
         }));
 
@@ -496,8 +521,9 @@ fn generate_trait_signatures(items: &[TraitItemFn], attrs: &[MethodAttrs]) -> To
 
 #[derive(Default)]
 struct MethodAttrs {
-    async_fn: bool,
+    sync: bool,
     skip: bool,
+    no_user_data: bool,
     aliases: Vec<syn::LitStr>,
     with_reuse: bool,
     route: Option<syn::LitStr>,
@@ -509,8 +535,10 @@ fn method_attrs(method: &mut TraitItemFn) -> MethodAttrs {
     for attr in std::mem::take(&mut method.attrs) {
         match &attr.meta {
             syn::Meta::Path(path) => {
-                if path.is_ident("async_fn") {
-                    attrs.async_fn = true;
+                if path.is_ident("sync") {
+                    attrs.sync = true;
+                } else if path.is_ident("no_user_data") {
+                    attrs.no_user_data = true;
                 } else if path.is_ident("skip") {
                     attrs.skip = true;
                 } else if path.is_ident("with_reuse") {

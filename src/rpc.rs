@@ -75,7 +75,7 @@ trait Connection: Send + Sync + 'static + Debug {
     fn reqs(&self) -> Option<&RequestContext>;
     fn tx_drive(&self) -> &flume::Sender<InboundDriverDirective>;
     fn feature_flag(&self) -> Feature;
-    fn user_data(&self) -> &(dyn Any + Send + Sync + 'static);
+    fn user_data(&self) -> &dyn UserData;
 }
 
 impl<C, T, R, U> Connection for ConnectionImpl<C, T, R, U>
@@ -105,7 +105,7 @@ where
         self.features
     }
 
-    fn user_data(&self) -> &(dyn Any + Send + Sync + 'static) {
+    fn user_data(&self) -> &dyn UserData {
         &self.user_data
     }
 }
@@ -122,8 +122,6 @@ where
     }
 }
 
-pub trait UserData: Any + Send + Sync + 'static {}
-impl<T> UserData for T where T: Any + Send + Sync + 'static {}
 /// Trick to get the request context from the generic type, and to cast [`ConnectionBody`] to
 /// `dyn` [`Connection`] trait object.
 pub trait GetRequestContext: std::fmt::Debug + Send + Sync + 'static {
@@ -153,6 +151,45 @@ impl<C, T, R: Debug, U> Debug for ConnectionImpl<C, T, R, U> {
         f.debug_struct("ConnectionBody").field("reqs", &self.reqs).finish()
     }
 }
+
+/* --------------------------------------- User Data Trait -------------------------------------- */
+pub trait UserData: Any + Send + Sync + 'static {
+    fn as_any(&self) -> &(dyn Any + Send + Sync + 'static);
+}
+
+impl<T> UserData for T
+where
+    T: Any + Send + Sync + 'static,
+{
+    fn as_any(&self) -> &(dyn Any + Send + Sync + 'static) {
+        self
+    }
+}
+
+impl AsRef<dyn Any + Send + Sync + 'static> for dyn UserData {
+    fn as_ref(&self) -> &(dyn Any + Send + Sync + 'static) {
+        self.as_any()
+    }
+}
+
+#[derive(Clone)]
+pub struct OwnedUserData(Arc<dyn Connection>);
+
+impl OwnedUserData {
+    pub fn raw(&self) -> &dyn UserData {
+        self.0.user_data()
+    }
+}
+
+impl std::ops::Deref for OwnedUserData {
+    type Target = dyn Any;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.user_data().as_any()
+    }
+}
+
+/* -------------------------------------- Driver Directives ------------------------------------- */
 
 /// Which couldn't be handled within the non-async drop handlers ...
 ///
@@ -484,7 +521,7 @@ impl Sender {
 
     /// Get UserData
     pub fn user_data<T: UserData>(&self) -> Option<&T> {
-        self.0.user_data().downcast_ref()
+        self.0.user_data().as_any().downcast_ref()
     }
 }
 
@@ -1202,6 +1239,14 @@ pub trait MessageMethodName: Message {
     }
 }
 
+pub trait MessageUserData {
+    fn user_data_raw(&self) -> &dyn UserData;
+    fn user_data_owned(&self) -> OwnedUserData;
+    fn user_data<T: UserData>(&self) -> Option<&T> {
+        self.user_data_raw().as_any().downcast_ref()
+    }
+}
+
 /// Common content of inbound message
 #[derive(Debug)]
 struct InboundBody {
@@ -1220,7 +1265,7 @@ pub mod msg {
         rpc::MessageReqId,
     };
 
-    use super::{Connection, DeferredWrite, Message, UserData, WriteBuffer};
+    use super::{Connection, DeferredWrite, Message, MessageUserData, UserData, WriteBuffer};
 
     macro_rules! impl_message {
         ($t:ty) => {
@@ -1289,14 +1334,16 @@ pub mod msg {
         }
     }
 
-    impl Request {
-        pub fn user_data<T>(&self) -> Option<&T>
-        where
-            T: UserData,
-        {
-            self.body.as_ref().unwrap().1.user_data().downcast_ref()
+    impl MessageUserData for Request {
+        fn user_data_raw(&self) -> &dyn UserData {
+            self.body.as_ref().unwrap().1.user_data()
         }
+        fn user_data_owned(&self) -> super::OwnedUserData {
+            super::OwnedUserData(self.body.as_ref().unwrap().1.clone())
+        }
+    }
 
+    impl Request {
         pub async fn response<T: serde::Serialize>(
             self,
             value: Result<&T, &T>,
@@ -1461,15 +1508,44 @@ pub mod msg {
     pub struct Notify {
         pub(super) h: super::InboundBody,
         pub(super) method: Range<usize>,
+        pub(super) sender: Arc<dyn Connection>,
     }
 
     impl_message!(Notify);
     impl_method_name!(Notify);
 
+    impl MessageUserData for Notify {
+        fn user_data_raw(&self) -> &dyn UserData {
+            self.sender.user_data()
+        }
+
+        fn user_data_owned(&self) -> super::OwnedUserData {
+            super::OwnedUserData(self.sender.clone())
+        }
+    }
+
+    /* ---------------------------------- Received Message Type --------------------------------- */
+
     #[derive(Debug, EnumAsInner)]
     pub enum RecvMsg {
         Request(Request),
         Notify(Notify),
+    }
+
+    impl MessageUserData for RecvMsg {
+        fn user_data_raw(&self) -> &dyn UserData {
+            match self {
+                Self::Request(x) => x.user_data_raw(),
+                Self::Notify(x) => x.user_data_raw(),
+            }
+        }
+
+        fn user_data_owned(&self) -> super::OwnedUserData {
+            match self {
+                Self::Request(x) => x.user_data_owned(),
+                Self::Notify(x) => x.user_data_owned(),
+            }
+        }
     }
 
     impl super::Message for RecvMsg {
@@ -1761,7 +1837,7 @@ mod inner {
                 InboundFrameType::Notify { .. } | InboundFrameType::Request { .. } => {
                     let (msg, disabled) = match header {
                         InboundFrameType::Notify { method } => (
-                            msg::RecvMsg::Notify(msg::Notify { h, method }),
+                            msg::RecvMsg::Notify(msg::Notify { h, method, sender: this.clone() }),
                             this.features.contains(Feature::NO_RECEIVE_NOTIFY),
                         ),
                         InboundFrameType::Request { method, req_id } => (

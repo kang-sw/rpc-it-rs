@@ -81,7 +81,7 @@ pub use rpc::{
     msg::{Notify, RecvMsg, Request, Response, ResponseError},
     Builder, CallError, Feature, InboundError, InboundEventSubscriber, Message,
     OwnedResponseFuture, RecvError, RequestContext, ResponseFuture, SendError, Sender, Transceiver,
-    TryRecvError, TypedCallError,
+    TryRecvError, TypedCallError, UserData,
 };
 
 pub use serde::de::IgnoredAny;

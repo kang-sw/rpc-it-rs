@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     codec::DecodeError,
-    rpc::{MessageMethodName, UserData},
+    rpc::{MessageMethodName, MessageUserData, UserData},
     Message, Notify, RecvMsg, Request, TypedCallError,
 };
 
@@ -66,7 +66,11 @@ where
     pub fn register_request_handler<Req, Rep, Err>(
         &mut self,
         patterns: &[&str],
-        func: impl Fn(Req, TypedRequest<Rep, Err>) -> Result<(), Box<dyn Error + Send + Sync + 'static>>
+        func: impl Fn(
+                &dyn UserData,
+                Req,
+                TypedRequest<Rep, Err>,
+            ) -> Result<(), Box<dyn Error + Send + Sync + 'static>>
             + 'static
             + Send
             + Sync,
@@ -87,7 +91,9 @@ where
                 }
             };
 
-            func(param, request)?;
+            let user = request.user_data_owned();
+            func(&user, param, request)?;
+
             Ok(())
         })));
         self.0.router.register(patterns, index)
@@ -96,7 +102,7 @@ where
     pub fn register_notify_handler<Noti>(
         &mut self,
         patterns: &[&str],
-        func: impl Fn(Noti) -> Result<(), Box<dyn Error + Send + Sync + 'static>>
+        func: impl Fn(&dyn UserData, Noti) -> Result<(), Box<dyn Error + Send + Sync + 'static>>
             + 'static
             + Send
             + Sync,
@@ -113,7 +119,7 @@ where
                 }
             };
 
-            func(param)?;
+            func(request.user_data_raw(), param)?;
             Ok(())
         })));
         self.0.router.register(patterns, index)
@@ -174,6 +180,16 @@ pub mod macro_utils {
 #[derive(Debug)]
 pub struct TypedRequest<T, E>(Request, std::marker::PhantomData<(T, E)>);
 
+impl<T, E> MessageUserData for TypedRequest<T, E> {
+    fn user_data_raw(&self) -> &dyn UserData {
+        self.0.user_data_raw()
+    }
+
+    fn user_data_owned(&self) -> crate::rpc::OwnedUserData {
+        self.0.user_data_owned()
+    }
+}
+
 impl<T, E> TypedRequest<T, E>
 where
     T: serde::Serialize,
@@ -187,13 +203,19 @@ where
         self.0
     }
 
-    pub fn user_data<U>(&self) -> Option<&U>
-    where
-        U: UserData,
-    {
-        self.0.user_data()
+    pub fn response(self, res: Result<&T, &E>) -> Result<(), super::SendError> {
+        match res {
+            Ok(x) => self.0.response_deferred(Ok(x)),
+            Err(e) => self.0.response_deferred(Err(e)),
+        }
     }
 
+    pub async fn response_async(self, res: Result<&T, &E>) -> Result<(), super::SendError> {
+        match res {
+            Ok(x) => self.0.response(Ok(x)).await,
+            Err(e) => self.0.response(Err(e)).await,
+        }
+    }
     pub async fn ok_async(self, value: &T) -> Result<(), super::SendError> {
         self.0.response(Ok(value)).await
     }
