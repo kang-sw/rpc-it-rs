@@ -481,6 +481,11 @@ impl Sender {
     pub fn get_feature_flags(&self) -> Feature {
         self.0.feature_flag()
     }
+
+    /// Get UserData
+    pub fn user_data<T: UserData>(&self) -> Option<&T> {
+        self.0.user_data().downcast_ref()
+    }
 }
 
 mod req {
@@ -1215,7 +1220,7 @@ pub mod msg {
         rpc::MessageReqId,
     };
 
-    use super::{Connection, DeferredWrite, Message, WriteBuffer};
+    use super::{Connection, DeferredWrite, Message, UserData, WriteBuffer};
 
     macro_rules! impl_message {
         ($t:ty) => {
@@ -1285,6 +1290,13 @@ pub mod msg {
     }
 
     impl Request {
+        pub fn user_data<T>(&self) -> Option<&T>
+        where
+            T: UserData,
+        {
+            self.body.as_ref().unwrap().1.user_data().downcast_ref()
+        }
+
         pub async fn response<T: serde::Serialize>(
             self,
             value: Result<&T, &T>,

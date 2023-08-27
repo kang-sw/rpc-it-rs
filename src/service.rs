@@ -3,7 +3,9 @@ use std::{collections::HashMap, error::Error, fmt::Debug, pin::Pin, task::Poll};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    codec::DecodeError, rpc::MessageMethodName, Message, Notify, RecvMsg, Request, TypedCallError,
+    codec::DecodeError,
+    rpc::{MessageMethodName, UserData},
+    Message, Notify, RecvMsg, Request, TypedCallError,
 };
 
 pub struct ServiceBuilder<T = ExactMatchRouter>(Service<T>);
@@ -183,6 +185,13 @@ where
 
     pub fn into_request(self) -> Request {
         self.0
+    }
+
+    pub fn user_data<U>(&self) -> Option<&U>
+    where
+        U: UserData,
+    {
+        self.0.user_data()
     }
 
     pub async fn ok_async(self, value: &T) -> Result<(), super::SendError> {
