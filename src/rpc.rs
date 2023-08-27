@@ -8,6 +8,7 @@
 //!
 
 use std::{
+    any::Any,
     fmt::Debug,
     num::NonZeroUsize,
     ops::Range,
@@ -57,12 +58,13 @@ bitflags! {
 ///
 /// For unsupported features(e.g. notify from client), the codec should return
 /// [`crate::codec::EncodeError::UnsupportedFeature`] error.
-struct ConnectionImpl<C, T, R> {
+struct ConnectionImpl<C, T, R, U> {
     codec: Arc<C>,
     write: AsyncMutex<T>,
     reqs: R,
     tx_drive: flume::Sender<InboundDriverDirective>,
     features: Feature,
+    user_data: U,
     _unpin: std::marker::PhantomPinned,
 }
 
@@ -73,13 +75,15 @@ trait Connection: Send + Sync + 'static + Debug {
     fn reqs(&self) -> Option<&RequestContext>;
     fn tx_drive(&self) -> &flume::Sender<InboundDriverDirective>;
     fn feature_flag(&self) -> Feature;
+    fn user_data(&self) -> &(dyn Any + Send + Sync + 'static);
 }
 
-impl<C, T, R> Connection for ConnectionImpl<C, T, R>
+impl<C, T, R, U> Connection for ConnectionImpl<C, T, R, U>
 where
     C: Codec,
     T: AsyncFrameWrite,
     R: GetRequestContext,
+    U: UserData,
 {
     fn codec(&self) -> &dyn Codec {
         &*self.codec
@@ -100,30 +104,26 @@ where
     fn feature_flag(&self) -> Feature {
         self.features
     }
+
+    fn user_data(&self) -> &(dyn Any + Send + Sync + 'static) {
+        &self.user_data
+    }
 }
 
-impl<C, T, R> ConnectionImpl<C, T, R>
+impl<C, T, R, U> ConnectionImpl<C, T, R, U>
 where
     C: Codec,
     T: AsyncFrameWrite,
     R: GetRequestContext,
+    U: UserData,
 {
-    fn with_req(self) -> ConnectionImpl<C, T, RequestContext> {
-        ConnectionImpl {
-            codec: self.codec,
-            write: self.write,
-            reqs: RequestContext::default(),
-            tx_drive: self.tx_drive,
-            features: self.features,
-            _unpin: Default::default(),
-        }
-    }
-
     fn dyn_ref(&self) -> &dyn Connection {
         self
     }
 }
 
+pub trait UserData: Any + Send + Sync + 'static {}
+impl<T> UserData for T where T: Any + Send + Sync + 'static {}
 /// Trick to get the request context from the generic type, and to cast [`ConnectionBody`] to
 /// `dyn` [`Connection`] trait object.
 pub trait GetRequestContext: std::fmt::Debug + Send + Sync + 'static {
@@ -148,7 +148,7 @@ impl GetRequestContext for () {
     }
 }
 
-impl<C, T, R: Debug> Debug for ConnectionImpl<C, T, R> {
+impl<C, T, R: Debug, U> Debug for ConnectionImpl<C, T, R, U> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConnectionBody").field("reqs", &self.reqs).finish()
     }
@@ -769,12 +769,13 @@ impl From<flume::RecvError> for RecvError {
 /* ---------------------------------------------------------------------------------------------- */
 
 //  - Create async worker task to handle receive
-pub struct Builder<Tw, Tr, C, E, R> {
+pub struct Builder<Tw, Tr, C, E, R, U> {
     codec: C,
     write: Tw,
     read: Tr,
     ev: E,
     reqs: R,
+    user_data: U,
 
     /// Required configurations
     cfg: BuilderOtherConfig,
@@ -786,7 +787,7 @@ struct BuilderOtherConfig {
     feature_flag: Feature,
 }
 
-impl Default for Builder<(), (), (), EmptyEventListener, ()> {
+impl Default for Builder<(), (), (), EmptyEventListener, (), ()> {
     fn default() -> Self {
         Self {
             codec: (),
@@ -795,16 +796,17 @@ impl Default for Builder<(), (), (), EmptyEventListener, ()> {
             cfg: Default::default(),
             ev: EmptyEventListener,
             reqs: (),
+            user_data: (),
         }
     }
 }
 
-impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
+impl<Tw, Tr, C, E, R, U> Builder<Tw, Tr, C, E, R, U> {
     /// Specify codec to use.
     pub fn with_codec<C1: Codec>(
         self,
         codec: impl Into<Arc<C1>>,
-    ) -> Builder<Tw, Tr, Arc<C1>, E, R> {
+    ) -> Builder<Tw, Tr, Arc<C1>, E, R, U> {
         Builder {
             codec: codec.into(),
             write: self.write,
@@ -812,11 +814,12 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
             cfg: self.cfg,
             ev: self.ev,
             reqs: self.reqs,
+            user_data: self.user_data,
         }
     }
 
     /// Specify write frame to use
-    pub fn with_write<Tw2>(self, write: Tw2) -> Builder<Tw2, Tr, C, E, R>
+    pub fn with_write<Tw2>(self, write: Tw2) -> Builder<Tw2, Tr, C, E, R, U>
     where
         Tw2: AsyncFrameWrite,
     {
@@ -827,10 +830,12 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
             cfg: self.cfg,
             ev: self.ev,
             reqs: self.reqs,
+            user_data: self.user_data,
         }
     }
 
-    pub fn with_read<Tr2>(self, read: Tr2) -> Builder<Tw, Tr2, C, E, R>
+    /// Specify [`AsyncFrameRead`] to use
+    pub fn with_read<Tr2>(self, read: Tr2) -> Builder<Tw, Tr2, C, E, R, U>
     where
         Tr2: AsyncFrameRead,
     {
@@ -841,13 +846,16 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
             cfg: self.cfg,
             ev: self.ev,
             reqs: self.reqs,
+            user_data: self.user_data,
         }
     }
 
+    /// Specify [`InboundEventSubscriber`] to use. This is used to handle errnous events from
+    /// inbound driver
     pub fn with_event_listener<E2: InboundEventSubscriber>(
         self,
         ev: E2,
-    ) -> Builder<Tw, Tr, C, E2, R> {
+    ) -> Builder<Tw, Tr, C, E2, R, U> {
         Builder {
             codec: self.codec,
             write: self.write,
@@ -855,6 +863,20 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
             cfg: self.cfg,
             ev,
             reqs: self.reqs,
+            user_data: self.user_data,
+        }
+    }
+
+    /// Specify addtional user data to store in the connection.
+    pub fn with_user_data<U2: UserData>(self, user_data: U2) -> Builder<Tw, Tr, C, E, R, U2> {
+        Builder {
+            codec: self.codec,
+            write: self.write,
+            read: self.read,
+            cfg: self.cfg,
+            ev: self.ev,
+            reqs: self.reqs,
+            user_data,
         }
     }
 
@@ -870,7 +892,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
         read: Tr2,
         framing: F,
         default_readbuf_reserve: usize,
-    ) -> Builder<Tw, impl AsyncFrameRead, C, E, R>
+    ) -> Builder<Tw, impl AsyncFrameRead, C, E, R, U>
     where
         Tr2: AsyncRead + Send + Sync + 'static,
         F: Framing,
@@ -980,11 +1002,12 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
             cfg: self.cfg,
             ev: self.ev,
             reqs: self.reqs,
+            user_data: self.user_data,
         }
     }
 
     /// Enable request features with default request context.
-    pub fn with_request(self) -> Builder<Tw, Tr, C, E, RequestContext> {
+    pub fn with_request(self) -> Builder<Tw, Tr, C, E, RequestContext, U> {
         Builder {
             codec: self.codec,
             write: self.write,
@@ -992,6 +1015,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
             cfg: self.cfg,
             ev: self.ev,
             reqs: RequestContext::default(),
+            user_data: self.user_data,
         }
     }
 
@@ -1000,7 +1024,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
     pub fn with_request_context(
         self,
         reqs: impl GetRequestContext,
-    ) -> Builder<Tw, Tr, C, E, impl GetRequestContext> {
+    ) -> Builder<Tw, Tr, C, E, impl GetRequestContext, U> {
         Builder {
             codec: self.codec,
             write: self.write,
@@ -1008,6 +1032,7 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
             cfg: self.cfg,
             ev: self.ev,
             reqs,
+            user_data: self.user_data,
         }
     }
 
@@ -1030,13 +1055,14 @@ impl<Tw, Tr, C, E, R> Builder<Tw, Tr, C, E, R> {
     }
 }
 
-impl<Tw, Tr, C, E, R> Builder<Tw, Tr, Arc<C>, E, R>
+impl<Tw, Tr, C, E, R, U> Builder<Tw, Tr, Arc<C>, E, R, U>
 where
     Tw: AsyncFrameWrite,
     Tr: AsyncFrameRead,
     C: Codec,
     E: InboundEventSubscriber,
     R: GetRequestContext,
+    U: UserData,
 {
     /// Build the connection from provided parameters.
     ///
@@ -1058,10 +1084,11 @@ where
             reqs: self.reqs,
             tx_drive: tx_inb_drv,
             features: self.cfg.feature_flag,
+            user_data: self.user_data,
             _unpin: std::marker::PhantomPinned,
         };
 
-        let this = Arc::new(this.with_req());
+        let this = Arc::new(this);
         let fut_driver = ConnectionImpl::inbound_event_handler(DriverBody {
             w_this: Arc::downgrade(&this),
             read: self.read,
@@ -1523,8 +1550,8 @@ pub mod msg {
 /*                                      DRIVER IMPLEMENTATION                                     */
 /* ---------------------------------------------------------------------------------------------- */
 
-struct DriverBody<C, T, E, R, Tr> {
-    w_this: Weak<ConnectionImpl<C, T, R>>,
+struct DriverBody<C, T, E, R, U, Tr> {
+    w_this: Weak<ConnectionImpl<C, T, R, U>>,
     read: Tr,
     ev_subs: E,
     rx_drive: flume::Receiver<InboundDriverDirective>,
@@ -1548,17 +1575,18 @@ mod inner {
 
     use super::{
         msg, ConnectionImpl, DriverBody, Feature, GetRequestContext, InboundBody,
-        InboundDriverDirective, InboundError, InboundEventSubscriber, MessageReqId,
+        InboundDriverDirective, InboundError, InboundEventSubscriber, MessageReqId, UserData,
     };
 
     /// Request-acceting version of connection driver
-    impl<C, T, R> ConnectionImpl<C, T, R>
+    impl<C, T, R, U> ConnectionImpl<C, T, R, U>
     where
         C: Codec,
         T: AsyncFrameWrite,
         R: GetRequestContext,
+        U: UserData,
     {
-        pub(crate) async fn inbound_event_handler<Tr, E>(body: DriverBody<C, T, E, R, Tr>)
+        pub(crate) async fn inbound_event_handler<Tr, E>(body: DriverBody<C, T, E, R, U, Tr>)
         where
             Tr: AsyncFrameRead,
             E: InboundEventSubscriber,
@@ -1567,12 +1595,13 @@ mod inner {
         }
     }
 
-    impl<C, T, E, R, Tr> DriverBody<C, T, E, R, Tr>
+    impl<C, T, E, R, U, Tr> DriverBody<C, T, E, R, U, Tr>
     where
         C: Codec,
         T: AsyncFrameWrite,
         E: InboundEventSubscriber,
         R: GetRequestContext,
+        U: UserData,
         Tr: AsyncFrameRead,
     {
         async fn execute(self) {
@@ -1701,7 +1730,7 @@ mod inner {
         }
 
         async fn on_read(
-            this: &Arc<ConnectionImpl<C, T, R>>,
+            this: &Arc<ConnectionImpl<C, T, R, U>>,
             ev_subs: &mut E,
             frame: bytes::Bytes,
             tx_msg: &flume::Sender<msg::RecvMsg>,

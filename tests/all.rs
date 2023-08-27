@@ -153,6 +153,7 @@ async fn basic_io_test<T: Codec>(create_codec: impl Fn() -> T, supports_predef: 
         .with_read(rx_client)
         .with_write(tx_client)
         .with_event_listener(LoggingSubscriber("client"))
+        .with_request()
         .with_codec(create_codec())
         .build();
 

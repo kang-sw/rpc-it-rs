@@ -97,6 +97,7 @@ async fn generated_io_test<T: Codec>(create_codec: impl Fn() -> T) {
 
     let (client, task) = rpc_it::Builder::default()
         .with_read(rx_client)
+        .with_request()
         .with_write(tx_client)
         .with_codec(create_codec())
         .build();
