@@ -137,19 +137,19 @@ pub fn service(
                 Ok(())
             }
 
-            #vis fn load_service_stateless_only<T: Service>(
-                __service: &mut __sv::ServiceBuilder<__sv::ExactMatchRouter>
+            #vis fn load_service_stateless_only<T: Service, R: __sv::Router>(
+                __service: &mut __sv::ServiceBuilder<R>
             ) -> __mc::RegisterResult {
                 #(#statelesses;)*
                 Ok(())
             }
 
-            #vis fn load_service<T:Service>(
+            #vis fn load_service<T:Service, R: __sv::Router>(
                 __this: T,
-                __service: &mut __sv::ServiceBuilder<__sv::ExactMatchRouter>
+                __service: &mut __sv::ServiceBuilder<R>
             ) -> __mc::RegisterResult {
                 load_service_stateful_only(__this, __service)?;
-                load_service_stateless_only::<T>(__service)?;
+                load_service_stateless_only::<T, _>(__service)?;
                 Ok(())
             }
 

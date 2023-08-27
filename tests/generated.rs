@@ -2,7 +2,7 @@
 
 use std::sync::{atomic::AtomicU32, Arc};
 
-use rpc_it::{codec::Codec, Sender, ServiceBuilder, Transceiver};
+use rpc_it::{codec::Codec, ExactMatchRouter, Sender, ServiceBuilder, Transceiver};
 
 #[rpc_it::service]
 trait TestService {
@@ -39,7 +39,7 @@ fn concat(values: &(i32, i32, String)) -> String {
 }
 
 async fn execute_service(x: Transceiver) {
-    let mut sb = ServiceBuilder::default();
+    let mut sb = ServiceBuilder::<ExactMatchRouter>::default();
 
     #[derive(Clone)]
     struct MyNewType(Arc<AtomicU32>);
