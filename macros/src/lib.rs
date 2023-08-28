@@ -160,8 +160,8 @@ pub fn service(
                 Proxy(std::borrow::Cow::Owned(value))
             }
 
-            #vis fn proxy<'a>(value: &'a impl AsRef<rpc_it::Sender>) -> Proxy<'a> {
-                Proxy(std::borrow::Cow::Borrowed(value.as_ref()))
+            #vis fn proxy<'a>(value: &'a rpc_it::Sender) -> Proxy<'a> {
+                Proxy(std::borrow::Cow::Borrowed(value))
             }
             
             impl<'a> Proxy<'a> {
