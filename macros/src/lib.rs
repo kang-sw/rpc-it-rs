@@ -154,13 +154,17 @@ pub fn service(
             }
 
             #[derive(Debug, Clone)]
-            #vis struct Client(rpc_it::Sender);
+            #vis struct Proxy<'a>(std::borrow::Cow<'a, rpc_it::Sender>);
 
-            impl Client {
-                #vis fn new(inner: rpc_it::Sender) -> Self {
-                    Self(inner)
-                }
+            #vis fn proxy_owned(value: rpc_it::Sender) -> Proxy<'static> {
+                Proxy(std::borrow::Cow::Owned(value))
+            }
 
+            #vis fn proxy<'a>(value: impl AsRef<rpc_it::Sender>) -> Proxy<'a> {
+                Proxy(std::borrow::Cow::Borrowed(value.as_ref()))
+            }
+            
+            impl Proxy {
                 #vis fn into_inner(self) -> rpc_it::Sender {
                     self.0
                 }
