@@ -378,7 +378,7 @@ fn generate_call_stubs(
             }
 
             #[doc(hidden)]
-            #vis async fn #method_ident_deferred_with_reuse(&self, buffer: &mut rpc_it::rpc::WriteBuffer,  #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
+            #vis fn #method_ident_deferred_with_reuse(&self, buffer: &mut rpc_it::rpc::WriteBuffer,  #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
                 self.0.notify_deferred_with_reuse(buffer, #method_str, &(#(#input_idents),*))
             }
         ));
@@ -389,7 +389,7 @@ fn generate_call_stubs(
             }
 
 
-            #vis async fn #method_ident_deferred(&self, #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
+            #vis fn #method_ident_deferred(&self, #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
                 self.0.notify_deferred(#method_str, &(#(#input_idents),*))
             }
 
@@ -418,7 +418,7 @@ fn generate_call_stubs(
                 Ok(rpc_it::TypedResponse::new(resp.to_owned()))
             }
 
-            #vis async fn #method_ident_deferred(&self, #input_ref_arg_tokens)
+            #vis fn #method_ident_deferred(&self, #input_ref_arg_tokens)
                 -> Result<rpc_it::TypedResponse<#ok_tok, #err_tok>, rpc_it::SendError>
             {
                 let resp = self.0.request_deferred(#method_str, &(#(#input_idents),*))?;
