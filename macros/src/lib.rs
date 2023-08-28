@@ -164,13 +164,13 @@ pub fn service(
                 Proxy(std::borrow::Cow::Borrowed(value.as_ref()))
             }
             
-            impl Proxy {
+            impl<'a> Proxy<'a> {
                 #vis fn into_inner(self) -> rpc_it::Sender {
-                    self.0
+                    self.0.into_owned()
                 }
 
                 #vis fn inner(&self) -> &rpc_it::Sender {
-                    &self.0
+                    self.0.as_ref()
                 }
 
                 #(#call_binds)*
