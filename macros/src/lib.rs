@@ -124,12 +124,12 @@ pub fn service(
             use rpc_it::serde;
             use rpc_it::ExtractUserData;
 
-            #vis trait Service: Send + Sync + 'static + Clone {
+            #vis trait Service: Send + Sync + 'static {
                 #trait_signatures
                 #(#non_functions)*
             }
 
-            #vis fn load_service_stateful_only<T: Service, R: __sv::Router>(
+            #vis fn load_service_stateful_only<T: Service + Clone, R: __sv::Router>(
                 __this: T,
                 __service: &mut __sv::ServiceBuilder<R>
             ) -> __mc::RegisterResult {
@@ -144,11 +144,28 @@ pub fn service(
                 Ok(())
             }
 
-            #vis fn load_service<T:Service, R: __sv::Router>(
+            #vis fn load_service<T:Service + Clone, R: __sv::Router>(
                 __this: T,
                 __service: &mut __sv::ServiceBuilder<R>
             ) -> __mc::RegisterResult {
                 load_service_stateful_only(__this, __service)?;
+                load_service_stateless_only::<T, _>(__service)?;
+                Ok(())
+            }
+            
+            #vis fn load_service_arc_stateful_only<T: Service, R: __sv::Router>(
+                __this: std::sync::Arc<T>,
+                __service: &mut __sv::ServiceBuilder<R>
+            ) -> __mc::RegisterResult {
+                #(#statefuls;)*
+                Ok(())
+            }
+
+            #vis fn load_service_arc<T:Service, R: __sv::Router>(
+                __this: std::sync::Arc<T>,
+                __service: &mut __sv::ServiceBuilder<R>
+            ) -> __mc::RegisterResult {
+                load_service_arc_stateful_only(__this, __service)?;
                 load_service_stateless_only::<T, _>(__service)?;
                 Ok(())
             }
