@@ -58,6 +58,7 @@ pub enum FramingError {
 pub enum ReqId {
     U64(u64),
     Bytes(Range<usize>),
+    ShortBytes(u8, [u8; 22]),
 }
 
 #[derive(Debug, Clone, EnumAsInner)]
@@ -67,10 +68,11 @@ pub enum ReqIdRef<'a> {
 }
 
 impl ReqId {
-    pub fn make_ref<'a>(&self, buffer: &'a [u8]) -> ReqIdRef<'a> {
+    pub fn make_ref<'a>(&'a self, buffer: &'a [u8]) -> ReqIdRef<'a> {
         match self {
             ReqId::U64(x) => ReqIdRef::U64(*x),
             ReqId::Bytes(x) => ReqIdRef::Bytes(&buffer[x.clone()]),
+            ReqId::ShortBytes(len, buf) => ReqIdRef::Bytes(&buf[..*len as usize]),
         }
     }
 }
