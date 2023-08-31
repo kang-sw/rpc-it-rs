@@ -1946,6 +1946,7 @@ mod inner {
             if bytes.len() == original_len {
                 *buf = Vec::<u8>::from(bytes);
 
+                #[cfg(debug_assertions)]
                 debug_assert_eq!(ptr_orig, buf.as_ptr() as usize);
             }
 
