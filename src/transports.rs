@@ -142,7 +142,7 @@ mod in_memory_ {
                 return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
             }
 
-            inner.chunks.push_back(buf.take().freeze());
+            inner.chunks.push_back(buf.take());
             inner.waker.wake();
             Poll::Ready(Ok(()))
         }

@@ -50,7 +50,7 @@ pub mod msgpack_rpc {
     use std::{borrow::Cow, num::NonZeroU64};
 
     use ::bytes::Buf;
-    use bytes::{BufMut, BytesMut};
+    use bytes::BufMut;
     use derive_setters::Setters;
     use serde::Deserialize;
 
@@ -76,7 +76,7 @@ pub mod msgpack_rpc {
             &self,
             method: &str,
             params: &dyn erased_serde::Serialize,
-            write: &mut BytesMut,
+            write: &mut Vec<u8>,
         ) -> Result<(), EncodeError> {
             use rmp::encode::*;
 
@@ -103,7 +103,7 @@ pub mod msgpack_rpc {
             method: &str,
             req_id_hint: NonZeroU64,
             params: &dyn erased_serde::Serialize,
-            write: &mut BytesMut,
+            write: &mut Vec<u8>,
         ) -> Result<std::num::NonZeroU64, EncodeError> {
             use rmp::encode::*;
             let mut write = write.writer();
@@ -134,7 +134,7 @@ pub mod msgpack_rpc {
             req_id: codec::ReqIdRef,
             encode_as_error: bool,
             response: &dyn erased_serde::Serialize,
-            write: &mut BytesMut,
+            write: &mut Vec<u8>,
         ) -> Result<(), EncodeError> {
             use rmp::encode::*;
             let mut write = write.writer();
@@ -284,7 +284,7 @@ pub mod msgpack_rpc {
 pub mod jsonrpc {
     use std::num::NonZeroU64;
 
-    use bytes::{BufMut, BytesMut};
+    use bytes::BufMut;
     use serde_json::value::RawValue;
 
     use crate::codec::{self, InboundFrameType, ReqId, ReqIdRef};
@@ -393,7 +393,7 @@ pub mod jsonrpc {
             &self,
             method: &str,
             params: &dyn erased_serde::Serialize,
-            write: &mut BytesMut,
+            write: &mut Vec<u8>,
         ) -> Result<(), codec::EncodeError> {
             serde_json::to_writer(
                 write.writer(),
@@ -408,7 +408,7 @@ pub mod jsonrpc {
             method: &str,
             req_id_hint: NonZeroU64,
             params: &dyn erased_serde::Serialize,
-            write: &mut BytesMut,
+            write: &mut Vec<u8>,
         ) -> Result<std::num::NonZeroU64, codec::EncodeError> {
             // Make sure the request ID rotate within 53 bits. (JS's max safe integer)
             let req_id = req_id_hint.get() & ((1 << 53) - 1);
@@ -431,7 +431,7 @@ pub mod jsonrpc {
             req_id: ReqIdRef,
             encode_as_error: bool,
             response: &dyn erased_serde::Serialize,
-            write: &mut BytesMut,
+            write: &mut Vec<u8>,
         ) -> Result<(), codec::EncodeError> {
             serde_json::to_writer(
                 write.writer(),
@@ -461,7 +461,7 @@ pub mod jsonrpc {
             &self,
             req_id: ReqIdRef,
             response: &codec::PredefinedResponseError,
-            write: &mut BytesMut,
+            write: &mut Vec<u8>,
         ) -> Result<(), codec::EncodeError> {
             // XXX: New type for predefined response error?
             self.encode_response(req_id, true, response, write)

@@ -210,7 +210,7 @@ enum DeferredWrite {
     ErrorResponse(msg::RequestInner, codec::PredefinedResponseError),
 
     /// Send request was deferred. This is used for non-blocking response, etc.
-    Raw(bytes::BytesMut),
+    Raw(bytes::Bytes),
 
     /// Send flush request from background
     Flush,
@@ -272,7 +272,7 @@ pub struct Sender(Arc<dyn Connection>);
 /// multiple RPC request/notification.
 #[derive(Debug, Clone, Default)]
 pub struct WriteBuffer {
-    value: BytesMut,
+    value: Vec<u8>,
 }
 
 impl WriteBuffer {
@@ -283,6 +283,17 @@ impl WriteBuffer {
     pub fn reserve(&mut self, size: usize) {
         self.value.clear();
         self.value.reserve(size);
+    }
+
+    /// If capacity is much larger than the actual size, allocates new buffer to create [`Bytes`].
+    /// Otherwise, just shrink and return the buffer.
+    pub(crate) fn split(&mut self) -> Bytes {
+        if self.value.capacity() >= self.value.len() * 3 {
+            Bytes::from_iter(self.value.drain(..))
+        } else {
+            self.value.shrink_to_fit();
+            Bytes::from(std::mem::take(&mut self.value))
+        }
     }
 }
 
@@ -383,7 +394,7 @@ impl Sender {
         params: &T,
     ) -> Result<ResponseFuture, SendError> {
         let fut = self.prepare_request(buf, method, params)?;
-        self.0.__write_raw(&mut buf.value).await?;
+        self.0.__write_single(&mut buf.value).await?;
 
         Ok(fut)
     }
@@ -398,7 +409,7 @@ impl Sender {
         buf.prepare();
 
         self.0.codec().encode_notify(method, params, &mut buf.value)?;
-        self.0.__write_raw(&mut buf.value).await?;
+        self.0.__write_single(&mut buf.value).await?;
 
         Ok(())
     }
@@ -439,7 +450,7 @@ impl Sender {
 
         self.0
             .tx_drive()
-            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(buffer.value.split())))
+            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(buffer.split())))
             .map_err(|_| SendError::Disconnected)?;
 
         fut
@@ -459,7 +470,7 @@ impl Sender {
 
         self.0
             .tx_drive()
-            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(buffer.value.split())))
+            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(buffer.split())))
             .map_err(|_| SendError::Disconnected)
     }
 
@@ -1373,7 +1384,7 @@ pub mod msg {
             value: Result<&T, &T>,
         ) -> Result<(), super::SendError> {
             let conn = self.prepare_response(buf, value)?;
-            conn.__write_raw(&mut buf.value).await?;
+            conn.__write_single(&mut buf.value).await?;
             Ok(())
         }
 
@@ -1428,7 +1439,7 @@ pub mod msg {
 
             conn.tx_drive()
                 .send(super::InboundDriverDirective::DeferredWrite(
-                    DeferredWrite::Raw(buffer.value.split()).into(),
+                    DeferredWrite::Raw(buffer.split()).into(),
                 ))
                 .map_err(|_| super::SendError::Disconnected)
         }
@@ -1674,7 +1685,7 @@ mod inner {
     //! Internal driver context. It receives the request from the connection, and dispatches it to
     //! the handler.
 
-    use bytes::BytesMut;
+    use bytes::Bytes;
     use capture_it::capture;
     use futures_util::{future::FusedFuture, FutureExt};
     use std::{future::poll_fn, num::NonZeroU64, sync::Arc};
@@ -1744,7 +1755,7 @@ mod inner {
                             }
                         }
                         DeferredWrite::Raw(mut msg) => {
-                            this.dyn_ref().__write_raw(&mut msg).await?;
+                            this.dyn_ref().__write_bytes(&mut msg).await?;
                         }
                         DeferredWrite::Flush => {
                             this.dyn_ref().__flush().await?;
@@ -1919,11 +1930,29 @@ mod inner {
             buf.prepare();
 
             self.codec().encode_response_predefined(recv.req_id(), error, &mut buf.value)?;
-            self.__write_raw(&mut buf.value).await?;
+            self.__write_single(&mut buf.value).await?;
             Ok(())
         }
 
-        pub(crate) async fn __write_raw(&self, buf: &mut BytesMut) -> std::io::Result<()> {
+        pub(crate) async fn __write_single(&self, buf: &mut Vec<u8>) -> std::io::Result<()> {
+            #[cfg(debug_assertions)]
+            let ptr_orig = buf.as_ptr() as usize;
+
+            let mut bytes = Bytes::from(std::mem::take(buf));
+            let original_len = bytes.len();
+
+            self.__write_bytes(&mut bytes).await?;
+
+            if bytes.len() == original_len {
+                *buf = Vec::<u8>::from(bytes);
+
+                debug_assert_eq!(ptr_orig, buf.as_ptr() as usize);
+            }
+
+            Ok(())
+        }
+
+        pub(crate) async fn __write_bytes(&self, buf: &mut Bytes) -> std::io::Result<()> {
             pin!(self, write);
 
             write.as_mut().begin_write_frame(buf.len())?;

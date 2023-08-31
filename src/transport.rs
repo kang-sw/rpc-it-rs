@@ -10,7 +10,7 @@ use futures_util::{AsyncWrite, Stream};
 /* --------------------------------------------- -- --------------------------------------------- */
 
 pub struct FrameReader<'a> {
-    inner: &'a mut BytesMut,
+    inner: &'a mut Bytes,
     read_offset: usize,
 }
 
@@ -36,7 +36,7 @@ impl<'a> Buf for FrameReader<'a> {
 }
 
 impl<'a> FrameReader<'a> {
-    pub fn new(inner: &'a mut BytesMut) -> Self {
+    pub fn new(inner: &'a mut Bytes) -> Self {
         Self { inner, read_offset: 0 }
     }
 
@@ -44,20 +44,10 @@ impl<'a> FrameReader<'a> {
         self.chunk()
     }
 
-    pub fn take(&mut self) -> BytesMut {
+    pub fn take(&mut self) -> Bytes {
         let read_offset = std::mem::take(&mut self.read_offset);
-        if self.inner.capacity() > self.inner.len() * 2 {
-            // NOTE: In this case, assumes that the buffer is actively reused.
-            // - In this case, if the consumer wants to retrieve `Vec<u8>` from output BytesMut,
-            //   it may deeply clone the underlying buffer since the buffer ownership is currently
-            //   shared.
-            self.inner.split_off(read_offset)
-        } else {
-            // Buffer maybe automatically expanded over write operation, so we assume that the
-            // buffer won't be reused. In this case, we can just take the whole buffer, and take
-            // the ownership of the buffer to minimize copy.
-            std::mem::take(&mut self.inner)
-        }
+        let mut inner = std::mem::take(self.inner);
+        inner.split_off(read_offset)
     }
 
     pub fn advanced(&self) -> usize {
