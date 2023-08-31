@@ -10,6 +10,7 @@ trait TestService {
     #[skip]
     fn get_int_id(&self) -> u32;
 
+    /// Olla, hello!
     #[sync]
     #[route = "Add.MyName.IsAdded"]
     fn add(a: u32, b: u32) -> u32;

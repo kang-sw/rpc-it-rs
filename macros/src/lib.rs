@@ -18,9 +18,9 @@ use syn::{
 ///
 /// # Available Attributes for Traits
 ///
-/// - `handler_trait=<true>`: (TODO) Generates trait based server API
+/// - `handler_trait=<true>`: Generates trait based server API
 /// - `handler_channels=<false>`: (TODO) Generate channel-based server API
-/// - `caller_proxy=<true>`: (TODO) Generate client side caller proxy
+/// - `caller_proxy=<true>`:  Generate client side caller proxy
 ///
 /// # Available Attributes for Methods
 ///
@@ -36,9 +36,10 @@ use syn::{
 #[proc_macro_error]
 #[proc_macro_attribute]
 pub fn service(
-    _attr: proc_macro::TokenStream,
+    attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
+    let attrs = proc_macro2::TokenStream::from(attr);
     let tokens = proc_macro2::TokenStream::from(item);
 
     /*
@@ -58,6 +59,8 @@ pub fn service(
                 }
             }
     */
+
+    let cfg = parse_attrs(attrs);
 
     let Ok(ast) = syn::parse2::<syn::ItemTrait>(tokens) else {
         return proc_macro::TokenStream::new();
@@ -99,32 +102,26 @@ pub fn service(
         .collect::<Vec<_>>();
 
     for item in functions.iter().zip(&attrs) {
-        if let Some(loaded) = generate_loader_item(item.0, item.1, &mut name_table) {
-            match loaded {
-                LoaderOutput::Stateful(stateful) => statefuls.push(stateful),
-                LoaderOutput::Stateless(stateless) => statelesses.push(stateless),
+        if cfg.handler_trait {
+            if let Some(loaded) = generate_loader_item(item.0, item.1, &mut name_table) {
+                match loaded {
+                    LoaderOutput::Stateful(stateful) => statefuls.push(stateful),
+                    LoaderOutput::Stateless(stateless) => statelesses.push(stateless),
+                }
             }
         }
 
-        if let Some(caller) = generate_call_stubs(item.0, item.1, &vis) {
-            call_binds.push(caller);
+        if cfg.caller_proxy {
+            if let Some(caller) = generate_call_stubs(item.0, item.1, &vis) {
+                call_binds.push(caller);
+            }
         }
     }
 
     let trait_signatures = generate_trait_signatures(&functions, &attrs);
 
-    let output = quote!(
-        #original_vis mod #module_name {
-            #![allow(unused_parens)]
-            #![allow(unused)]
-
-            use super::*;
-
-            use rpc_it::service as __sv;
-            use rpc_it::service::macro_utils as __mc;
-            use rpc_it::serde;
-            use rpc_it::ExtractUserData;
-
+    let gen_handler_trait = cfg.handler_trait.then(|| {
+        quote! {
             #vis trait Service: Send + Sync + 'static {
                 #trait_signatures
                 #(#non_functions)*
@@ -170,33 +167,100 @@ pub fn service(
                 load_service_stateless_only::<T, _>(__service)?;
                 Ok(())
             }
+        }
+    });
 
-            #[derive(Debug, Clone)]
-            #vis struct Proxy<'a>(std::borrow::Cow<'a, rpc_it::Sender>);
+    let gen_caller_proxy = cfg.caller_proxy.then(|| {
+        quote! {
+                #[derive(Debug, Clone)]
+                #vis struct Proxy<'a>(std::borrow::Cow<'a, rpc_it::Sender>);
 
-            #vis fn proxy_owned(value: rpc_it::Sender) -> Proxy<'static> {
-                Proxy(std::borrow::Cow::Owned(value))
-            }
-
-            #vis fn proxy<'a>(value: &'a rpc_it::Sender) -> Proxy<'a> {
-                Proxy(std::borrow::Cow::Borrowed(value))
-            }
-
-            impl<'a> Proxy<'a> {
-                #vis fn into_inner(self) -> rpc_it::Sender {
-                    self.0.into_owned()
+                #vis fn proxy_owned(value: rpc_it::Sender) -> Proxy<'static> {
+                    Proxy(std::borrow::Cow::Owned(value))
                 }
 
-                #vis fn inner(&self) -> &rpc_it::Sender {
-                    self.0.as_ref()
+                #vis fn proxy<'a>(value: &'a rpc_it::Sender) -> Proxy<'a> {
+                    Proxy(std::borrow::Cow::Borrowed(value))
                 }
 
-                #(#call_binds)*
-            }
+                impl<'a> Proxy<'a> {
+                    #vis fn into_inner(self) -> rpc_it::Sender {
+                        self.0.into_owned()
+                    }
+
+                    #vis fn inner(&self) -> &rpc_it::Sender {
+                        self.0.as_ref()
+                    }
+
+                    #(#call_binds)*
+                }
+
+        }
+    });
+
+    let output = quote!(
+        #original_vis mod #module_name {
+            #![allow(unused_parens)]
+            #![allow(unused)]
+
+            use super::*;
+
+            use rpc_it::service as __sv;
+            use rpc_it::service::macro_utils as __mc;
+            use rpc_it::serde;
+            use rpc_it::ExtractUserData;
+
+            #gen_handler_trait
+
+            #gen_caller_proxy
         }
     );
 
     output.into()
+}
+
+struct Configuration {
+    handler_trait: bool,
+    handler_channels: bool,
+    caller_proxy: bool,
+}
+
+fn parse_attrs(strm: TokenStream) -> Configuration {
+    let mut cfg =
+        Configuration { handler_trait: true, caller_proxy: true, handler_channels: false };
+
+    let attrs = syn::parse_quote_spanned!(strm.span() => cfg(#strm));
+    let attrs = match attrs {
+        syn::Meta::Path(_) => {
+            dbg!("is path");
+            return cfg;
+        }
+        syn::Meta::List(x) => x,
+        syn::Meta::NameValue(_) => unimplemented!("NameValue attributes are not supported"),
+    };
+
+    attrs
+        .parse_nested_meta(|meta| {
+            dbg!("pewepw");
+
+            if meta.path.is_ident("handler_trait") {
+                let s: syn::LitBool = meta.value()?.parse()?;
+                cfg.handler_trait = s.value;
+            } else if meta.path.is_ident("handler_channels") {
+                let s: syn::LitBool = meta.value()?.parse()?;
+                cfg.handler_channels = s.value;
+            } else if meta.path.is_ident("caller_proxy") {
+                let s: syn::LitBool = meta.value()?.parse()?;
+                cfg.caller_proxy = s.value;
+            } else {
+                emit_error!(meta.path, "unexpected attribute");
+            }
+
+            Ok(())
+        })
+        .expect("Parsing nested meta failed");
+
+    cfg
 }
 
 enum LoaderOutput {
@@ -544,6 +608,7 @@ struct MethodAttrs {
     aliases: Vec<syn::LitStr>,
     with_reuse: bool,
     route: Option<syn::LitStr>,
+    doc_strings: Vec<syn::LitStr>,
 }
 
 fn method_attrs(method: &mut TraitItemFn) -> MethodAttrs {
@@ -583,16 +648,22 @@ fn method_attrs(method: &mut TraitItemFn) -> MethodAttrs {
 
                 if ident == "aliases" {
                     let syn::Lit::Str(route) = lit else {
-                        emit_error!(lit, "unexpected non-string literal attribute");
+                        emit_error!(lit, "unexpected non-string 'aliases' attribute");
                         continue;
                     };
                     attrs.aliases.push(route.clone());
                 } else if ident == "route" {
                     let syn::Lit::Str(route) = lit else {
-                        emit_error!(lit, "unexpected non-string literal attribute");
+                        emit_error!(lit, "unexpected non-string 'route' attribute");
                         continue;
                     };
                     attrs.route = Some(route.clone());
+                } else if ident == "doc" {
+                    let syn::Lit::Str(doc_str) = lit else {
+                        emit_error!(lit, "unexpected non-string doc-string attribute");
+                        continue;
+                    };
+                    attrs.doc_strings.push(doc_str.clone());
                 } else {
                     emit_error!(attr, "unexpected attribute")
                 }
