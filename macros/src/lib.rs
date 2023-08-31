@@ -18,8 +18,9 @@ use syn::{
 ///
 /// # Available Attributes for Traits
 ///
-/// - `no_service`: Do not generate service-related code (TODO)
-/// - `no_client`: Do not generate client-related code (TODO)
+/// - `handler_trait=<true>`: (TODO) Generates trait based server API
+/// - `handler_channels=<false>`: (TODO) Generate channel-based server API
+/// - `caller_proxy=<true>`: (TODO) Generate client side caller proxy
 ///
 /// # Available Attributes for Methods
 ///
@@ -152,7 +153,7 @@ pub fn service(
                 load_service_stateless_only::<T, _>(__service)?;
                 Ok(())
             }
-            
+
             #vis fn load_service_arc_stateful_only<T: Service, R: __sv::Router>(
                 __this: std::sync::Arc<T>,
                 __service: &mut __sv::ServiceBuilder<R>
@@ -180,7 +181,7 @@ pub fn service(
             #vis fn proxy<'a>(value: &'a rpc_it::Sender) -> Proxy<'a> {
                 Proxy(std::borrow::Cow::Borrowed(value))
             }
-            
+
             impl<'a> Proxy<'a> {
                 #vis fn into_inner(self) -> rpc_it::Sender {
                     self.0.into_owned()

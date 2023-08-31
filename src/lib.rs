@@ -27,6 +27,10 @@ pub extern crate erased_serde;
 pub extern crate futures_util;
 pub extern crate serde;
 
+/// Gonna be used by the generated code
+#[doc(hidden)]
+pub extern crate flume;
+
 pub mod codec;
 pub mod codecs;
 pub mod rpc;

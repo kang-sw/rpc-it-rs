@@ -75,7 +75,7 @@ async fn execute_service(x: Transceiver) {
 }
 
 async fn execute_client(x: Sender) {
-    let stub = test_service::Client::new(x);
+    let stub = test_service::proxy(&x);
     assert!(stub.add(&1, &2).await.unwrap() == 3);
     assert!(stub.get_id().await.unwrap() == 0);
     assert!(stub.id_added(&1).await.unwrap() == 1);
