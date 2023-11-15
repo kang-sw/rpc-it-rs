@@ -66,7 +66,7 @@ pub fn service(
         return proc_macro::TokenStream::new();
     };
 
-    let module_name = format!("{}", ast.ident.to_string().to_case(Case::Snake));
+    let module_name = ast.ident.to_string().to_case(Case::Snake);
     let module_name = Ident::new(&module_name, proc_macro2::Span::call_site());
     let original_vis = &ast.vis;
     let vis = match ast.vis.clone() {

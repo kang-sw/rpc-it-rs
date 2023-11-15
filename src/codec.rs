@@ -83,6 +83,20 @@ impl ReqId {
 ///
 /// The codec, should trivially be clone-able.
 pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
+    /// Returns the hash of the codec, on encoding notification message. If two different codec
+    /// returns same hash, it means that the two codec can be used interchangeably on encoding
+    /// notification messages since they'll deterministically produce same output.
+    ///
+    /// If notification is affected by call order(e.g. not deterministic), this should return None.
+    ///
+    /// # NOTE
+    ///
+    /// See [`verify_trait_cast_behavior`] test method implementation.
+    fn as_notification_encoder_hash(&self) -> Option<u64> {
+        let ptr = self as *const Self as *const () as u64;
+        Some(ptr as u64)
+    }
+
     /// Encodes notify frame
     fn encode_notify(
         &self,

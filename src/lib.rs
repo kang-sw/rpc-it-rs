@@ -31,6 +31,7 @@ pub extern crate serde;
 #[doc(hidden)]
 pub extern crate flume;
 
+pub mod broadcast;
 pub mod codec;
 pub mod codecs;
 pub mod rpc;

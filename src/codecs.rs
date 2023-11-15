@@ -207,9 +207,7 @@ pub mod msgpack_rpc {
 
                     // Now we're reading the payload ..
                     if self.unwrap_mono_param {
-                        if 1 == read_array_len(&mut rd.clone())
-                            .map_err(efmt("rd: non-array param"))?
-                        {
+                        if 1 == read_array_len(&mut rd).map_err(efmt("rd: non-array param"))? {
                             // Advance the cursor by array marker, to unwrap payload.
                             read_array_len(&mut rd).ok();
                         }
@@ -236,7 +234,7 @@ pub mod msgpack_rpc {
                 // Response
                 (4, 1) => {
                     let req_id = read_int::<u32, _>(&mut rd).map_err(efmt("req_id error"))?;
-                    let is_error = if read_nil(&mut (rd.clone())).is_ok() {
+                    let is_error = if read_nil(&mut rd).is_ok() {
                         // Error was nil, so it's a success response.
                         rd = &rd[1..];
                         false
