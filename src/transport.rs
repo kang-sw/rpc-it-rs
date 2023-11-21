@@ -8,7 +8,7 @@ pub use bytes::{Buf, BytesMut};
 use futures_util::{AsyncWrite, Stream};
 
 /* --------------------------------------------- -- --------------------------------------------- */
-
+/// A struct which wraps a [`Bytes`] and provides [`Buf`] implementation.
 pub struct FrameReader<'a> {
     inner: &'a mut Bytes,
     read_offset: usize,

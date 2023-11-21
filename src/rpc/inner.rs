@@ -250,11 +250,14 @@ impl dyn super::Connection {
         buf.prepare();
 
         self.codec().encode_response_predefined(recv.req_id(), error, &mut buf.value)?;
-        self.__write_single(&mut buf.value).await?;
+        self.__write_buffer(&mut buf.value).await?;
         Ok(())
     }
 
-    pub(crate) async fn __write_single(&self, buf: &mut Vec<u8>) -> std::io::Result<()> {
+    /// Write a single frame to the underlying transport. If the transport does not consume the
+    /// provided bytes (i.e., it is a read-only transport), the buffer is returned back to the
+    /// caller, eliminating the need for reallocation.
+    pub(crate) async fn __write_buffer(&self, buf: &mut Vec<u8>) -> std::io::Result<()> {
         #[cfg(debug_assertions)]
         let ptr_orig = buf.as_ptr() as usize;
 
@@ -266,6 +269,7 @@ impl dyn super::Connection {
         if bytes.len() == original_len {
             *buf = Vec::<u8>::from(bytes);
 
+            // Ensure that the buffer is not reallocated
             #[cfg(debug_assertions)]
             debug_assert_eq!(ptr_orig, buf.as_ptr() as usize);
         }
@@ -273,6 +277,8 @@ impl dyn super::Connection {
         Ok(())
     }
 
+    /// Write a single frame to the underlying transport. The buffer reference provided may be
+    /// completely consumed or remain unmodified.
     pub(crate) async fn __write_bytes(&self, buf: &mut Bytes) -> std::io::Result<()> {
         pin!(self, write);
 

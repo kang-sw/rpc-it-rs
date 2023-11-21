@@ -3,6 +3,7 @@
 //! [`Codec`] is a trait that encodes/decodes data frame into underlying RPC protocol.
 
 use std::{
+    any::TypeId,
     borrow::Cow,
     num::{NonZeroU64, NonZeroUsize},
     ops::Range,
@@ -76,6 +77,20 @@ impl ReqId {
     }
 }
 
+/// Helper for method [`Codec::as_notification_encoder_hash`].
+pub fn encoder_hash_of<T: std::any::Any, H: std::hash::Hash>(
+    _this: &T,
+    additional_context: &H,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    TypeId::of::<T>().hash(&mut hasher);
+    additional_context.hash(&mut hasher);
+
+    hasher.finish()
+}
+
 /// Parses/Encodes data frame.
 ///
 /// This is a trait that encodes/decodes data frame into underlying RPC protocol, and generally
@@ -93,8 +108,7 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
     ///
     /// See [`verify_trait_cast_behavior`] test method implementation.
     fn as_notification_encoder_hash(&self) -> Option<u64> {
-        let ptr = self as *const Self as *const () as u64;
-        Some(ptr as u64)
+        None
     }
 
     /// Encodes notify frame
@@ -245,6 +259,7 @@ pub enum PredefinedResponseError {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum EncodeError {
     #[error("Unsupported feature: {0}")]
     UnsupportedFeature(Cow<'static, str>),
@@ -254,9 +269,13 @@ pub enum EncodeError {
 
     #[error("Serialization failed: {0}")]
     SerializeError(Box<dyn std::error::Error + Send + Sync + 'static>),
+
+    #[error("Prepared notification mismatch")]
+    PreparedNotificationMismatch,
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum DecodeError {
     #[error("Unsupported feature: {0}")]
     UnsupportedFeature(Cow<'static, str>),

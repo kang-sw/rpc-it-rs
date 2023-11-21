@@ -47,14 +47,14 @@ pub mod framing {
 
 #[cfg(feature = "msgpack-rpc")]
 pub mod msgpack_rpc {
-    use std::{borrow::Cow, num::NonZeroU64};
+    use std::{borrow::Cow, num::NonZeroU64, sync::OnceLock};
 
     use ::bytes::Buf;
     use bytes::BufMut;
     use derive_setters::Setters;
     use serde::Deserialize;
 
-    use crate::codec::{self, DecodeError::InvalidFormat, EncodeError};
+    use crate::codec::{self, encoder_hash_of, DecodeError::InvalidFormat, EncodeError};
 
     #[derive(Setters, Debug, Default)]
     #[setters(prefix = "with_")]
@@ -72,6 +72,10 @@ pub mod msgpack_rpc {
     }
 
     impl codec::Codec for Codec {
+        fn as_notification_encoder_hash(&self) -> Option<u64> {
+            Some(*OnceLock::new().get_or_init(|| encoder_hash_of(self, &0)))
+        }
+
         fn encode_notify(
             &self,
             method: &str,
@@ -280,12 +284,12 @@ pub mod msgpack_rpc {
 
 #[cfg(feature = "jsonrpc")]
 pub mod jsonrpc {
-    use std::num::NonZeroU64;
+    use std::{num::NonZeroU64, sync::OnceLock};
 
     use bytes::BufMut;
     use serde_json::value::RawValue;
 
-    use crate::codec::{self, InboundFrameType, ReqId, ReqIdRef};
+    use crate::codec::{self, encoder_hash_of, InboundFrameType, ReqId, ReqIdRef};
 
     #[derive(Debug, Default)]
     pub struct Codec {}
@@ -387,6 +391,10 @@ pub mod jsonrpc {
     }
 
     impl codec::Codec for Codec {
+        fn as_notification_encoder_hash(&self) -> Option<u64> {
+            Some(*OnceLock::new().get_or_init(|| encoder_hash_of(self, &0)))
+        }
+
         fn encode_notify(
             &self,
             method: &str,
