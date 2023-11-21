@@ -55,7 +55,11 @@ where
         // Tasks that perform deferred write operations in the background. It handles messages
         // sent from non-async non-blocking context, such as 'unhandled' response pushed inside
         // `Drop` handler.
-        let (tx_bg_sender, rx_bg_sender) = flume::unbounded();
+        //
+        // XXX: should we split background and directive channel capacities?
+        let (tx_bg_sender, rx_bg_sender) =
+            rx_msg.capacity().map(flume::bounded).unwrap_or_else(flume::unbounded);
+
         let fut_bg_sender = capture!([w_this], async move {
             let mut pool = super::WriteBuffer::default();
             while let Ok(msg) = rx_bg_sender.recv_async().await {
