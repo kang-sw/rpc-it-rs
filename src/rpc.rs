@@ -266,37 +266,6 @@ impl From<Transceiver> for Sender {
 #[derive(Clone, Debug)]
 pub struct Sender(Arc<dyn Connection>);
 
-/// Reused buffer over multiple RPC request/responses
-///
-/// To minimize the memory allocation during sender payload serialization, reuse this buffer over
-/// multiple RPC request/notification.
-#[derive(Debug, Clone, Default)]
-pub struct WriteBuffer {
-    value: Vec<u8>,
-}
-
-impl WriteBuffer {
-    pub(crate) fn prepare(&mut self) {
-        self.value.clear();
-    }
-
-    pub fn reserve(&mut self, size: usize) {
-        self.value.clear();
-        self.value.reserve(size);
-    }
-
-    /// If capacity is much larger than the actual size, allocates new buffer to create [`Bytes`].
-    /// Otherwise, just shrink and return the buffer.
-    pub(crate) fn split(&mut self) -> Bytes {
-        if self.value.capacity() >= self.value.len() * 3 {
-            Bytes::from_iter(self.value.drain(..))
-        } else {
-            self.value.shrink_to_fit();
-            Bytes::from(std::mem::take(&mut self.value))
-        }
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum CallError {
     #[error("Failed to send request: {0}")]
@@ -407,12 +376,12 @@ impl Sender {
     #[doc(hidden)]
     pub async fn request_with_reuse<T: serde::Serialize>(
         &self,
-        buf: &mut WriteBuffer,
+        buf: &mut BytesMut,
         method: &str,
         params: &T,
     ) -> Result<ResponseFuture, SendError> {
         let fut = self.prepare_request(buf, method, params)?;
-        self.0.__write_buffer(&mut buf.value).await?;
+        self.0.__write_buffer(buf).await?;
 
         Ok(fut)
     }
@@ -420,14 +389,14 @@ impl Sender {
     #[doc(hidden)]
     pub async fn notify_with_reuse<T: serde::Serialize>(
         &self,
-        buf: &mut WriteBuffer,
+        buf: &mut BytesMut,
         method: &str,
         params: &T,
     ) -> Result<(), SendError> {
-        buf.prepare();
+        buf.clear();
 
-        self.0.codec().encode_notify(method, params, &mut buf.value)?;
-        self.0.__write_buffer(&mut buf.value).await?;
+        self.0.codec().encode_notify(method, params, buf)?;
+        self.0.__write_buffer(buf).await?;
 
         Ok(())
     }
@@ -459,16 +428,18 @@ impl Sender {
     #[doc(hidden)]
     pub fn request_deferred_with_reuse<T: serde::Serialize>(
         &self,
-        buffer: &mut WriteBuffer,
+        buffer: &mut BytesMut,
         method: &str,
         params: &T,
     ) -> Result<ResponseFuture, SendError> {
-        buffer.prepare();
+        buffer.clear();
         let fut = self.prepare_request(buffer, method, params);
 
         self.0
             .tx_drive()
-            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(buffer.split())))
+            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(
+                buffer.split().freeze(),
+            )))
             .map_err(|_| SendError::Disconnected)?;
 
         fut
@@ -479,31 +450,32 @@ impl Sender {
     #[doc(hidden)]
     pub fn notify_deferred_with_reuse<T: serde::Serialize>(
         &self,
-        buffer: &mut WriteBuffer,
+        buffer: &mut BytesMut,
         method: &str,
         params: &T,
     ) -> Result<(), SendError> {
-        buffer.prepare();
-        self.0.codec().encode_notify(method, params, &mut buffer.value)?;
+        buffer.clear();
+        self.0.codec().encode_notify(method, params, buffer)?;
 
         self.0
             .tx_drive()
-            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(buffer.split())))
+            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(
+                buffer.split().freeze(),
+            )))
             .map_err(|_| SendError::Disconnected)
     }
 
     fn prepare_request<T: serde::Serialize>(
         &self,
-        buf: &mut WriteBuffer,
+        buf: &mut BytesMut,
         method: &str,
         params: &T,
     ) -> Result<ResponseFuture, SendError> {
         let Some(req) = self.0.reqs() else { return Err(SendError::RequestDisabled) };
 
-        buf.prepare();
+        buf.clear();
         let req_id_hint = req.next_req_id_base();
-        let req_id_hash =
-            self.0.codec().encode_request(method, req_id_hint, params, &mut buf.value)?;
+        let req_id_hash = self.0.codec().encode_request(method, req_id_hint, params, buf)?;
 
         // Registering request always preceded than sending request. If request was not sent due to
         // I/O issue or cancellation, the request will be unregistered on the drop of the

@@ -50,7 +50,7 @@ pub mod msgpack_rpc {
     use std::{borrow::Cow, num::NonZeroU64, sync::OnceLock};
 
     use ::bytes::Buf;
-    use bytes::BufMut;
+    use bytes::{BufMut, BytesMut};
     use derive_setters::Setters;
     use serde::Deserialize;
 
@@ -80,7 +80,7 @@ pub mod msgpack_rpc {
             &self,
             method: &str,
             params: &dyn erased_serde::Serialize,
-            write: &mut Vec<u8>,
+            write: &mut BytesMut,
         ) -> Result<(), EncodeError> {
             use rmp::encode::*;
 
@@ -107,7 +107,7 @@ pub mod msgpack_rpc {
             method: &str,
             req_id_hint: NonZeroU64,
             params: &dyn erased_serde::Serialize,
-            write: &mut Vec<u8>,
+            write: &mut BytesMut,
         ) -> Result<std::num::NonZeroU64, EncodeError> {
             use rmp::encode::*;
             let mut write = write.writer();
@@ -138,7 +138,7 @@ pub mod msgpack_rpc {
             req_id: codec::ReqIdRef,
             encode_as_error: bool,
             response: &dyn erased_serde::Serialize,
-            write: &mut Vec<u8>,
+            write: &mut BytesMut,
         ) -> Result<(), EncodeError> {
             use rmp::encode::*;
             let mut write = write.writer();
@@ -185,7 +185,8 @@ pub mod msgpack_rpc {
                 |_| InvalidFormat(e.into())
             }
 
-            let arr_len = read_array_len(&mut rd).map_err(efmt("Non-msgpack array format"))?;
+            let arr_len =
+                read_array_len(&mut rd.clone()).map_err(efmt("Non-msgpack array format"))?;
             if arr_len < 2 || arr_len > 4 {
                 return Err(InvalidFormat(format!("Invalid array length {arr_len}").into()));
             }
@@ -238,7 +239,7 @@ pub mod msgpack_rpc {
                 // Response
                 (4, 1) => {
                     let req_id = read_int::<u32, _>(&mut rd).map_err(efmt("req_id error"))?;
-                    let is_error = if read_nil(&mut rd).is_ok() {
+                    let is_error = if read_nil(&mut rd.clone()).is_ok() {
                         // Error was nil, so it's a success response.
                         rd = &rd[1..];
                         false
@@ -286,7 +287,7 @@ pub mod msgpack_rpc {
 pub mod jsonrpc {
     use std::{num::NonZeroU64, sync::OnceLock};
 
-    use bytes::BufMut;
+    use bytes::{BufMut, BytesMut};
     use serde_json::value::RawValue;
 
     use crate::codec::{self, encoder_hash_of, InboundFrameType, ReqId, ReqIdRef};
@@ -399,7 +400,7 @@ pub mod jsonrpc {
             &self,
             method: &str,
             params: &dyn erased_serde::Serialize,
-            write: &mut Vec<u8>,
+            write: &mut BytesMut,
         ) -> Result<(), codec::EncodeError> {
             serde_json::to_writer(
                 write.writer(),
@@ -414,7 +415,7 @@ pub mod jsonrpc {
             method: &str,
             req_id_hint: NonZeroU64,
             params: &dyn erased_serde::Serialize,
-            write: &mut Vec<u8>,
+            write: &mut BytesMut,
         ) -> Result<std::num::NonZeroU64, codec::EncodeError> {
             // Make sure the request ID rotate within 53 bits. (JS's max safe integer)
             let req_id = req_id_hint.get() & ((1 << 53) - 1);
@@ -437,7 +438,7 @@ pub mod jsonrpc {
             req_id: ReqIdRef,
             encode_as_error: bool,
             response: &dyn erased_serde::Serialize,
-            write: &mut Vec<u8>,
+            write: &mut BytesMut,
         ) -> Result<(), codec::EncodeError> {
             serde_json::to_writer(
                 write.writer(),
@@ -467,7 +468,7 @@ pub mod jsonrpc {
             &self,
             req_id: ReqIdRef,
             response: &codec::PredefinedResponseError,
-            write: &mut Vec<u8>,
+            write: &mut BytesMut,
         ) -> Result<(), codec::EncodeError> {
             // XXX: New type for predefined response error?
             self.encode_response(req_id, true, response, write)

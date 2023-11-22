@@ -9,6 +9,7 @@ use std::{
     ops::Range,
 };
 
+use bytes::BytesMut;
 use enum_as_inner::EnumAsInner;
 use erased_serde::{Deserializer, Serialize};
 use serde::Deserialize;
@@ -116,7 +117,7 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
         &self,
         method: &str,
         params: &dyn Serialize,
-        write: &mut Vec<u8>,
+        write: &mut BytesMut,
     ) -> Result<(), EncodeError> {
         let _ = (method, params, write);
         Err(EncodeError::UnsupportedFeature("Notify is not supported by this codec".into()))
@@ -143,7 +144,7 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
         method: &str,
         req_id_hint: NonZeroU64,
         params: &dyn Serialize,
-        write: &mut Vec<u8>,
+        write: &mut BytesMut,
     ) -> Result<NonZeroU64, EncodeError> {
         let _ = (method, req_id_hint, params, write);
         Err(EncodeError::UnsupportedFeature("Request is not supported by this codec".into()))
@@ -160,7 +161,7 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
         req_id: ReqIdRef,
         encode_as_error: bool,
         response: &dyn Serialize,
-        write: &mut Vec<u8>,
+        write: &mut BytesMut,
     ) -> Result<(), EncodeError> {
         let _ = (req_id, response, encode_as_error, write);
         Err(EncodeError::UnsupportedFeature("Response is not supported by this codec".into()))
@@ -171,7 +172,7 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
         &self,
         req_id: ReqIdRef,
         response: &PredefinedResponseError,
-        write: &mut Vec<u8>,
+        write: &mut BytesMut,
     ) -> Result<(), EncodeError> {
         self.encode_response(req_id, true, response, write)
     }

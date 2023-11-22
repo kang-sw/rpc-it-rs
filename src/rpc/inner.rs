@@ -1,7 +1,7 @@
 //! Internal driver context. It receives the request from the connection, and dispatches it to
 //! the handler.
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use capture_it::capture;
 use futures_util::{future::FusedFuture, FutureExt};
 use std::{future::poll_fn, num::NonZeroU64, sync::Arc};
@@ -61,12 +61,12 @@ where
             rx_msg.capacity().map(flume::bounded).unwrap_or_else(flume::unbounded);
 
         let fut_bg_sender = capture!([w_this], async move {
-            let mut pool = super::WriteBuffer::default();
+            let mut buffer = BytesMut::default();
             while let Ok(msg) = rx_bg_sender.recv_async().await {
                 let Some(this) = w_this.upgrade() else { break };
                 match msg {
                     DeferredWrite::ErrorResponse(req, err) => {
-                        let err = this.dyn_ref().__send_err_predef(&mut pool, &req, &err).await;
+                        let err = this.dyn_ref().__send_err_predef(&mut buffer, &req, &err).await;
 
                         // Ignore all other error types, as this message is triggered
                         // crate-internally on very limited situations
@@ -243,34 +243,37 @@ macro_rules! pin {
 impl dyn super::Connection {
     pub(crate) async fn __send_err_predef(
         &self,
-        buf: &mut super::WriteBuffer,
+        buf: &mut BytesMut,
         recv: &msg::RequestInner,
         error: &codec::PredefinedResponseError,
     ) -> Result<(), super::SendError> {
-        buf.prepare();
+        buf.clear();
 
-        self.codec().encode_response_predefined(recv.req_id(), error, &mut buf.value)?;
-        self.__write_buffer(&mut buf.value).await?;
+        self.codec().encode_response_predefined(recv.req_id(), error, buf)?;
+        self.__write_buffer(buf).await?;
         Ok(())
     }
 
     /// Write a single frame to the underlying transport. If the transport does not consume the
     /// provided bytes (i.e., it is a read-only transport), the buffer is returned back to the
     /// caller, eliminating the need for reallocation.
-    pub(crate) async fn __write_buffer(&self, buf: &mut Vec<u8>) -> std::io::Result<()> {
+    pub(crate) async fn __write_buffer(&self, buf: &mut BytesMut) -> std::io::Result<()> {
         #[cfg(debug_assertions)]
         let ptr_orig = buf.as_ptr() as usize;
 
-        let mut bytes = Bytes::from(std::mem::take(buf));
+        let mut bytes = buf.split().freeze();
         let original_len = bytes.len();
 
         self.__write_bytes(&mut bytes).await?;
 
+        // if length equals to original length, it can be safely assumed that the buffer is not
+        // shared with other references, and thus can be reused.
+        #[cfg(debug_assertions)]
         if bytes.len() == original_len {
-            *buf = Vec::<u8>::from(bytes);
+            drop(bytes);
 
-            // Ensure that the buffer is not reallocated
-            #[cfg(debug_assertions)]
+            // Ensure that the buffer is not reallocated when we reclaim the same amount of bytes.
+            buf.reserve(original_len);
             debug_assert_eq!(ptr_orig, buf.as_ptr() as usize);
         }
 

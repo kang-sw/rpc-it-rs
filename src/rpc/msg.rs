@@ -1,5 +1,6 @@
 use std::{ops::Range, sync::Arc};
 
+use bytes::BytesMut;
 use enum_as_inner::EnumAsInner;
 
 use crate::{
@@ -7,7 +8,7 @@ use crate::{
     rpc::MessageReqId,
 };
 
-use super::{Connection, DeferredWrite, ExtractUserData, Message, UserData, WriteBuffer};
+use super::{Connection, DeferredWrite, ExtractUserData, Message, UserData};
 
 macro_rules! impl_message {
     ($t:ty) => {
@@ -101,11 +102,11 @@ impl Request {
     #[doc(hidden)]
     pub async fn response_with_reuse<T: serde::Serialize>(
         self,
-        buf: &mut super::WriteBuffer,
+        buf: &mut BytesMut,
         value: Result<&T, &T>,
     ) -> Result<(), super::SendError> {
         let conn = self.prepare_response(buf, value)?;
-        conn.__write_buffer(&mut buf.value).await?;
+        conn.__write_buffer(buf).await?;
         Ok(())
     }
 
@@ -152,15 +153,15 @@ impl Request {
     #[doc(hidden)]
     pub fn response_deferred_with_reuse<T: serde::Serialize>(
         self,
-        buffer: &mut WriteBuffer,
+        buffer: &mut BytesMut,
         value: Result<&T, &T>,
     ) -> Result<(), super::SendError> {
-        buffer.prepare();
+        buffer.clear();
         let conn = self.prepare_response(buffer, value).unwrap();
 
         conn.tx_drive()
             .send(super::InboundDriverDirective::DeferredWrite(
-                DeferredWrite::Raw(buffer.split()).into(),
+                DeferredWrite::Raw(buffer.split().freeze()).into(),
             ))
             .map_err(|_| super::SendError::Disconnected)
     }
@@ -214,15 +215,15 @@ impl Request {
     /* ------------------------------------ Inner Methods ----------------------------------- */
     fn prepare_response<T: serde::Serialize>(
         mut self,
-        buf: &mut super::WriteBuffer,
+        buf: &mut BytesMut,
         value: Result<&T, &T>,
     ) -> Result<Arc<dyn Connection>, EncodeError> {
         let (inner, conn) = self.body.take().unwrap();
-        buf.prepare();
+        buf.clear();
 
         let encode_as_error = value.is_err();
         let value = value.unwrap_or_else(|x| x);
-        inner.codec().encode_response(inner.req_id(), encode_as_error, value, &mut buf.value)?;
+        inner.codec().encode_response(inner.req_id(), encode_as_error, value, buf)?;
 
         Ok(conn.clone())
     }

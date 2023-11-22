@@ -84,6 +84,7 @@ pub mod __util {
 
 pub use rpc::{msg::*, *};
 
+pub use bytes::{Buf, BufMut, Bytes, BytesMut}; // Re-export bytes crate
 pub use serde::de::IgnoredAny;
 
 #[cfg(feature = "service")]
