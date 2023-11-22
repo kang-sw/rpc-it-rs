@@ -602,6 +602,17 @@ impl Sender {
             .map_err(|_| SendError::Disconnected)
     }
 
+    pub(crate) async fn write_bytes(&self, bytes: &mut Bytes) -> Result<(), SendError> {
+        self.0.__write_bytes(bytes).await.map_err(Into::into)
+    }
+
+    pub(crate) fn write_bytes_deferred(&self, bytes: Bytes) -> Result<(), SendError> {
+        self.0
+            .tx_drive()
+            .send(DeferredWrite::Raw(bytes).into())
+            .map_err(|_| SendError::Disconnected)
+    }
+
     fn verify_prepared_notification(&self, msg_hash: NonZeroU64) -> Result<(), EncodeError> {
         let Some(hash) = self.0.codec().notification_encoder_hash() else {
             return Err(EncodeError::PreparedNotificationNotSupported);

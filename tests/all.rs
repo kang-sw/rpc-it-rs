@@ -8,6 +8,37 @@ use rpc_it::{
     Message, RecvMsg, Transceiver,
 };
 
+/* ---------------------------------------------------------------------------------------------- */
+/*                                         TEST INSTANCES                                         */
+/* ---------------------------------------------------------------------------------------------- */
+
+#[cfg(all(feature = "in-memory", feature = "jsonrpc"))]
+#[tokio::test]
+async fn test_basic_io_jsonrpc() {
+    basic_io_test(rpc_it::codecs::jsonrpc::Codec::default, |s, c| {
+        request_test(s, c.into_sender(), false)
+    })
+    .await;
+}
+
+#[cfg(all(feature = "in-memory", feature = "msgpack-rpc"))]
+#[tokio::test]
+async fn test_basic_io_msgpack_rpc() {
+    basic_io_test(
+        || {
+            rpc_it::codecs::msgpack_rpc::Codec::default()
+                .with_auto_wrapping(true)
+                .with_unwrap_mono_param(true)
+        },
+        |s, c| request_test(s, c.into_sender(), true),
+    )
+    .await;
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                          TEST METHODS                                         */
+/* ---------------------------------------------------------------------------------------------- */
+
 async fn request_test(
     server: rpc_it::Transceiver,
     client: rpc_it::Sender,
@@ -135,9 +166,49 @@ async fn request_test(
     join!(task_server, task_client);
 }
 
+async fn broadcast_test(publisher: Transceiver, receiver: Transceiver) {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(untagged)]
+    enum Scenario {
+        Integer(i32),
+        String(String),
+        Boolean(bool),
+        Object(Subscenario),
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    enum Subscenario {
+        Nodata,
+        Nodata2,
+        DataInteger(i32, u64, i128),
+        DatTup(i32, f64, f32, [String; 3]),
+        DataStruct { a: i32, b: i32, c: i32 },
+    }
+
+    let scenarios = vec![
+        Scenario::Integer(42),
+        Scenario::String("Hello, world!".to_string()),
+        Scenario::Boolean(true),
+        Scenario::Object(Subscenario::Nodata),
+        Scenario::Object(Subscenario::Nodata2),
+        Scenario::Object(Subscenario::DataInteger(10, 100, 1000)),
+        Scenario::Object(Subscenario::DatTup(
+            1,
+            3.14,
+            2.718,
+            ["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
+        )),
+        Scenario::Object(Subscenario::DataStruct { a: 1, b: 2, c: 3 }),
+    ];
+}
+
+/* ---------------------------------------------------------------------------------------------- */
+/*                                         TEST UTILITIES                                         */
+/* ---------------------------------------------------------------------------------------------- */
+
 async fn basic_io_test<T: Codec, F: Future<Output = ()>>(
     create_codec: impl Fn() -> T,
-    test_server_client: impl FnOnce(Transceiver, Transceiver) -> F,
+    test_peers: impl FnOnce(Transceiver, Transceiver) -> F,
 ) {
     let (tx_server, rx_client) = rpc_it::transports::new_in_memory();
     let (tx_client, rx_server) = rpc_it::transports::new_in_memory();
@@ -161,32 +232,9 @@ async fn basic_io_test<T: Codec, F: Future<Output = ()>>(
         .build();
 
     tokio::spawn(task);
- 
+
     // request_test(server, client.into_sender(), supports_predef).await;
-    test_server_client(server, client).await;
-}
-
-#[cfg(all(feature = "in-memory", feature = "jsonrpc"))]
-#[tokio::test]
-async fn test_basic_io_jsonrpc() {
-    basic_io_test(rpc_it::codecs::jsonrpc::Codec::default, |s, c| {
-        request_test(s, c.into_sender(), false)
-    })
-    .await;
-}
-
-#[cfg(all(feature = "in-memory", feature = "msgpack-rpc"))]
-#[tokio::test]
-async fn test_basic_io_msgpack_rpc() {
-    basic_io_test(
-        || {
-            rpc_it::codecs::msgpack_rpc::Codec::default()
-                .with_auto_wrapping(true)
-                .with_unwrap_mono_param(true)
-        },
-        |s, c| request_test(s, c.into_sender(), true),
-    )
-    .await;
+    test_peers(server, client).await;
 }
 
 struct LoggingSubscriber(&'static str);
