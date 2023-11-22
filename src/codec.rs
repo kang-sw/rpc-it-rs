@@ -82,14 +82,14 @@ impl ReqId {
 pub fn encoder_hash_of<T: std::any::Any, H: std::hash::Hash>(
     _this: &T,
     additional_context: &H,
-) -> u64 {
+) -> NonZeroU64 {
     use std::hash::{Hash, Hasher};
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     TypeId::of::<T>().hash(&mut hasher);
     additional_context.hash(&mut hasher);
 
-    hasher.finish()
+    hasher.finish().try_into().expect("Go and get lottery!")
 }
 
 /// Parses/Encodes data frame.
@@ -108,7 +108,7 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
     /// # NOTE
     ///
     /// See [`verify_trait_cast_behavior`] test method implementation.
-    fn as_notification_encoder_hash(&self) -> Option<u64> {
+    fn notification_encoder_hash(&self) -> Option<NonZeroU64> {
         None
     }
 
@@ -273,6 +273,9 @@ pub enum EncodeError {
 
     #[error("Prepared notification mismatch")]
     PreparedNotificationMismatch,
+
+    #[error("Underlying transport does not support reusable notification preparation")]
+    PreparedNotificationNotSupported,
 }
 
 #[derive(Debug, thiserror::Error)]

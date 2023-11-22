@@ -72,7 +72,7 @@ pub mod msgpack_rpc {
     }
 
     impl codec::Codec for Codec {
-        fn as_notification_encoder_hash(&self) -> Option<u64> {
+        fn notification_encoder_hash(&self) -> Option<NonZeroU64> {
             Some(*OnceLock::new().get_or_init(|| encoder_hash_of(self, &0)))
         }
 
@@ -391,7 +391,7 @@ pub mod jsonrpc {
     }
 
     impl codec::Codec for Codec {
-        fn as_notification_encoder_hash(&self) -> Option<u64> {
+        fn notification_encoder_hash(&self) -> Option<NonZeroU64> {
             Some(*OnceLock::new().get_or_init(|| encoder_hash_of(self, &0)))
         }
 

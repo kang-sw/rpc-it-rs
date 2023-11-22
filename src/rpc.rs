@@ -10,7 +10,7 @@
 use std::{
     any::Any,
     fmt::Debug,
-    num::NonZeroUsize,
+    num::{NonZeroU64, NonZeroUsize},
     ops::Range,
     sync::{Arc, Weak},
 };
@@ -204,6 +204,12 @@ enum InboundDriverDirective {
     Close,
 }
 
+impl From<DeferredWrite> for InboundDriverDirective {
+    fn from(value: DeferredWrite) -> Self {
+        Self::DeferredWrite(value)
+    }
+}
+
 #[derive(Debug)]
 enum DeferredWrite {
     /// Send error response to the request
@@ -355,24 +361,6 @@ impl Sender {
         self.notify_with_reuse(&mut Default::default(), method, params).await
     }
 
-    /// Transmit raw bytes directly to the writer without any validation or encoding. This method
-    /// incurs minimal overhead but can lead to invalid message transmission, potentially causing
-    /// errors and disconnection at the remote end.
-    ///
-    /// # Caution
-    ///
-    /// Use this only if you are certain of the implications and have validated the data.
-    #[doc(hidden)]
-    pub async fn send_raw(&self, mut bytes: bytes::Bytes) -> Result<(), SendError> {
-        todo!()
-    }
-
-    /// See [`Self::send_raw`]
-    #[doc(hidden)]
-    pub fn send_raw_deferred(&self, bytes: bytes::Bytes) -> Result<(), SendError> {
-        todo!("Send raw bytes without any validation.")
-    }
-
     #[doc(hidden)]
     pub async fn request_with_reuse<T: serde::Serialize>(
         &self,
@@ -437,9 +425,7 @@ impl Sender {
 
         self.0
             .tx_drive()
-            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(
-                buffer.split().freeze(),
-            )))
+            .send(DeferredWrite::Raw(buffer.split().freeze()).into())
             .map_err(|_| SendError::Disconnected)?;
 
         fut
@@ -459,9 +445,7 @@ impl Sender {
 
         self.0
             .tx_drive()
-            .send(InboundDriverDirective::DeferredWrite(DeferredWrite::Raw(
-                buffer.split().freeze(),
-            )))
+            .send(DeferredWrite::Raw(buffer.split().freeze()).into())
             .map_err(|_| SendError::Disconnected)
     }
 
@@ -507,7 +491,7 @@ impl Sender {
 
     /// Perform flush from background task.
     pub fn flush_deferred(&self) -> bool {
-        self.0.tx_drive().send(InboundDriverDirective::DeferredWrite(DeferredWrite::Flush)).is_ok()
+        self.0.tx_drive().send(DeferredWrite::Flush.into()).is_ok()
     }
 
     /// Is sending request enabled?
@@ -527,6 +511,7 @@ mod req;
 /*                                        ERROR DEFINIITONS                                       */
 /* ---------------------------------------------------------------------------------------------- */
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SendError {
     #[error("Encoding outbound message failed: {0}")]
     CodecError(#[from] crate::codec::EncodeError),
@@ -571,29 +556,62 @@ impl From<flume::RecvError> for RecvError {
 /*                                      ENCODING NOTIFICATION                                     */
 /* ---------------------------------------------------------------------------------------------- */
 
-pub struct EncodedNotify {}
+pub struct EncodedNotify {
+    encode_hash: NonZeroU64,
+    payload: bytes::Bytes,
+}
 
-impl Sender {
+impl dyn Codec {
     /// Prepare notification that is reusable across codecs which has same notification hash.
     pub fn prepare_notification<T: serde::Serialize>(
         &self,
-        buffer: BytesMut,
+        buffer: &mut BytesMut,
         method: &str,
         params: &T,
-        out: &mut EncodedNotify,
-    ) -> Result<(), EncodeError> {
-        todo!()
-    }
+    ) -> Result<EncodedNotify, EncodeError> {
+        let Some(hash) = self.notification_encoder_hash() else {
+            return Err(EncodeError::PreparedNotificationNotSupported);
+        };
 
+        Ok(EncodedNotify {
+            encode_hash: hash,
+            payload: {
+                buffer.clear();
+                self.encode_notify(method, params, buffer)?;
+                buffer.split().freeze()
+            },
+        })
+    }
+}
+
+impl Sender {
     pub async fn send_prepared_notification(&self, msg: &EncodedNotify) -> Result<(), SendError> {
-        todo!()
+        self.verify_prepared_notification(msg.encode_hash)?;
+        self.0.__write_bytes(&mut msg.payload.clone()).await?;
+        Ok(())
     }
 
     pub fn send_prepared_notification_defferred(
         &self,
         msg: &EncodedNotify,
     ) -> Result<(), SendError> {
-        todo!()
+        self.verify_prepared_notification(msg.encode_hash)?;
+        self.0
+            .tx_drive()
+            .send(DeferredWrite::Raw(msg.payload.clone()).into())
+            .map_err(|_| SendError::Disconnected)
+    }
+
+    fn verify_prepared_notification(&self, msg_hash: NonZeroU64) -> Result<(), EncodeError> {
+        let Some(hash) = self.0.codec().notification_encoder_hash() else {
+            return Err(EncodeError::PreparedNotificationNotSupported);
+        };
+
+        if hash != msg_hash {
+            return Err(EncodeError::PreparedNotificationMismatch);
+        }
+
+        Ok(())
     }
 }
 
