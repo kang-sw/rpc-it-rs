@@ -1,11 +1,11 @@
-use std::time::Instant;
+use std::{future::Future, time::Instant};
 
 use futures_util::join;
 use rpc_it::{
     codec::Codec,
     kv_pairs,
     rpc::{CallError, MessageMethodName},
-    Message, RecvMsg,
+    Message, RecvMsg, Transceiver,
 };
 
 async fn request_test(
@@ -135,7 +135,10 @@ async fn request_test(
     join!(task_server, task_client);
 }
 
-async fn basic_io_test<T: Codec>(create_codec: impl Fn() -> T, supports_predef: bool) {
+async fn basic_io_test<T: Codec, F: Future<Output = ()>>(
+    create_codec: impl Fn() -> T,
+    test_server_client: impl FnOnce(Transceiver, Transceiver) -> F,
+) {
     let (tx_server, rx_client) = rpc_it::transports::new_in_memory();
     let (tx_client, rx_server) = rpc_it::transports::new_in_memory();
 
@@ -158,14 +161,18 @@ async fn basic_io_test<T: Codec>(create_codec: impl Fn() -> T, supports_predef: 
         .build();
 
     tokio::spawn(task);
-
-    request_test(server, client.into_sender(), supports_predef).await;
+ 
+    // request_test(server, client.into_sender(), supports_predef).await;
+    test_server_client(server, client).await;
 }
 
 #[cfg(all(feature = "in-memory", feature = "jsonrpc"))]
 #[tokio::test]
 async fn test_basic_io_jsonrpc() {
-    basic_io_test(rpc_it::codecs::jsonrpc::Codec::default, false).await;
+    basic_io_test(rpc_it::codecs::jsonrpc::Codec::default, |s, c| {
+        request_test(s, c.into_sender(), false)
+    })
+    .await;
 }
 
 #[cfg(all(feature = "in-memory", feature = "msgpack-rpc"))]
@@ -177,7 +184,7 @@ async fn test_basic_io_msgpack_rpc() {
                 .with_auto_wrapping(true)
                 .with_unwrap_mono_param(true)
         },
-        true,
+        |s, c| request_test(s, c.into_sender(), true),
     )
     .await;
 }
