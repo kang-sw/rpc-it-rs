@@ -503,6 +503,11 @@ impl Sender {
     pub fn get_feature_flags(&self) -> Feature {
         self.0.feature_flag()
     }
+
+    /// Get reference to underlying connection handle
+    pub(crate) fn codec(&self) -> &dyn Codec {
+        self.0.codec()
+    }
 }
 
 mod req;
@@ -556,9 +561,19 @@ impl From<flume::RecvError> for RecvError {
 /*                                      ENCODING NOTIFICATION                                     */
 /* ---------------------------------------------------------------------------------------------- */
 
+#[derive(Clone)]
 pub struct EncodedNotify {
     encode_hash: NonZeroU64,
     payload: bytes::Bytes,
+}
+
+impl std::fmt::Debug for EncodedNotify {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EncodedNotify")
+            .field("encode_hash", &self.encode_hash)
+            .field("payload", &format_args!("{} bytes", self.payload.len()))
+            .finish()
+    }
 }
 
 impl dyn Codec {

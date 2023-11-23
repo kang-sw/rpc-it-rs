@@ -200,6 +200,9 @@ async fn broadcast_test(publisher: Transceiver, receiver: Transceiver) {
         )),
         Scenario::Object(Subscenario::DataStruct { a: 1, b: 2, c: 3 }),
     ];
+
+    todo!("BROADCAST FEATURE TEST");
+    todo!("REUSABLE NOTIFICAITON MESSAGE TEST");
 }
 
 /* ---------------------------------------------------------------------------------------------- */

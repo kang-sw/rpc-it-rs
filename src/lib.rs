@@ -38,9 +38,6 @@ pub mod rpc;
 pub mod transport;
 pub mod transports;
 
-#[cfg(feature = "service-macros")]
-pub use rpc_it_macros::service;
-
 #[cfg(feature = "service")]
 pub mod service;
 
