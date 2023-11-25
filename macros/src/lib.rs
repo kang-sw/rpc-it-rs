@@ -1,20 +1,29 @@
 //! # Procedural macro for generating RPC signatures
 //!
+//! ## Attributes
+//!
+//! - `notify`, `request`: Determines whether the API is a notification or a request.
+//! - `name`: Specifies the API name. If not specified, the name will be generated from the function
+//!   name.
+//! - `deserialize_args_as`: Overrides the deserialization type of the arguments.
+//! - `serialize_return_as`: Overrides the serialization type of the return value. Only valid for
+//!  request APIs.
+//!
 //! # Usage
 //!
 //! ```ignore
-//! #[rpc_it::rpc]
+//! #[rpc_it::service]
 //! mod my_api {
-//! 	/// This defines request API. Return type can be specified.
-//! 	#[api(request)]
+//!     /// This defines request API. Return type can be specified.
+//!     #[request]
 //!     #[api(name = "Rpc.Call.MyMethod")]
-//! 	pub fn my_method(my_binary: &[u8]) -> bool;
+//!     pub fn my_method<'a>(my_binary: &'a [u8]) -> bool;
 //!
-//! 	/// This defines notification API. Return type must be `()`.
-//! 	#[api(notify, recv_param = (String, _))]
-//! 	pub fn my_notification(my_key: &str, my_value: u32);
+//!     /// This defines notification API. Return type must be `()`.
+//!     #[notify]
+//!     #[api(deserialize_args = (String, _))]
+//!     pub fn my_notification(my_key: &str, my_value: u32);
 //! }
-//!
 //! ```
 //!
 //! Above code will generate following APIs:
@@ -39,14 +48,109 @@
 //! ``` ignore
 //! let rpc: rpc_it::Transceiver = unimplemented!();
 //! let mut service_builder: rpc_it::ServiceBuilder = unimplemented!();
-//! let rx = my_api::register_service(&mut service_builder);
+//! let (tx, rx) = flume::unbounded();
 //!
-//! async move {
-//!   match rx.recv().await?.param {
-//!     my_api::Inbound::MyMethod
+//! //
+//! my_api::register_service(&mut service_builder, |inbound: my_api::Inbound| {
+//!   match inbound {
+//!     // Allows 'take' out owned deserialized data, as data movement is inherently prohibited.
+//!     my_api::Param::MyMethod(req) => {
+//!       // req: my_api::de::MyMethod
+//!     }
+//!     my_api::Param::MyNotification(noti) => {
+//!       // noti: my_api::de::MyNotification
+//!     }
 //!   }
+//! });
+//! ```
 //!
-//!   Ok::<(), anyhow::Error>(())
+//! - Generation example
+//!
+//! ```ignore
+//! mod my_api {
+//!   mod param {
+//!     struct MyMethod {
+//!       __h: rpc_it::Sender,
+//!       __id: rpc_it::ReqId,
+//!       __p: Bytes, // payload segment
+//!     }
+//!
+//!     impl rpc_it::ExtractUserData for MyMethod {
+//!        // ...
+//!     }
+//!
+//!     impl MyMethod {
+//!       pub fn parse<'this>(&'this self) -> Result<super::de::MyMethod<'this>, rpc_it::Error> {
+//!         // ...
+//!       }
+//!
+//!       pub fn respond(self) -> rpc_it::TypedRequest<bool> {
+//!         // ...
+//!       }
+//!     }
+//!   }
+//!   mod de {
+//!     #[derive(serde::Deserialize)]
+//!     struct MyMethod<'a> {
+//!       pub my_binary: &'a [u8],
+//!     }
+//!   }
 //! }
 //! ```
 //!
+
+use proc_macro_error::proc_macro_error;
+use quote::quote;
+
+#[proc_macro_error]
+#[proc_macro_attribute]
+pub fn service(
+    _attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    // Replace first 'mod' into 'trait'
+    let mut is_trait_now = false;
+    let tokens = item.into_iter().map(|token| {
+        use proc_macro::*;
+
+        if is_trait_now {
+            token
+        } else {
+            if let TokenTree::Ident(ident) = &token {
+                match ident.to_string().as_str() {
+                    "mod" => {
+                        is_trait_now = true;
+                        return TokenTree::Ident(Ident::new("trait", ident.span()));
+                    }
+                    "trait" => {
+                        is_trait_now = true;
+                        return token;
+                    }
+                    _ => {}
+                }
+            }
+
+            token
+        }
+    });
+    let mut item = proc_macro::TokenStream::new();
+    item.extend(tokens);
+
+    // Parse module definition as trait definition, to parse function declarations as valid rust
+    // syntax.
+    let parsed = syn::parse::<syn::Item>(item).unwrap();
+    dbg!(parsed);
+
+    quote! {
+        fn fewfew() {}
+    }
+    .into()
+}
+
+struct SharedConfig {}
+
+struct MethodDefinition {}
+
+enum MethodDetail {
+    Request { name: String },
+}

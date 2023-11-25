@@ -71,6 +71,7 @@ struct ConnectionImpl<C, T, R, U> {
 /// Wraps connection implementation with virtual dispatch.
 trait Connection: Send + Sync + 'static + Debug {
     fn codec(&self) -> &dyn Codec;
+    fn codec_arc(&self) -> Arc<dyn Codec>;
     fn write(&self) -> &AsyncMutex<dyn AsyncFrameWrite>;
     fn reqs(&self) -> Option<&RequestContext>;
     fn tx_drive(&self) -> &flume::Sender<InboundDriverDirective>;
@@ -87,6 +88,10 @@ where
 {
     fn codec(&self) -> &dyn Codec {
         &*self.codec
+    }
+
+    fn codec_arc(&self) -> Arc<dyn Codec> {
+        self.codec.clone()
     }
 
     fn write(&self) -> &AsyncMutex<dyn AsyncFrameWrite> {

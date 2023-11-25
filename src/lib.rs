@@ -38,6 +38,13 @@ pub mod transports;
 pub mod service;
 
 #[cfg(feature = "macros")]
+pub mod __macro {
+    //! Macro support private types
+
+    pub struct TypedRequest {}
+}
+
+#[cfg(feature = "macros")]
 pub mod __util {
     use serde::ser::SerializeMap;
 
@@ -83,8 +90,10 @@ pub use serde::de::IgnoredAny;
 #[cfg(feature = "service")]
 pub use service::{
     ExactMatchRouter, RegisterError, RouteMessageError, Router, Service, ServiceBuilder,
-    TypedRequest, TypedResponse,
 };
+
+#[cfg(feature = "macros")]
+pub use rpc_it_macros::service;
 
 /// Create a map from a list of key-value pairs.
 ///
