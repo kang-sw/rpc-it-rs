@@ -216,6 +216,15 @@ pub trait Codec: Send + Sync + 'static + std::fmt::Debug {
     }
 }
 
+impl dyn Codec {
+    /// Check if two codecs can be used interchangeably on encoding notification messages.
+    pub fn can_reuse_prepared_notification(&self, other: &impl Codec) -> bool {
+        self.notification_encoder_hash()
+            .zip(other.notification_encoder_hash())
+            .is_some_and(|(a, b)| a == b)
+    }
+}
+
 /// Some predefined reponse error types. Most of them are automatically generated from the server.
 ///
 /// In default, errors are serialized as following form:
