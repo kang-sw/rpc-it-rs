@@ -8,9 +8,14 @@ use crate::rpc::{SendError, Sender};
 /// [`BroadcastProxy`] is responsible for broadcasting a single notification message to multiple
 /// peers. It optimizes the encoding process by reusing encoded chunks when multiple peers share the
 /// same codec for notification encoding.
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub struct Broadcast {
     buffer: BytesMut,
+
+    /// Sorted lookup table for encoded chunks. The table is sorted by the codec's notification
+    /// encoder hash, and provides a fast lookup for encoded chunks.
+    ///
+    /// Cleared after each broadcast, however, the capacity is preserved.
     chunk_lut: Vec<(NonZeroU64, Bytes)>,
 }
 
@@ -20,6 +25,7 @@ impl std::fmt::Debug for Broadcast {
     }
 }
 
+///
 impl Broadcast {
     /// Broadcast a notification to all connected clients in deferred manner.
     pub fn broadcast_deferred<'a, T: serde::Serialize>(
@@ -77,20 +83,30 @@ impl Broadcast {
         self.chunk_lut.clear();
     }
 
+    /// Reserve buffer capacity for encoding notifications.
+    pub fn reserve_buffer_capacity(&mut self, capacity: usize) {
+        self.buffer.reserve(capacity);
+    }
+
+    /* ----------------------------------------- Private ---------------------------------------- */
+
     fn lookup_chunk<T: serde::Serialize>(
         &mut self,
         rpc: &'_ Sender,
         method: &str,
         params: &T,
     ) -> Result<Option<Bytes>, SendError> {
-        // Find chunk based on the codec's notification hash.
         let codec = rpc.codec();
         let Some(id) = codec.notification_encoder_hash() else {
             return Ok(None);
         };
 
+        // Find chunk based on the codec's notification hash.
         let index = match self.chunk_lut.binary_search_by_key(&id, |(id, ..)| *id) {
+            // cache hit
             Ok(index) => index,
+
+            // cache miss; encode notification and insert it into the cache
             Err(insert_at) => {
                 codec.encode_notify(method, params, &mut self.buffer)?;
                 let bytes = self.buffer.split().freeze();

@@ -66,7 +66,7 @@ where
         Self(Service { router, methods: Vec::new() })
     }
 
-    pub fn register_request_handler<Req, Rep, Err>(
+    pub fn register_parsed_request_handler<Req, Rep, Err>(
         &mut self,
         patterns: &[&str],
         func: impl Fn(TypedRequest<Rep, Err>, Req) -> Result<(), Box<dyn Error + Send + Sync + 'static>>
@@ -96,7 +96,7 @@ where
         self.0.router.register(patterns, index)
     }
 
-    pub fn register_notify_handler<Noti>(
+    pub fn register_parsed_notify_handler<Noti>(
         &mut self,
         patterns: &[&str],
         func: impl Fn(crate::Notify, Noti) -> Result<(), Box<dyn Error + Send + Sync + 'static>>
@@ -117,6 +117,19 @@ where
             };
 
             func(msg, param)?;
+            Ok(())
+        })));
+        self.0.router.register(patterns, index)
+    }
+
+    pub fn register_request_handler(
+        &mut self,
+        patterns: &[&str],
+        func: impl Fn(Request) -> Result<(), Box<dyn Error + Send + Sync + 'static>>,
+    ) -> Result<(), RegisterError> {
+        let index = self.0.methods.len();
+        self.0.methods.push(InboundHandler::Request(Box::new(move |request| {
+            func(request)?;
             Ok(())
         })));
         self.0.router.register(patterns, index)
@@ -150,7 +163,7 @@ where
 #[derive(Debug, thiserror::Error)]
 pub enum RouteMessageError {
     #[error("Non-utf method name: {0}")]
-    NonUtfMethodName(#[from] std::str::Utf8Error),
+    NonUtf8MethodName(#[from] std::str::Utf8Error),
 
     #[error("Method couldn't be routed")]
     MethodNotFound,

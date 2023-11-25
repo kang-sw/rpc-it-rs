@@ -946,6 +946,7 @@ where
     /// To start the connection, you need to spawn the returned future to the executor.
     #[must_use = "The connection will be closed immediately if you don't spawn the future!"]
     pub fn build(self) -> (Transceiver, impl std::future::Future<Output = ()> + Send) {
+        // NOTE: This channel is intentionally unbounded to prevent deadlock on drop hook.
         let (tx_inb_drv, rx_inb_drv) = flume::unbounded();
         let (tx_in_msg, rx_in_msg) =
             if let Some(chan_cap) = self.cfg.inbound_channel_cap.map(|x| x.get()) {
