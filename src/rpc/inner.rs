@@ -44,7 +44,7 @@ where
     Tr: AsyncFrameRead,
 {
     async fn execute(self) {
-        let DriverBody { w_this, mut read, mut ev_subs, rx_drive: rx_msg, tx_msg } = self;
+        let DriverBody { w_this, mut read, mut ev_subs, rx_drive, tx_msg } = self;
 
         use futures_util::future::Fuse;
         let mut fut_drive_msg = Fuse::terminated();
@@ -58,7 +58,7 @@ where
         //
         // XXX: should we split background and directive channel capacities?
         let (tx_bg_sender, rx_bg_sender) =
-            rx_msg.capacity().map(flume::bounded).unwrap_or_else(flume::unbounded);
+            tx_msg.capacity().map(flume::bounded).unwrap_or_else(flume::unbounded);
 
         let fut_bg_sender = capture!([w_this], async move {
             let mut buffer = BytesMut::default();
@@ -92,7 +92,7 @@ where
         /* ------------------------------------ App Loop ------------------------------------ */
         loop {
             if fut_drive_msg.is_terminated() {
-                fut_drive_msg = rx_msg.recv_async().fuse();
+                fut_drive_msg = rx_drive.recv_async().fuse();
             }
 
             if fut_read.is_terminated() {
@@ -165,7 +165,7 @@ where
 
             // Let the handle recognized as 'disconnected'
             drop(fut_drive_msg);
-            drop(rx_msg);
+            drop(rx_drive);
 
             // Wake up all pending responses
             reqs.wake_up_all();
