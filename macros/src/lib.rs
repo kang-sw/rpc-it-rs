@@ -12,17 +12,23 @@
 //! # Usage
 //!
 //! ```ignore
-//! #[rpc_it::service]
-//! mod my_api {
+//! service! {
 //!     /// This defines request API. Return type can be specified.
 //!     #[request]
 //!     #[api(name = "Rpc.Call.MyMethod")]
-//!     pub fn my_method<'a>(my_binary: &'a [u8]) -> bool;
+//!     extern "serde" fn my_method<'a>(my_binary: &'a [u8]) -> bool;
 //!
 //!     /// This defines notification API. Return type must be `()`.
 //!     #[notify]
 //!     #[api(deserialize_args = (String, _))]
-//!     pub fn my_notification(my_key: &str, my_value: u32);
+//!     extern "serde" fn my_notification(my_key: &str, my_value: u32);
+//!
+//!     /// With "rkyv" feature enabled and extern `"rkyv"`, you can use rkyv types as arguments.
+//!     /// This will encode the payload as rkyv binary.
+//!     #[request]
+//!     #[api(name = "Rpc.Call.MyMethod")]
+//!     #[api(rkyv)]
+//!     fn my_method<'a>(my_rkyv_derive_type: &str) -> bool;
 //! }
 //! ```
 //!
@@ -139,7 +145,7 @@ pub fn service(
     // Parse module definition as trait definition, to parse function declarations as valid rust
     // syntax.
     let parsed = syn::parse::<syn::Item>(item).unwrap();
-    dbg!(parsed);
+    // dbg!(parsed);
 
     quote! {
         fn fewfew() {}
