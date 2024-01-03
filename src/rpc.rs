@@ -64,6 +64,7 @@ struct RequestContext {
 /// An awaitable response for a sent RPC request
 pub struct ReceiveResponse<'a, U> {
     owner: Cow<'a, Client<U>>,
+    req_id: RequestId,
 }
 
 // ==== Definitions ====
@@ -93,7 +94,10 @@ pub mod error {
     }
 
     #[derive(Debug, Error)]
-    pub enum RequestError {}
+    pub enum RequestError {
+        #[error("Send failed: {0}")]
+        SendFailed(#[from] SendError),
+    }
 
     #[derive(Debug, Error)]
     pub enum DeferredActionError<T> {
@@ -111,7 +115,7 @@ pub mod error {
     ) -> DeferredActionError<Bytes> {
         match e {
             TrySendError::Closed(_) => DeferredActionError::BackgroundRunnerClosed,
-            TrySendError::Full(DeferredDirective::WriteNotify(x)) => {
+            TrySendError::Full(DeferredDirective::WriteNoti(x)) => {
                 DeferredActionError::ChannelAtCapacity(x)
             }
             TrySendError::Full(_) => unreachable!(),
@@ -132,6 +136,7 @@ use bytes::BytesMut;
 use tokio::sync::mpsc;
 
 use crate::codec::Codec;
+use crate::defs::RequestId;
 use crate::io::AsyncFrameWrite;
 
 use self::error::*;
@@ -201,11 +206,11 @@ mod driver {
         Flush,
 
         /// Write a notification message.
-        WriteNotify(Bytes),
+        WriteNoti(Bytes),
 
         /// Write a request message. If the sending of the request is aborted by the writer, the
         /// request message will be revoked and will wake up the pending task.
-        WriteRequest(Bytes, RequestId),
+        WriteReq(Bytes, RequestId),
     }
 }
 
@@ -214,7 +219,7 @@ use driver::*;
 // ========================================================== RpcContext ===|
 
 impl<U> dyn RpcContext<U> {
-    pub(crate) async fn write_frame(&self, buf: Bytes) -> Result<(), SendError> {
+    pub(crate) async fn write_frame(&self, buf: Bytes) -> std::io::Result<()> {
         todo!()
     }
 }
@@ -232,7 +237,8 @@ impl<U: RpcUserData> NotifyClient<U> {
     ) -> Result<(), SendError> {
         buf.clear();
         self.inner.codec().encode_notify(method, params, buf)?;
-        self.inner.write_frame(buf.split().freeze()).await
+        self.inner.write_frame(buf.split().freeze()).await?;
+        Ok(())
     }
 
     pub fn notify_deferred<T: serde::Serialize>(
@@ -243,14 +249,17 @@ impl<U: RpcUserData> NotifyClient<U> {
     ) -> Result<(), SendError> {
         buf.clear();
         self.inner.codec().encode_notify(method, params, buf)?;
-        self.write_frame_deferred(buf.split().freeze())?;
+        self.write_frame_deferred(DeferredDirective::WriteNoti(buf.split().freeze()))?;
 
         Ok(())
     }
 
-    fn write_frame_deferred(&self, buf: Bytes) -> Result<(), DeferredActionError<Bytes>> {
+    fn write_frame_deferred(
+        &self,
+        buf: DeferredDirective,
+    ) -> Result<(), DeferredActionError<Bytes>> {
         self.tx_deferred
-            .try_send(DeferredDirective::WriteNotify(buf))
+            .try_send(buf)
             .map_err(error::convert_deferred_write_err)
     }
 
@@ -307,7 +316,10 @@ impl<U: RpcUserData> NotifyClient<U> {
 
 impl<U> Clone for NotifyClient<U> {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone(), tx_deferred: self.tx_deferred.clone() }
+        Self {
+            inner: self.inner.clone(),
+            tx_deferred: self.tx_deferred.clone(),
+        }
     }
 }
 
@@ -317,24 +329,75 @@ impl<U> Clone for NotifyClient<U> {
 impl<U: RpcUserData> Client<U> {
     pub async fn request<T: serde::Serialize>(
         &self,
+        buf: &mut BytesMut,
         method: &str,
         params: &T,
     ) -> Result<ReceiveResponse<U>, RequestError> {
-        todo!()
+        let resp = self.encode_request(buf, method, params)?;
+        let request_id = resp.req_id;
+
+        self.inner
+            .inner
+            .write_frame(buf.split().freeze())
+            .await
+            .map_err(|e| {
+                self.req.free_id(request_id);
+                SendError::from(e)
+            })?;
+
+        Ok(resp)
     }
 
     pub fn request_deferred<T: serde::Serialize>(
         &self,
+        buf: &mut BytesMut,
         method: &str,
         params: &T,
     ) -> Result<ReceiveResponse<U>, RequestError> {
-        todo!()
+        let resp = self.encode_request(buf, method, params)?;
+        let request_id = resp.req_id;
+
+        self.write_frame_deferred(DeferredDirective::WriteReq(
+            buf.split().freeze(),
+            request_id,
+        ))
+        .map_err(|e| {
+            self.req.free_id(request_id);
+            SendError::from(e)
+        })?;
+
+        Ok(resp)
+    }
+
+    fn encode_request<T: serde::Serialize>(
+        &self,
+        buf: &mut BytesMut,
+        method: &str,
+        params: &T,
+    ) -> Result<ReceiveResponse<U>, SendError> {
+        buf.clear();
+
+        let request_id = self.req.allocate_id();
+        self.codec()
+            .encode_request(request_id, method, params, buf)
+            .map_err(|e| {
+                self.req.free_id(request_id);
+                SendError::from(e)
+            })?;
+
+        Ok(ReceiveResponse {
+            owner: Cow::Borrowed(self),
+            req_id: request_id,
+        })
     }
 }
 
 impl<U> Clone for Client<U> {
     fn clone(&self) -> Self {
-        Self { inner: self.inner.clone(), req: self.req.clone() }
+        Self {
+            inner: self.inner.clone(),
+            req: self.req.clone(),
+        }
     }
 }
 
@@ -347,11 +410,34 @@ impl<U> std::ops::Deref for Client<U> {
     }
 }
 
+// ==== RequestContext ====
+
+impl RequestContext {
+    fn allocate_id(&self) -> RequestId {
+        todo!()
+    }
+
+    /// Mark the request ID as free.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the request ID is not found from the registry
+    fn free_id(&self, id: RequestId) {
+        todo!()
+    }
+
+    /// Mark the request ID as aborted; which won't be reused until rotation.
+    fn abort_id(&self, id: RequestId) {}
+}
+
 // ======== ReceiveResponse ======== //
 
 impl<'a, U> ReceiveResponse<'a, U> {
     /// Elevate the lifetime of the response to `'static`.
     pub fn into_owned(self) -> ReceiveResponse<'static, U> {
-        ReceiveResponse { owner: Cow::Owned(self.owner.into_owned()) }
+        ReceiveResponse {
+            owner: Cow::Owned(self.owner.into_owned()),
+            req_id: self.req_id,
+        }
     }
 }

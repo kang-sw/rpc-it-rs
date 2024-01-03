@@ -127,7 +127,7 @@ pub mod defs {
 
     // ========================================================== Basic Types ===|
 
-    use std::ops::Range;
+    use std::{num::NonZeroU32, ops::Range};
 
     pub(crate) type SizeType = u32;
 
@@ -182,7 +182,10 @@ pub mod defs {
 
     define_id! {
         /// Unique identifier of a RPC request.
-        pub struct RequestId(u32)
+        ///
+        /// This is basically incremental per connection, and rotates back to 1 after reaching the
+        /// maximum value(2^32-1).
+        pub struct RequestId(NonZeroU32)
     }
 }
 
