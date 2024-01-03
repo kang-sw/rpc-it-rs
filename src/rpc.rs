@@ -55,16 +55,11 @@ struct WeakClient<U> {
     req: Weak<RequestContext>,
 }
 
-/// A context for pending RPC requests.
-#[derive(Debug)]
-struct RequestContext {
-    // TODO: pending task hash map
-}
-
 /// An awaitable response for a sent RPC request
-pub struct ReceiveResponse<'a, U> {
-    owner: Cow<'a, Client<U>>,
+pub struct ReceiveResponse<'a> {
+    reqs: Cow<'a, Arc<RequestContext>>,
     req_id: RequestId,
+    state: req_rep::ReceiveResponseState,
 }
 
 // ==== Definitions ====
@@ -141,31 +136,80 @@ use crate::io::AsyncFrameWrite;
 
 use self::error::*;
 
-pub mod msg {
-    use std::{future::Future, sync::Arc};
+mod req_rep {
+    use std::{borrow::Cow, future::Future, sync::Arc};
 
     use bytes::Bytes;
     use serde::de::Deserialize;
 
-    use crate::codec::Codec;
+    use crate::{codec::Codec, defs::RequestId};
 
-    use super::{ReceiveResponse, RpcUserData};
+    use super::ReceiveResponse;
 
     /// Response message from RPC server.
     pub struct Response(Arc<dyn Codec>, Bytes);
 
-    // ======== Response ======== //
+    /// A context for pending RPC requests.
+    #[derive(Debug)]
+    pub(super) struct RequestContext {
+        // TODO: pending task hash map
+    }
 
-    impl<'a, U: RpcUserData> Future for ReceiveResponse<'a, U> {
+    // ========================================================== ReceiveResponse ===|
+
+    pub(super) enum ReceiveResponseState {
+        Init,
+        Pending(u32), // Physically, it cannot exceed u32::MAX
+        Expired,
+    }
+
+    impl<'a> Future for ReceiveResponse<'a> {
         type Output = Response;
 
         fn poll(
             self: std::pin::Pin<&mut Self>,
             cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Self::Output> {
+            let this = self.get_mut();
+
+            /*
+                TODO: Implement state machine for response receiving.
+
+                - Init: Fetch reference to the slot. Try to retrieve the response from the slot.
+                - Pending: Try to retrieve response ...
+                - Expired: panic!
+            */
+
+            let slot = match this.state {
+                ReceiveResponseState::Init => todo!(),
+                ReceiveResponseState::Pending(slot) => slot,
+                ReceiveResponseState::Expired => panic!("Polled after expiration"),
+            };
+
+            // TODO: Fetch with `slot`
+
             todo!("")
         }
     }
+
+    // ======== ReceiveResponse ======== //
+
+    impl<'a> ReceiveResponse<'a> {
+        /// Elevate the lifetime of the response to `'static`.
+        pub fn into_owned(self) -> ReceiveResponse<'static> {
+            ReceiveResponse {
+                reqs: Cow::Owned(self.reqs.into_owned()),
+                req_id: self.req_id,
+                state: self.state,
+            }
+        }
+
+        pub fn request_id(&self) -> RequestId {
+            self.req_id
+        }
+    }
+
+    // ========================================================== Response ===|
 
     impl Response {
         pub fn parse<R>(&self) -> erased_serde::Result<R>
@@ -175,7 +219,30 @@ pub mod msg {
             todo!()
         }
     }
+
+    // ==== RequestContext ====
+
+    impl RequestContext {
+        pub(super) fn allocate_id(&self) -> RequestId {
+            todo!()
+        }
+
+        /// Mark the request ID as free.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the request ID is not found from the registry
+        pub(super) fn free_id(&self, id: RequestId) {
+            todo!()
+        }
+
+        /// Mark the request ID as aborted; which won't be reused until rotation.
+        pub(super) fn abort_id(&self, id: RequestId) {}
+    }
 }
+
+pub use req_rep::Response;
+use req_rep::*;
 
 pub mod builder {
     //! # Builder for RPC connection
@@ -332,9 +399,9 @@ impl<U: RpcUserData> Client<U> {
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<ReceiveResponse<U>, RequestError> {
+    ) -> Result<ReceiveResponse, RequestError> {
         let resp = self.encode_request(buf, method, params)?;
-        let request_id = resp.req_id;
+        let request_id = resp.request_id();
 
         self.inner
             .inner
@@ -353,9 +420,9 @@ impl<U: RpcUserData> Client<U> {
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<ReceiveResponse<U>, RequestError> {
+    ) -> Result<ReceiveResponse, RequestError> {
         let resp = self.encode_request(buf, method, params)?;
-        let request_id = resp.req_id;
+        let request_id = resp.request_id();
 
         self.write_frame_deferred(DeferredDirective::WriteReq(
             buf.split().freeze(),
@@ -374,7 +441,7 @@ impl<U: RpcUserData> Client<U> {
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<ReceiveResponse<U>, SendError> {
+    ) -> Result<ReceiveResponse, SendError> {
         buf.clear();
 
         let request_id = self.req.allocate_id();
@@ -386,8 +453,9 @@ impl<U: RpcUserData> Client<U> {
             })?;
 
         Ok(ReceiveResponse {
-            owner: Cow::Borrowed(self),
+            reqs: Cow::Borrowed(&self.req),
             req_id: request_id,
+            state: req_rep::ReceiveResponseState::Init,
         })
     }
 }
@@ -407,37 +475,5 @@ impl<U> std::ops::Deref for Client<U> {
 
     fn deref(&self) -> &Self::Target {
         &self.inner
-    }
-}
-
-// ==== RequestContext ====
-
-impl RequestContext {
-    fn allocate_id(&self) -> RequestId {
-        todo!()
-    }
-
-    /// Mark the request ID as free.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the request ID is not found from the registry
-    fn free_id(&self, id: RequestId) {
-        todo!()
-    }
-
-    /// Mark the request ID as aborted; which won't be reused until rotation.
-    fn abort_id(&self, id: RequestId) {}
-}
-
-// ======== ReceiveResponse ======== //
-
-impl<'a, U> ReceiveResponse<'a, U> {
-    /// Elevate the lifetime of the response to `'static`.
-    pub fn into_owned(self) -> ReceiveResponse<'static, U> {
-        ReceiveResponse {
-            owner: Cow::Owned(self.owner.into_owned()),
-            req_id: self.req_id,
-        }
     }
 }
