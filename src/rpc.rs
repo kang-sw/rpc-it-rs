@@ -103,6 +103,15 @@ pub mod error {
         ChannelAtCapacity(T),
     }
 
+    #[derive(Debug, Error)]
+    pub enum ReceiveResponseError {
+        #[error("RPC server was closed.")]
+        ServerClosed,
+
+        #[error("RPC client was closed.")]
+        ClientClosed,
+    }
+
     // ==== DeferredActionError ====
 
     pub(crate) fn convert_deferred_write_err(
@@ -137,14 +146,22 @@ use crate::io::AsyncFrameWrite;
 use self::error::*;
 
 mod req_rep {
-    use std::{borrow::Cow, future::Future, sync::Arc};
+    use std::{
+        borrow::Cow,
+        future::Future,
+        mem::replace,
+        sync::{atomic::AtomicU32, Arc, Weak},
+        task::{Poll, Waker},
+    };
 
     use bytes::Bytes;
+    use hashbrown::HashMap;
+    use parking_lot::{Mutex, RwLock};
     use serde::de::Deserialize;
 
     use crate::{codec::Codec, defs::RequestId};
 
-    use super::ReceiveResponse;
+    use super::{error::ReceiveResponseError, ReceiveResponse};
 
     /// Response message from RPC server.
     pub struct Response(Arc<dyn Codec>, Bytes);
@@ -152,24 +169,52 @@ mod req_rep {
     /// A context for pending RPC requests.
     #[derive(Debug)]
     pub(super) struct RequestContext {
-        // TODO: pending task hash map
+        /// Codec of owning RPC connection.
+        codec: Weak<dyn Codec>,
+
+        /// Request ID generator. Rotates every 2^32 requests.
+        ///
+        /// It naively expects that the request ID is not reused until 2^32 requests are made.
+        req_id_gen: AtomicU32,
+
+        /// A set of pending requests that are waiting to be responded.        
+        pending_tasks: RwLock<HashMap<RequestId, Mutex<PendingTask>>>,
+    }
+
+    #[derive(Debug)]
+    struct PendingTask {
+        registered_waker: Option<Waker>,
+        response: ResponseData,
+    }
+
+    #[derive(Debug)]
+    enum ResponseData {
+        NotReady,
+        Ready(Bytes),
+        Closed,
+        Unreachable,
     }
 
     // ========================================================== ReceiveResponse ===|
 
+    #[derive(Default)]
     pub(super) enum ReceiveResponseState {
+        /// A waker that is registered to the pending task.
+        #[default]
         Init,
-        Pending(u32), // Physically, it cannot exceed u32::MAX
+        Pending(Waker),
+
+        /// Required to implement [`ReceiveResponse::into_owned`]
         Expired,
     }
 
     impl<'a> Future for ReceiveResponse<'a> {
-        type Output = Response;
+        type Output = Result<Response, ReceiveResponseError>;
 
         fn poll(
             self: std::pin::Pin<&mut Self>,
             cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Self::Output> {
+        ) -> Poll<Self::Output> {
             let this = self.get_mut();
 
             /*
@@ -180,15 +225,75 @@ mod req_rep {
                 - Expired: panic!
             */
 
-            let slot = match this.state {
-                ReceiveResponseState::Init => todo!(),
-                ReceiveResponseState::Pending(slot) => slot,
-                ReceiveResponseState::Expired => panic!("Polled after expiration"),
+            let lc_entry = this.reqs.pending_tasks.read();
+            let mut lc_slot = lc_entry
+                .get(&this.req_id)
+                .expect("'req_id' not found; seems polled after ready!")
+                .lock();
+
+            // Check if we're ready to retrieve response
+            match &mut lc_slot.response {
+                ResponseData::NotReady => (),
+                ResponseData::Unreachable => unreachable!("Polled after ready"),
+                ResponseData::Closed => {
+                    return Poll::Ready(Err(ReceiveResponseError::ServerClosed))
+                }
+                resp @ ResponseData::Ready(_) => {
+                    let ResponseData::Ready(buf) = replace(resp, ResponseData::Unreachable) else {
+                        unreachable!()
+                    };
+
+                    // Drops lock before promoting codec ptr ... (very slight performance gain)
+                    drop(lc_slot);
+                    drop(lc_entry);
+
+                    let codec = this
+                        .reqs
+                        .codec
+                        .upgrade()
+                        .ok_or(ReceiveResponseError::ClientClosed)?;
+
+                    return Poll::Ready(Ok(Response(codec, buf)));
+                }
+            }
+
+            let new_waker = match &mut this.state {
+                ReceiveResponseState::Init => {
+                    let waker = cx.waker().clone();
+                    this.state = ReceiveResponseState::Pending(waker.clone());
+                    Some(waker)
+                }
+                ReceiveResponseState::Pending(waker) => {
+                    let new_waker = cx.waker();
+                    if waker.will_wake(new_waker) {
+                        None // We can reuse the waker (optimize it away)
+                    } else {
+                        *waker = new_waker.clone();
+                        Some(waker.clone())
+                    }
+                }
+                ReceiveResponseState::Expired => panic!("Polled after ready"),
             };
 
-            // TODO: Fetch with `slot`
+            if let Some(wk) = new_waker {
+                lc_slot.registered_waker = Some(wk);
+            }
 
-            todo!("")
+            Poll::Pending
+        }
+    }
+
+    impl<'a> Drop for ReceiveResponse<'a> {
+        fn drop(&mut self) {
+            if matches!(self.state, ReceiveResponseState::Expired) {
+                return;
+            }
+
+            let _e = self.reqs.pending_tasks.write().remove(&self.req_id);
+            debug_assert!(
+                _e.is_some(),
+                "ReceiveResponse is dropped before polled to ready!"
+            );
         }
     }
 
@@ -196,11 +301,11 @@ mod req_rep {
 
     impl<'a> ReceiveResponse<'a> {
         /// Elevate the lifetime of the response to `'static`.
-        pub fn into_owned(self) -> ReceiveResponse<'static> {
+        pub fn into_owned(mut self) -> ReceiveResponse<'static> {
             ReceiveResponse {
-                reqs: Cow::Owned(self.reqs.into_owned()),
+                reqs: Cow::Owned((*self.reqs).clone()),
                 req_id: self.req_id,
-                state: self.state,
+                state: replace(&mut self.state, ReceiveResponseState::Expired),
             }
         }
 
@@ -223,7 +328,7 @@ mod req_rep {
     // ==== RequestContext ====
 
     impl RequestContext {
-        pub(super) fn allocate_id(&self) -> RequestId {
+        pub(super) fn allocate_new_request(&self) -> RequestId {
             todo!()
         }
 
@@ -237,7 +342,14 @@ mod req_rep {
         }
 
         /// Mark the request ID as aborted; which won't be reused until rotation.
-        pub(super) fn abort_id(&self, id: RequestId) {}
+        pub(super) fn abort_id(&self, id: RequestId) {
+            todo!()
+        }
+
+        /// Set the response for the request ID.
+        pub(crate) fn set_response(&self, id: RequestId, resp: Response) {
+            todo!()
+        }
     }
 }
 
@@ -401,16 +513,12 @@ impl<U: RpcUserData> Client<U> {
         params: &T,
     ) -> Result<ReceiveResponse, RequestError> {
         let resp = self.encode_request(buf, method, params)?;
-        let request_id = resp.request_id();
 
         self.inner
             .inner
             .write_frame(buf.split().freeze())
             .await
-            .map_err(|e| {
-                self.req.free_id(request_id);
-                SendError::from(e)
-            })?;
+            .map_err(SendError::from)?;
 
         Ok(resp)
     }
@@ -428,10 +536,7 @@ impl<U: RpcUserData> Client<U> {
             buf.split().freeze(),
             request_id,
         ))
-        .map_err(|e| {
-            self.req.free_id(request_id);
-            SendError::from(e)
-        })?;
+        .map_err(SendError::from)?;
 
         Ok(resp)
     }
@@ -444,7 +549,7 @@ impl<U: RpcUserData> Client<U> {
     ) -> Result<ReceiveResponse, SendError> {
         buf.clear();
 
-        let request_id = self.req.allocate_id();
+        let request_id = self.req.allocate_new_request();
         self.codec()
             .encode_request(request_id, method, params, buf)
             .map_err(|e| {
@@ -455,7 +560,7 @@ impl<U: RpcUserData> Client<U> {
         Ok(ReceiveResponse {
             reqs: Cow::Borrowed(&self.req),
             req_id: request_id,
-            state: req_rep::ReceiveResponseState::Init,
+            state: Default::default(),
         })
     }
 }
