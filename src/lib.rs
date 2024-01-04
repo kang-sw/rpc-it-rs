@@ -88,9 +88,22 @@ mod inner {
     #[inline(always)]
     pub(crate) fn cold_path() {}
 }
-pub(crate) use inner::*;
 
 // ========================================================== Re-exports ===|
 
+// ==== Dependency Crates ====
+
 pub extern crate erased_serde;
 pub extern crate serde;
+
+// ==== Exposed APIs ====
+
+pub(crate) use inner::*;
+
+pub use rpc::{
+    create_builder, Client, NotifyClient, ReceiveResponse, Response, UserData, WeakClient,
+    WeakNotifyClient,
+};
+
+pub use codec::{Codec, ParseMessage, ResponseErrorCode};
+pub use io::{AsyncFrameRead, AsyncFrameWrite};
