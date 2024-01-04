@@ -4,7 +4,7 @@ use std::{
 };
 
 use bytes::{Buf, Bytes};
-use futures_core::Stream;
+use futures::Stream;
 use tokio::io::AsyncWrite;
 
 /// [`AsyncFrameWrite`] is a trait defining the interface for writing data frames

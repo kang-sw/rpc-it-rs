@@ -25,6 +25,13 @@ pub(crate) trait RpcContext<U: UserData>: std::fmt::Debug {
     fn codec(&self) -> &dyn Codec;
     fn user_data(&self) -> &U;
     fn shutdown_rx_channel(&self);
+
+    /// Increments the reference count of the [`RequestSender`] handle.
+    fn incr_request_sender_refcnt(&self);
+
+    /// Decrements the reference count of the [`RequestSender`] handle. If all request senders are
+    /// dropped, the background writer's response handler side will be shut down.
+    fn decr_request_sender_refcnt(&self);
 }
 
 /// A trait constraint for user data type of a RPC connection.
@@ -68,8 +75,8 @@ pub struct WeakRequestSender<U> {
 }
 
 /// An awaitable response for a sent RPC request
-pub struct ReceiveResponse<'a> {
-    reqs: Cow<'a, Arc<RequestContext>>,
+pub struct ReceiveResponse<'a, U> {
+    owner: Cow<'a, RequestSender<U>>,
     req_id: RequestId,
     state: req_rep::ReceiveResponseState,
 }
@@ -241,7 +248,7 @@ impl<U: UserData> RequestSender<U> {
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<ReceiveResponse, SendMsgError> {
+    ) -> Result<ReceiveResponse<U>, SendMsgError> {
         let resp = self.encode_request(buf, method, params)?;
         let request_id = resp.request_id();
 
@@ -259,7 +266,7 @@ impl<U: UserData> RequestSender<U> {
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<ReceiveResponse, TrySendMsgError> {
+    ) -> Result<ReceiveResponse<U>, TrySendMsgError> {
         let resp = self.encode_request(buf, method, params)?;
         let request_id = resp.request_id();
 
@@ -276,7 +283,7 @@ impl<U: UserData> RequestSender<U> {
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<ReceiveResponse, EncodeError> {
+    ) -> Result<ReceiveResponse<U>, EncodeError> {
         buf.clear();
 
         let request_id = self.req.allocate_new_request();
@@ -288,7 +295,7 @@ impl<U: UserData> RequestSender<U> {
         }
 
         Ok(ReceiveResponse {
-            reqs: Cow::Borrowed(&self.req),
+            owner: Cow::Borrowed(self),
             req_id: request_id,
             state: Default::default(),
         })

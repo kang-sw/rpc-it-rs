@@ -127,6 +127,7 @@ where
     /// runner.
     pub fn build_write_only(self) -> super::NotifySender<U> {
         // Spawn writer task
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
         todo!()
     }

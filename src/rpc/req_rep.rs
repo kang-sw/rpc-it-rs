@@ -69,7 +69,7 @@ pub(super) enum ReceiveResponseState {
     Expired,
 }
 
-impl<'a> Future for ReceiveResponse<'a> {
+impl<'a, U> Future for ReceiveResponse<'a, U> {
     type Output = Result<Response, ReceiveResponseError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
@@ -83,7 +83,7 @@ impl<'a> Future for ReceiveResponse<'a> {
             - Expired: panic!
         */
 
-        let lc_entry = this.reqs.pending_tasks.read();
+        let lc_entry = this.owner.req.pending_tasks.read();
         let mut lc_slot = lc_entry
             .get(&this.req_id)
             .expect("'req_id' not found; seems polled after ready!")
@@ -113,7 +113,8 @@ impl<'a> Future for ReceiveResponse<'a> {
                 // However, here, we explicitly check if the `Arc<dyn Codec>` is still alive or not
                 // to future change of internal implementation.
                 let codec = this
-                    .reqs
+                    .owner
+                    .req
                     .codec
                     .upgrade()
                     .ok_or(ReceiveResponseError::Shutdown)?;
@@ -156,13 +157,13 @@ impl<'a> Future for ReceiveResponse<'a> {
     }
 }
 
-impl<'a> Drop for ReceiveResponse<'a> {
+impl<'a, U> Drop for ReceiveResponse<'a, U> {
     fn drop(&mut self) {
         if matches!(self.state, ReceiveResponseState::Expired) {
             return;
         }
 
-        let _e = self.reqs.pending_tasks.write().remove(&self.req_id);
+        let _e = self.owner.req.pending_tasks.write().remove(&self.req_id);
         debug_assert!(
             _e.is_some(),
             "ReceiveResponse is dropped before polled to ready!"
@@ -172,11 +173,11 @@ impl<'a> Drop for ReceiveResponse<'a> {
 
 // ======== ReceiveResponse ======== //
 
-impl<'a> ReceiveResponse<'a> {
+impl<'a, U> ReceiveResponse<'a, U> {
     /// Elevate the lifetime of the response to `'static`.
-    pub fn into_owned(mut self) -> ReceiveResponse<'static> {
+    pub fn into_owned(mut self) -> ReceiveResponse<'static, U> {
         ReceiveResponse {
-            reqs: Cow::Owned((*self.reqs).clone()),
+            owner: Cow::Owned((*self.owner).clone()),
             req_id: self.req_id,
             state: replace(&mut self.state, ReceiveResponseState::Expired),
         }
