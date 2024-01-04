@@ -87,7 +87,45 @@ pub mod builder {
 
     ///
     pub struct Builder<Wr, Rd, U, C> {
-        _0: std::marker::PhantomData<(Wr, Rd, U, C)>,
+        writer: Wr,
+        reader: Rd,
+        user_data: U,
+        codec: C,
+    }
+
+    pub fn create_builder() -> Builder<(), (), (), ()> {
+        Builder {
+            writer: (),
+            reader: (),
+            user_data: (),
+            codec: (),
+        }
+    }
+
+    impl<Wr, Rd, U, C> Builder<Wr, Rd, U, C> {
+        pub fn with_writer<Wr2>(self, writer: Wr2) -> Builder<Wr2, Rd, U, C>
+        where
+            Wr2: crate::io::AsyncFrameWrite,
+        {
+            Builder {
+                writer,
+                reader: self.reader,
+                user_data: self.user_data,
+                codec: self.codec,
+            }
+        }
+
+        pub fn with_reader<Rd2>(self, reader: Rd2) -> Builder<Wr, Rd2, U, C>
+        where
+            Rd2: crate::io::AsyncFrameRead,
+        {
+            Builder {
+                writer: self.writer,
+                reader,
+                user_data: self.user_data,
+                codec: self.codec,
+            }
+        }
     }
 }
 
