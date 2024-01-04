@@ -17,10 +17,12 @@ use self::req_rep::*;
 
 use driver::*;
 
+pub use builder::create_builder;
+
 // ==== Basic RPC ====
 
 /// Generic trait for underlying RPC connection.
-pub(crate) trait RpcContext<U: RpcUserData>: std::fmt::Debug {
+pub(crate) trait RpcContext<U: UserData>: std::fmt::Debug {
     fn self_as_codec(&self) -> Arc<dyn Codec>;
     fn codec(&self) -> &dyn Codec;
     fn user_data(&self) -> &U;
@@ -28,8 +30,8 @@ pub(crate) trait RpcContext<U: RpcUserData>: std::fmt::Debug {
 }
 
 /// A trait constraint for user data type of a RPC connection.
-pub trait RpcUserData: Send + Sync + 'static {}
-impl<T> RpcUserData for T where T: Send + Sync + 'static {}
+pub trait UserData: Send + Sync + 'static {}
+impl<T> UserData for T where T: Send + Sync + 'static {}
 
 /// A RPC client handle which can only send RPC notifications.
 ///
@@ -82,52 +84,7 @@ pub mod error;
 /// Request-Response logics
 mod req_rep;
 
-pub mod builder {
-    //! # Builder for RPC connection
-
-    ///
-    pub struct Builder<Wr, Rd, U, C> {
-        writer: Wr,
-        reader: Rd,
-        user_data: U,
-        codec: C,
-    }
-
-    pub fn create_builder() -> Builder<(), (), (), ()> {
-        Builder {
-            writer: (),
-            reader: (),
-            user_data: (),
-            codec: (),
-        }
-    }
-
-    impl<Wr, Rd, U, C> Builder<Wr, Rd, U, C> {
-        pub fn with_writer<Wr2>(self, writer: Wr2) -> Builder<Wr2, Rd, U, C>
-        where
-            Wr2: crate::io::AsyncFrameWrite,
-        {
-            Builder {
-                writer,
-                reader: self.reader,
-                user_data: self.user_data,
-                codec: self.codec,
-            }
-        }
-
-        pub fn with_reader<Rd2>(self, reader: Rd2) -> Builder<Wr, Rd2, U, C>
-        where
-            Rd2: crate::io::AsyncFrameRead,
-        {
-            Builder {
-                writer: self.writer,
-                reader,
-                user_data: self.user_data,
-                codec: self.codec,
-            }
-        }
-    }
-}
+pub mod builder;
 
 mod driver {
     use bytes::Bytes;
@@ -160,7 +117,7 @@ mod driver {
 // ========================================================== NotifyClient ===|
 
 /// Implements notification methods for [`NotifyClient`].
-impl<U: RpcUserData> NotifyClient<U> {
+impl<U: UserData> NotifyClient<U> {
     pub async fn notify<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
@@ -305,7 +262,7 @@ impl<U> Clone for WeakNotifyClient<U> {
 // ========================================================== Client ===|
 
 /// Implements request methods for [`Client`].
-impl<U: RpcUserData> Client<U> {
+impl<U: UserData> Client<U> {
     pub async fn request<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
