@@ -11,13 +11,11 @@ use crate::codec::Codec;
 use crate::defs::RequestId;
 
 use self::error::*;
-
-pub use self::req_rep::Response;
 use self::req_rep::*;
 
-use driver::*;
-
-pub use builder::create_builder;
+pub use self::builder::create_builder;
+pub use self::driver::*;
+pub use self::req_rep::Response;
 
 // ==== Basic RPC ====
 
@@ -76,43 +74,18 @@ pub struct ReceiveResponse<'a> {
     state: req_rep::ReceiveResponseState,
 }
 
-// ==== Definitions ====
+/// A service provider handle which deals with inbound messages
+pub struct Handler {
+    context: Arc<dyn RpcContext<()>>,
+    rx: mpsc::Receiver<InboundMessageInner>,
+}
 
-/// Error type definitions
-pub mod error;
-
-/// Request-Response logics
-mod req_rep;
+// ========================================================== Details ===|
 
 pub mod builder;
-
-mod driver {
-    use bytes::Bytes;
-
-    use crate::defs::RequestId;
-
-    /// A message to be sent to the background dedicated writer task.
-    pub(crate) enum DeferredDirective {
-        /// Close the writer transport immediately after receiving this message.
-        CloseImmediately,
-
-        /// Close the writer transport after flushing all pending write requests.
-        ///
-        /// The rx channel, which is used to receive this message, will be closed right after this
-        /// message is received.
-        CloseAfterFlush,
-
-        /// Flush the writer transport.
-        Flush,
-
-        /// Write a notification message.
-        WriteNoti(Bytes),
-
-        /// Write a request message. If the sending of the request is aborted by the writer, the
-        /// request message will be revoked and will wake up the pending task.
-        WriteReq(Bytes, RequestId),
-    }
-}
+mod driver;
+pub mod error;
+mod req_rep;
 
 // ========================================================== NotifyClient ===|
 

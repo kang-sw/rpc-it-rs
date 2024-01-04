@@ -102,7 +102,13 @@ where
     U: UserData,
     C: Codec,
 {
-    pub fn build_client(self) -> super::Client<U> {
+    /// Creates client.
+    ///
+    /// # Warning
+    ///
+    /// This method must be executed under tokio runtime activated, to spawn tasks for background
+    /// runner.
+    pub fn build(self) -> super::Client<U> {
         todo!()
     }
 }
@@ -113,8 +119,13 @@ where
     U: UserData,
     C: Codec,
 {
-    /// This client does not launch background tasks for inbound data.
-    pub fn build_notify_client(self) -> super::NotifyClient<U> {
+    /// Creates write-only client.
+    ///
+    /// # Warning
+    ///
+    /// This method must be executed under tokio runtime activated, to spawn tasks for background
+    /// runner.
+    pub fn build_write_only(self) -> super::NotifyClient<U> {
         todo!()
     }
 }
