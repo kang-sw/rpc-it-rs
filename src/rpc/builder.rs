@@ -108,7 +108,7 @@ where
     ///
     /// This method must be executed under tokio runtime activated, to spawn tasks for background
     /// runner.
-    pub fn build(self) -> super::Client<U> {
+    pub fn build(self) -> super::RequestSender<U> {
         todo!()
     }
 }
@@ -125,7 +125,9 @@ where
     ///
     /// This method must be executed under tokio runtime activated, to spawn tasks for background
     /// runner.
-    pub fn build_write_only(self) -> super::NotifyClient<U> {
+    pub fn build_write_only(self) -> super::NotifySender<U> {
+        // Spawn writer task
+
         todo!()
     }
 }

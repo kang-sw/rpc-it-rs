@@ -2,7 +2,7 @@ use bytes::Bytes;
 
 use crate::defs::RequestId;
 
-use super::Handler;
+use super::Receiver;
 
 /// A message to be sent to the background dedicated writer task.
 pub(crate) enum DeferredDirective {
@@ -33,6 +33,6 @@ pub(crate) enum InboundMessageInner {
 
 // ========================================================== Service ===|
 
-impl Handler {
+impl Receiver {
     // TODO:
 }

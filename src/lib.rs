@@ -101,8 +101,8 @@ pub extern crate serde;
 pub(crate) use inner::*;
 
 pub use rpc::{
-    create_builder, Client, NotifyClient, ReceiveResponse, Response, UserData, WeakClient,
-    WeakNotifyClient,
+    create_builder, NotifySender, ReceiveResponse, RequestSender, Response, UserData,
+    WeakNotifySender, WeakRequestSender,
 };
 
 pub use codec::{Codec, ParseMessage, ResponseErrorCode};

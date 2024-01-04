@@ -32,19 +32,17 @@ pub trait UserData: Send + Sync + 'static {}
 impl<T> UserData for T where T: Send + Sync + 'static {}
 
 /// A RPC client handle which can only send RPC notifications.
-///
-/// `NotifyClient` is lightweight handle to the underlying RPC connection.
 #[derive(Debug)]
-pub struct NotifyClient<U> {
+pub struct NotifySender<U> {
     context: Arc<dyn RpcContext<U>>,
     tx_deferred: mpsc::Sender<DeferredDirective>,
 }
 
 /// A weak RPC client handle which can only send RPC notifications.
 ///
-/// Should be upgraded to [`NotifyClient`] before use.
+/// Should be upgraded to [`NotifySender`] before use.
 #[derive(Debug)]
-pub struct WeakNotifyClient<U> {
+pub struct WeakNotifySender<U> {
     context: Weak<dyn RpcContext<U>>,
     tx_deferred: mpsc::WeakSender<DeferredDirective>,
 }
@@ -52,18 +50,20 @@ pub struct WeakNotifyClient<U> {
 // ==== Request Capability ====
 
 /// A RPC client handle which can send RPC requests and notifications.
+///
+/// It is super-set of [`NotifySender`].
 #[derive(Debug)]
-pub struct Client<U> {
-    inner: NotifyClient<U>,
+pub struct RequestSender<U> {
+    inner: NotifySender<U>,
     req: Arc<RequestContext>,
 }
 
 /// A weak RPC client handle which can send RPC requests and notifications.
 ///
-/// Should be upgraded to [`Client`] before use.
+/// Should be upgraded to [`RequestSender`] before use.
 #[derive(Debug)]
-pub struct WeakClient<U> {
-    inner: WeakNotifyClient<U>,
+pub struct WeakRequestSender<U> {
+    inner: WeakNotifySender<U>,
     req: Weak<RequestContext>,
 }
 
@@ -74,8 +74,8 @@ pub struct ReceiveResponse<'a> {
     state: req_rep::ReceiveResponseState,
 }
 
-/// A service provider handle which deals with inbound messages
-pub struct Handler {
+/// A receiver which deals with inbound notifies / requests.
+pub struct Receiver {
     context: Arc<dyn RpcContext<()>>,
     rx: mpsc::Receiver<InboundMessageInner>,
 }
@@ -87,10 +87,10 @@ mod driver;
 pub mod error;
 mod req_rep;
 
-// ========================================================== NotifyClient ===|
+// ========================================================== NotifySender ===|
 
-/// Implements notification methods for [`NotifyClient`].
-impl<U: UserData> NotifyClient<U> {
+/// Implements notification methods for [`NotifySender`].
+impl<U: UserData> NotifySender<U> {
     pub async fn notify<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
@@ -158,7 +158,7 @@ impl<U: UserData> NotifyClient<U> {
             .map_err(error::convert_deferred_action_err)
     }
 
-    /// See [`NotifyClient::try_close_writer`]
+    /// See [`NotifySender::try_close_writer`]
     pub async fn shutdown_writer(&self, drop_after_this: bool) -> Result<(), TrySendMsgError> {
         self.tx_deferred
             .send(if drop_after_this {
@@ -184,7 +184,7 @@ impl<U: UserData> NotifyClient<U> {
             .map_err(error::convert_deferred_action_err)
     }
 
-    /// See [`NotifyClient::try_flush_writer`]
+    /// See [`NotifySender::try_flush_writer`]
     pub async fn flush_writer(&self) -> Result<(), TrySendMsgError> {
         self.tx_deferred
             .send(DeferredDirective::Flush)
@@ -193,15 +193,15 @@ impl<U: UserData> NotifyClient<U> {
     }
 
     /// Downgrade this handle to a weak handle.
-    pub fn downgrade(&self) -> WeakNotifyClient<U> {
-        WeakNotifyClient {
+    pub fn downgrade(&self) -> WeakNotifySender<U> {
+        WeakNotifySender {
             context: Arc::downgrade(&self.context),
             tx_deferred: self.tx_deferred.downgrade(),
         }
     }
 }
 
-impl<U> Clone for NotifyClient<U> {
+impl<U> Clone for NotifySender<U> {
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
@@ -210,20 +210,20 @@ impl<U> Clone for NotifyClient<U> {
     }
 }
 
-impl<U> WeakNotifyClient<U> {
+impl<U> WeakNotifySender<U> {
     /// Upgrade this handle to a strong handle.
-    pub fn upgrade(&self) -> Option<NotifyClient<U>> {
+    pub fn upgrade(&self) -> Option<NotifySender<U>> {
         self.context
             .upgrade()
             .zip(self.tx_deferred.upgrade())
-            .map(|(context, tx_deferred)| NotifyClient {
+            .map(|(context, tx_deferred)| NotifySender {
                 context,
                 tx_deferred,
             })
     }
 }
 
-impl<U> Clone for WeakNotifyClient<U> {
+impl<U> Clone for WeakNotifySender<U> {
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
@@ -232,10 +232,10 @@ impl<U> Clone for WeakNotifyClient<U> {
     }
 }
 
-// ========================================================== Client ===|
+// ========================================================== RequestSender ===|
 
-/// Implements request methods for [`Client`].
-impl<U: UserData> Client<U> {
+/// Implements request methods for [`RequestSender`].
+impl<U: UserData> RequestSender<U> {
     pub async fn request<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
@@ -294,15 +294,15 @@ impl<U: UserData> Client<U> {
         })
     }
 
-    pub fn downgrade(&self) -> WeakClient<U> {
-        WeakClient {
+    pub fn downgrade(&self) -> WeakRequestSender<U> {
+        WeakRequestSender {
             inner: self.inner.downgrade(),
             req: Arc::downgrade(&self.req),
         }
     }
 }
 
-impl<U> Clone for Client<U> {
+impl<U> Clone for RequestSender<U> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -311,25 +311,25 @@ impl<U> Clone for Client<U> {
     }
 }
 
-/// Provides handy way to access [`NotifyClient`] methods in [`Client`].
-impl<U> std::ops::Deref for Client<U> {
-    type Target = NotifyClient<U>;
+/// Provides handy way to access [`NotifySender`] methods in [`RequestSender`].
+impl<U> std::ops::Deref for RequestSender<U> {
+    type Target = NotifySender<U>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl<U> WeakClient<U> {
-    pub fn upgrade(&self) -> Option<Client<U>> {
+impl<U> WeakRequestSender<U> {
+    pub fn upgrade(&self) -> Option<RequestSender<U>> {
         self.inner
             .upgrade()
             .zip(self.req.upgrade())
-            .map(|(inner, req)| Client { inner, req })
+            .map(|(inner, req)| RequestSender { inner, req })
     }
 }
 
-impl<U> Clone for WeakClient<U> {
+impl<U> Clone for WeakRequestSender<U> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
