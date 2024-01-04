@@ -1,18 +1,14 @@
 use std::borrow::Cow;
-use std::future::poll_fn;
-use std::pin::Pin;
+
 use std::sync::Arc;
 use std::sync::Weak;
-
-use bytes::Bytes;
-use tokio::sync::Mutex as AsyncMutex;
 
 use bytes::BytesMut;
 use tokio::sync::mpsc;
 
+use crate::codec::error::EncodeError;
 use crate::codec::Codec;
 use crate::defs::RequestId;
-use crate::io::AsyncFrameWrite;
 
 use self::error::*;
 
@@ -28,7 +24,7 @@ pub(crate) trait RpcContext<U: RpcUserData>: std::fmt::Debug {
     fn self_as_codec(&self) -> Arc<dyn Codec>;
     fn codec(&self) -> &dyn Codec;
     fn user_data(&self) -> &U;
-    fn writer(&self) -> &AsyncMutex<dyn AsyncFrameWrite>;
+    fn shutdown_rx_channel(&self);
 }
 
 /// A trait constraint for user data type of a RPC connection.
@@ -121,51 +117,48 @@ mod driver {
     }
 }
 
-// ========================================================== RpcContext ===|
-
-impl<U> dyn RpcContext<U> {
-    pub(crate) async fn write_frame(&self, buf: Bytes) -> std::io::Result<()> {
-        todo!()
-    }
-}
-
 // ========================================================== NotifyClient ===|
 
 /// Implements notification methods for [`NotifyClient`].
 impl<U: RpcUserData> NotifyClient<U> {
-    /// Send a RPC notification.
     pub async fn notify<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<(), SendError> {
+    ) -> Result<(), SendMsgError> {
         buf.clear();
         self.inner.codec().encode_notify(method, params, buf)?;
-        self.inner.write_frame(buf.split().freeze()).await?;
+        self.send_frame(DeferredDirective::WriteNoti(buf.split().freeze()))
+            .await?;
+
         Ok(())
     }
 
-    pub fn notify_deferred<T: serde::Serialize>(
+    pub fn try_notify<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<(), SendError> {
+    ) -> Result<(), TrySendMsgError> {
         buf.clear();
         self.inner.codec().encode_notify(method, params, buf)?;
-        self.write_frame_deferred(DeferredDirective::WriteNoti(buf.split().freeze()))?;
+        self.try_send_frame(DeferredDirective::WriteNoti(buf.split().freeze()))?;
 
         Ok(())
     }
 
-    fn write_frame_deferred(
-        &self,
-        buf: DeferredDirective,
-    ) -> Result<(), DeferredActionError<Bytes>> {
+    fn try_send_frame(&self, buf: DeferredDirective) -> Result<(), TrySendMsgError> {
         self.tx_deferred
             .try_send(buf)
             .map_err(error::convert_deferred_write_err)
+    }
+
+    async fn send_frame(&self, buf: DeferredDirective) -> Result<(), SendMsgError> {
+        self.tx_deferred
+            .send(buf)
+            .await
+            .map_err(|_| SendMsgError::BackgroundRunnerClosed)
     }
 
     pub fn user_data(&self) -> &U {
@@ -185,7 +178,7 @@ impl<U: RpcUserData> NotifyClient<U> {
     /// returns `Err`.
     ///
     /// If `drop_after_this` is specified, any deferred outbound message will be dropped.
-    pub fn close_writer(&self, drop_after_this: bool) -> Result<(), DeferredActionError<()>> {
+    pub fn try_shutdown_writer(&self, drop_after_this: bool) -> Result<(), TrySendMsgError> {
         self.tx_deferred
             .try_send(if drop_after_this {
                 DeferredDirective::CloseImmediately
@@ -195,27 +188,38 @@ impl<U: RpcUserData> NotifyClient<U> {
             .map_err(error::convert_deferred_action_err)
     }
 
-    /// Closes the writer channel immediately. This will invalidate all pending write requests.
-    pub async fn force_close_writer(self) -> std::io::Result<()> {
-        let mut writer = self.inner.writer().lock().await;
-
-        // SAFETY: `writer` memory goes nowhere during locked.
-        poll_fn(|cx| unsafe { Pin::new_unchecked(&mut *writer).poll_close(cx) }).await
+    /// See [`NotifyClient::try_close_writer`]
+    pub async fn shutdown_writer(&self, drop_after_this: bool) -> Result<(), TrySendMsgError> {
+        self.tx_deferred
+            .send(if drop_after_this {
+                DeferredDirective::CloseImmediately
+            } else {
+                DeferredDirective::CloseAfterFlush
+            })
+            .await
+            .map_err(|_| TrySendMsgError::BackgroundRunnerClosed)
     }
 
-    pub async fn flush_writer(&self) -> std::io::Result<()> {
-        let mut writer = self.inner.writer().lock().await;
-
-        // SAFETY: `writer` memory goes nowhere during locked.
-        poll_fn(|cx| unsafe { Pin::new_unchecked(&mut *writer).poll_flush(cx) }).await
+    /// Shutdown the background reader task. This will close the reader channel, and will wake up
+    /// all pending tasks, delivering [`ReceiveResponseError::Shutdown`] error.
+    pub fn shutdown_reader(&self) {
+        self.inner.shutdown_rx_channel();
     }
 
     /// Requests flush to the background writer task. As actual flush operation is done in
     /// background writer task, you can't get the actual result of the flush operation.
-    pub fn flush_writer_deferred(&self) -> Result<(), DeferredActionError<()>> {
+    pub fn try_flush_writer(&self) -> Result<(), TrySendMsgError> {
         self.tx_deferred
             .try_send(DeferredDirective::Flush)
             .map_err(error::convert_deferred_action_err)
+    }
+
+    /// See [`NotifyClient::try_flush_writer`]
+    pub async fn flush_writer(&self) -> Result<(), TrySendMsgError> {
+        self.tx_deferred
+            .send(DeferredDirective::Flush)
+            .await
+            .map_err(|_| TrySendMsgError::BackgroundRunnerClosed)
     }
 }
 
@@ -237,32 +241,32 @@ impl<U: RpcUserData> Client<U> {
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<ReceiveResponse, RequestError> {
+    ) -> Result<ReceiveResponse, SendMsgError> {
         let resp = self.encode_request(buf, method, params)?;
+        let request_id = resp.request_id();
 
-        self.inner
-            .inner
-            .write_frame(buf.split().freeze())
-            .await
-            .map_err(SendError::from)?;
+        self.send_frame(DeferredDirective::WriteReq(
+            buf.split().freeze(),
+            request_id,
+        ))
+        .await?;
 
         Ok(resp)
     }
 
-    pub fn request_deferred<T: serde::Serialize>(
+    pub fn try_request<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<ReceiveResponse, RequestError> {
+    ) -> Result<ReceiveResponse, TrySendMsgError> {
         let resp = self.encode_request(buf, method, params)?;
         let request_id = resp.request_id();
 
-        self.write_frame_deferred(DeferredDirective::WriteReq(
+        self.try_send_frame(DeferredDirective::WriteReq(
             buf.split().freeze(),
             request_id,
-        ))
-        .map_err(SendError::from)?;
+        ))?;
 
         Ok(resp)
     }
@@ -272,16 +276,16 @@ impl<U: RpcUserData> Client<U> {
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<ReceiveResponse, SendError> {
+    ) -> Result<ReceiveResponse, EncodeError> {
         buf.clear();
 
         let request_id = self.req.allocate_new_request();
-        self.codec()
-            .encode_request(request_id, method, params, buf)
-            .map_err(|e| {
-                self.req.cancel_request_alloc(request_id);
-                SendError::from(e)
-            })?;
+        let encode_result = self.codec().encode_request(request_id, method, params, buf);
+
+        if let Err(err) = encode_result {
+            self.req.cancel_request_alloc(request_id);
+            return Err(err);
+        }
 
         Ok(ReceiveResponse {
             reqs: Cow::Borrowed(&self.req),

@@ -9,7 +9,6 @@ use std::{
 use bytes::Bytes;
 use hashbrown::HashMap;
 use parking_lot::{Mutex, RwLock};
-use serde::de::Deserialize;
 
 use crate::{
     codec::{Codec, ParseMessage, ResponseErrorCode},
@@ -117,7 +116,7 @@ impl<'a> Future for ReceiveResponse<'a> {
                     .reqs
                     .codec
                     .upgrade()
-                    .ok_or(ReceiveResponseError::ClientClosed)?;
+                    .ok_or(ReceiveResponseError::Shutdown)?;
 
                 return Poll::Ready(if let Some(errc) = errc {
                     Err(ReceiveResponseError::ErrorResponse(ErrorResponse {
