@@ -36,7 +36,7 @@ impl<T> RpcUserData for T where T: Send + Sync + 'static {}
 /// `NotifyClient` is lightweight handle to the underlying RPC connection.
 #[derive(Debug)]
 pub struct NotifyClient<U> {
-    inner: Arc<dyn RpcContext<U>>,
+    context: Arc<dyn RpcContext<U>>,
     tx_deferred: mpsc::Sender<DeferredDirective>,
 }
 
@@ -45,7 +45,8 @@ pub struct NotifyClient<U> {
 /// Should be upgraded to [`NotifyClient`] before use.
 #[derive(Debug)]
 pub struct WeakNotifyClient<U> {
-    inner: Weak<dyn RpcContext<U>>,
+    context: Weak<dyn RpcContext<U>>,
+    tx_deferred: mpsc::WeakSender<DeferredDirective>,
 }
 
 // ==== Request Capability ====
@@ -60,8 +61,9 @@ pub struct Client<U> {
 /// A weak RPC client handle which can send RPC requests and notifications.
 ///
 /// Should be upgraded to [`Client`] before use.
-struct WeakClient<U> {
-    inner: Weak<dyn RpcContext<U>>,
+#[derive(Debug)]
+pub struct WeakClient<U> {
+    inner: WeakNotifyClient<U>,
     req: Weak<RequestContext>,
 }
 
@@ -128,7 +130,7 @@ impl<U: RpcUserData> NotifyClient<U> {
         params: &T,
     ) -> Result<(), SendMsgError> {
         buf.clear();
-        self.inner.codec().encode_notify(method, params, buf)?;
+        self.context.codec().encode_notify(method, params, buf)?;
         self.send_frame(DeferredDirective::WriteNoti(buf.split().freeze()))
             .await?;
 
@@ -142,7 +144,7 @@ impl<U: RpcUserData> NotifyClient<U> {
         params: &T,
     ) -> Result<(), TrySendMsgError> {
         buf.clear();
-        self.inner.codec().encode_notify(method, params, buf)?;
+        self.context.codec().encode_notify(method, params, buf)?;
         self.try_send_frame(DeferredDirective::WriteNoti(buf.split().freeze()))?;
 
         Ok(())
@@ -162,15 +164,15 @@ impl<U: RpcUserData> NotifyClient<U> {
     }
 
     pub fn user_data(&self) -> &U {
-        self.inner.user_data()
+        self.context.user_data()
     }
 
     pub fn codec(&self) -> &dyn Codec {
-        self.inner.codec()
+        self.context.codec()
     }
 
     pub fn cloned_codec(&self) -> Arc<dyn Codec> {
-        self.inner.self_as_codec()
+        self.context.self_as_codec()
     }
 
     /// Que a close request to the background writer task. It will first flush all remaining data
@@ -203,7 +205,7 @@ impl<U: RpcUserData> NotifyClient<U> {
     /// Shutdown the background reader task. This will close the reader channel, and will wake up
     /// all pending tasks, delivering [`ReceiveResponseError::Shutdown`] error.
     pub fn shutdown_reader(&self) {
-        self.inner.shutdown_rx_channel();
+        self.context.shutdown_rx_channel();
     }
 
     /// Requests flush to the background writer task. As actual flush operation is done in
@@ -221,12 +223,42 @@ impl<U: RpcUserData> NotifyClient<U> {
             .await
             .map_err(|_| TrySendMsgError::BackgroundRunnerClosed)
     }
+
+    /// Downgrade this handle to a weak handle.
+    pub fn downgrade(&self) -> WeakNotifyClient<U> {
+        WeakNotifyClient {
+            context: Arc::downgrade(&self.context),
+            tx_deferred: self.tx_deferred.downgrade(),
+        }
+    }
 }
 
 impl<U> Clone for NotifyClient<U> {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            context: self.context.clone(),
+            tx_deferred: self.tx_deferred.clone(),
+        }
+    }
+}
+
+impl<U> WeakNotifyClient<U> {
+    /// Upgrade this handle to a strong handle.
+    pub fn upgrade(&self) -> Option<NotifyClient<U>> {
+        self.context
+            .upgrade()
+            .zip(self.tx_deferred.upgrade())
+            .map(|(context, tx_deferred)| NotifyClient {
+                context,
+                tx_deferred,
+            })
+    }
+}
+
+impl<U> Clone for WeakNotifyClient<U> {
+    fn clone(&self) -> Self {
+        Self {
+            context: self.context.clone(),
             tx_deferred: self.tx_deferred.clone(),
         }
     }
@@ -293,6 +325,13 @@ impl<U: RpcUserData> Client<U> {
             state: Default::default(),
         })
     }
+
+    pub fn downgrade(&self) -> WeakClient<U> {
+        WeakClient {
+            inner: self.inner.downgrade(),
+            req: Arc::downgrade(&self.req),
+        }
+    }
 }
 
 impl<U> Clone for Client<U> {
@@ -310,5 +349,23 @@ impl<U> std::ops::Deref for Client<U> {
 
     fn deref(&self) -> &Self::Target {
         &self.inner
+    }
+}
+
+impl<U> WeakClient<U> {
+    pub fn upgrade(&self) -> Option<Client<U>> {
+        self.inner
+            .upgrade()
+            .zip(self.req.upgrade())
+            .map(|(inner, req)| Client { inner, req })
+    }
+}
+
+impl<U> Clone for WeakClient<U> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            req: self.req.clone(),
+        }
     }
 }
