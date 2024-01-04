@@ -1,10 +1,29 @@
 pub mod rpc;
 pub mod codec {
+    use std::num::NonZeroI32;
+
     use bytes::BytesMut;
     use erased_serde::Deserializer as DynDeserializer;
     use erased_serde::Serialize as DynSerialize;
+    use thiserror::Error;
 
-    pub trait Codec: 'static + Send + Sync {
+    /// Set of predefined error codes for RPC responses. The codec implementation is responsible for
+    /// mapping these error codes to the corresponding error codes of the underlying protocol. For
+    /// example, JSON-RPC uses the `code` field of the response object to encode the error code.
+    #[derive(Debug, Error, Clone, Copy)]
+    #[non_exhaustive]
+    pub enum ResponseErrorCode {
+        #[error("Custom error. Parse payload to view details.")]
+        Custom,
+
+        #[error("Requested method was not routed")]
+        MethodNotRouted,
+
+        #[error("Server aborted the request")]
+        Aborted,
+    }
+
+    pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
         fn encode_notify(
             &self,
             method: &str,
@@ -145,7 +164,10 @@ pub mod defs {
 
     impl From<RangeType> for Range<usize> {
         fn from(value: RangeType) -> Self {
-            Self { start: value.0[0] as usize, end: value.0[1] as usize }
+            Self {
+                start: value.0[0] as usize,
+                end: value.0[1] as usize,
+            }
         }
     }
 

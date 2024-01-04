@@ -66,11 +66,13 @@ pub struct ReceiveResponse<'a> {
 
 /// Error type definitions
 pub mod error {
+    use std::sync::Arc;
+
     use bytes::Bytes;
     use thiserror::Error;
     use tokio::sync::mpsc::error::TrySendError;
 
-    use crate::codec;
+    use crate::codec::{self, Codec};
 
     use super::driver::DeferredDirective;
 
@@ -110,6 +112,16 @@ pub mod error {
 
         #[error("RPC client was closed.")]
         ClientClosed,
+
+        #[error("Server returned an error: {0:?}")]
+        ErrorResponse(ErrorResponse),
+    }
+
+    #[derive(Debug)]
+    pub struct ErrorResponse {
+        pub(super) errc: codec::ResponseErrorCode,
+        pub(super) codec: Arc<dyn Codec>,
+        pub(super) buf: Bytes,
     }
 
     // ==== DeferredActionError ====
@@ -159,9 +171,15 @@ mod req_rep {
     use parking_lot::{Mutex, RwLock};
     use serde::de::Deserialize;
 
-    use crate::{codec::Codec, defs::RequestId};
+    use crate::{
+        codec::{Codec, ResponseErrorCode},
+        defs::RequestId,
+    };
 
-    use super::{error::ReceiveResponseError, ReceiveResponse};
+    use super::{
+        error::{ErrorResponse, ReceiveResponseError},
+        ReceiveResponse,
+    };
 
     /// Response message from RPC server.
     pub struct Response(Arc<dyn Codec>, Bytes);
@@ -190,7 +208,7 @@ mod req_rep {
     #[derive(Debug)]
     enum ResponseData {
         NotReady,
-        Ready(Bytes),
+        Ready(Bytes, Option<ResponseErrorCode>),
         Closed,
         Unreachable,
     }
@@ -238,22 +256,36 @@ mod req_rep {
                 ResponseData::Closed => {
                     return Poll::Ready(Err(ReceiveResponseError::ServerClosed))
                 }
-                resp @ ResponseData::Ready(_) => {
-                    let ResponseData::Ready(buf) = replace(resp, ResponseData::Unreachable) else {
+                resp @ ResponseData::Ready(..) => {
+                    let ResponseData::Ready(buf, errc) = replace(resp, ResponseData::Unreachable)
+                    else {
                         unreachable!()
                     };
 
-                    // Drops lock before promoting codec ptr ... (very slight performance gain)
+                    // Drops lock a bit early.
                     drop(lc_slot);
                     drop(lc_entry);
 
+                    // NOTE: In this line, we're 'trying' to upgrade the pointer and checks if it's
+                    // expired or not. However, in actual implementation, the backed `RpcContext`
+                    // implementor will be cast itself to `Arc<dyn Codec>` and will be cloned, which
+                    // means, as long as the `RequestContext` is alive, the `Arc<dyn Codec>` will
+                    // never be invalidated.
                     let codec = this
                         .reqs
                         .codec
                         .upgrade()
                         .ok_or(ReceiveResponseError::ClientClosed)?;
 
-                    return Poll::Ready(Ok(Response(codec, buf)));
+                    return Poll::Ready(if let Some(errc) = errc {
+                        Err(ReceiveResponseError::ErrorResponse(ErrorResponse {
+                            errc,
+                            codec,
+                            buf,
+                        }))
+                    } else {
+                        Ok(Response(codec, buf))
+                    });
                 }
             }
 
@@ -317,12 +349,17 @@ mod req_rep {
     // ========================================================== Response ===|
 
     impl Response {
+        /// Try parse the response as the given type.
         pub fn parse<R>(&self) -> erased_serde::Result<R>
         where
             R: for<'de> Deserialize<'de>,
         {
             todo!()
         }
+    }
+
+    impl ErrorResponse {
+        // TODO: Get Code, Parse, ...
     }
 
     // ==== RequestContext ====
@@ -338,11 +375,6 @@ mod req_rep {
         ///
         /// Panics if the request ID is not found from the registry
         pub(super) fn free_id(&self, id: RequestId) {
-            todo!()
-        }
-
-        /// Mark the request ID as aborted; which won't be reused until rotation.
-        pub(super) fn abort_id(&self, id: RequestId) {
             todo!()
         }
 
