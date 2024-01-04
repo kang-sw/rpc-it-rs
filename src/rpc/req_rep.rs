@@ -39,14 +39,15 @@ pub(super) struct RequestContext {
     pending_tasks: RwLock<HashMap<RequestId, Mutex<PendingTask>>>,
 }
 
-#[derive(Debug)]
+#[derive(Default, Debug)]
 struct PendingTask {
     registered_waker: Option<Waker>,
     response: ResponseData,
 }
 
-#[derive(Debug)]
+#[derive(Default, Debug)]
 enum ResponseData {
+    #[default]
     NotReady,
     Ready(Bytes, Option<ResponseErrorCode>),
     Closed,
@@ -200,8 +201,53 @@ impl ErrorResponse {
 // ==== RequestContext ====
 
 impl RequestContext {
+    /// Allocate a new request ID.
+    ///
+    /// Returns a newly allocated nonzero request ID. This function is used to generate unique
+    /// identifiers for requests. It increments the request ID generator and checks for duplicates
+    /// in the pending tasks table. If a duplicate is found, it continues generating IDs until a
+    /// unique one is found.
+    ///
+    /// # Returns
+    ///
+    /// The newly allocated request ID.
     pub(super) fn allocate_new_request(&self) -> RequestId {
-        todo!()
+        let mut table = self.pending_tasks.write();
+        loop {
+            let Ok(id) = self
+                .req_id_gen
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .wrapping_add(1)
+                .try_into()
+            else {
+                // It should be noted that this branch is rarely used; the rotation of IDs is not
+                // expected to occur frequently.
+
+                crate::cold_path();
+                continue;
+            };
+
+            let id = RequestId::new(id);
+            let mut duplicated = false;
+            table
+                .entry(id)
+                .and_modify(|_| duplicated = true)
+                .or_insert(Default::default());
+
+            if duplicated {
+                // In a context similar to the one mentioned above, to ensure compliance with
+                // duplication policies, the following conditions must be met:
+                // - The request ID has undergone rotation (after 2^32 requests have been made)
+                // - The request ID has not yet been released. (This involves waiting until 2^32
+                //   requests have been made. In any case, this situation would most likely indicate
+                //   a bug or a resource leak.)
+
+                crate::cold_path();
+                continue;
+            }
+
+            break id;
+        }
     }
 
     /// Mark the request ID as free.

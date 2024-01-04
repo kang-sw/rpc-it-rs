@@ -222,6 +222,13 @@ pub mod ext_codec {
     #[cfg(feature = "mspack-rpc-postcard")]
     pub mod msgpackrpc_postcard {}
 }
+mod inner {
+    /// Internal utility to notify that this routine is unlikely to be called.
+    #[cold]
+    #[inline(always)]
+    pub(crate) fn cold_path() {}
+}
+pub(crate) use inner::*;
 
 // ========================================================== Re-exports ===|
 
