@@ -53,7 +53,7 @@ pub enum ReceiveResponseError {
 pub struct ErrorResponse {
     pub(super) errc: codec::ResponseErrorCode,
     pub(super) codec: Arc<dyn Codec>,
-    pub(super) buf: Bytes,
+    pub(super) data: Bytes,
 }
 
 // ==== DeferredActionError ====

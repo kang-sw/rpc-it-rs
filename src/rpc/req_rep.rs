@@ -12,7 +12,7 @@ use parking_lot::{Mutex, RwLock};
 use serde::de::Deserialize;
 
 use crate::{
-    codec::{Codec, ResponseErrorCode},
+    codec::{Codec, ParseMessage, ResponseErrorCode},
     defs::RequestId,
 };
 
@@ -22,7 +22,10 @@ use super::{
 };
 
 /// Response message from RPC server.
-pub struct Response(Arc<dyn Codec>, Bytes);
+pub struct Response {
+    codec: Arc<dyn Codec>,
+    data: Bytes,
+}
 
 /// A context for pending RPC requests.
 #[derive(Debug)]
@@ -93,7 +96,7 @@ impl<'a> Future for ReceiveResponse<'a> {
             ResponseData::Unreachable => unreachable!("Polled after ready"),
             ResponseData::Closed => return Poll::Ready(Err(ReceiveResponseError::ServerClosed)),
             resp @ ResponseData::Ready(..) => {
-                let ResponseData::Ready(buf, errc) = replace(resp, ResponseData::Unreachable)
+                let ResponseData::Ready(data, errc) = replace(resp, ResponseData::Unreachable)
                 else {
                     unreachable!()
                 };
@@ -120,10 +123,10 @@ impl<'a> Future for ReceiveResponse<'a> {
                     Err(ReceiveResponseError::ErrorResponse(ErrorResponse {
                         errc,
                         codec,
-                        buf,
+                        data,
                     }))
                 } else {
-                    Ok(Response(codec, buf))
+                    Ok(Response { codec, data })
                 });
             }
         }
@@ -187,18 +190,22 @@ impl<'a> ReceiveResponse<'a> {
 
 // ========================================================== Response ===|
 
-impl Response {
-    /// Try parse the response as the given type.
-    pub fn parse<R>(&self) -> erased_serde::Result<R>
-    where
-        R: for<'de> Deserialize<'de>,
-    {
-        todo!()
+impl ParseMessage for Response {
+    fn codec_payload_pair(&self) -> (&dyn Codec, &[u8]) {
+        (self.codec.as_ref(), self.data.as_ref())
     }
 }
 
 impl ErrorResponse {
-    // TODO: Get Code, Parse, ...
+    pub fn errc(&self) -> ResponseErrorCode {
+        self.errc
+    }
+}
+
+impl ParseMessage for ErrorResponse {
+    fn codec_payload_pair(&self) -> (&dyn Codec, &[u8]) {
+        (self.codec.as_ref(), self.data.as_ref())
+    }
 }
 
 // ==== RequestContext ====

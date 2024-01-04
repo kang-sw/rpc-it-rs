@@ -7,6 +7,20 @@ use std::sync::Weak;
 use bytes::Bytes;
 use tokio::sync::Mutex as AsyncMutex;
 
+use bytes::BytesMut;
+use tokio::sync::mpsc;
+
+use crate::codec::Codec;
+use crate::defs::RequestId;
+use crate::io::AsyncFrameWrite;
+
+use self::error::*;
+
+pub use self::req_rep::Response;
+use self::req_rep::*;
+
+use driver::*;
+
 // ==== Basic RPC ====
 
 /// Generic trait for underlying RPC connection.
@@ -67,19 +81,8 @@ pub struct ReceiveResponse<'a> {
 /// Error type definitions
 pub mod error;
 
-use bytes::BytesMut;
-use tokio::sync::mpsc;
-
-use crate::codec::Codec;
-use crate::defs::RequestId;
-use crate::io::AsyncFrameWrite;
-
-use self::error::*;
-
+/// Request-Response logics
 mod req_rep;
-
-pub use req_rep::Response;
-use req_rep::*;
 
 pub mod builder {
     //! # Builder for RPC connection
@@ -117,8 +120,6 @@ mod driver {
         WriteReq(Bytes, RequestId),
     }
 }
-
-use driver::*;
 
 // ========================================================== RpcContext ===|
 
