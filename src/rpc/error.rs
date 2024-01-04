@@ -60,7 +60,8 @@ pub struct ErrorResponse {
 pub(crate) fn convert_deferred_write_err(e: TrySendError<DeferredDirective>) -> TrySendMsgError {
     match e {
         TrySendError::Closed(_) => TrySendMsgError::BackgroundRunnerClosed,
-        TrySendError::Full(DeferredDirective::WriteNoti(x)) => TrySendMsgError::ChannelAtCapacity,
+        // XXX: In future, we should deal with re-sending failed message.
+        TrySendError::Full(DeferredDirective::WriteNoti(_)) => TrySendMsgError::ChannelAtCapacity,
         TrySendError::Full(_) => unreachable!(),
     }
 }
