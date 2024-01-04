@@ -278,7 +278,7 @@ impl<U: RpcUserData> Client<U> {
         self.codec()
             .encode_request(request_id, method, params, buf)
             .map_err(|e| {
-                self.req.free_id(request_id);
+                self.req.cancel_request_alloc(request_id);
                 SendError::from(e)
             })?;
 

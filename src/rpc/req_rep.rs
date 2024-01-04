@@ -48,7 +48,7 @@ struct PendingTask {
 #[derive(Default, Debug)]
 enum ResponseData {
     #[default]
-    NotReady,
+    None,
     Ready(Bytes, Option<ResponseErrorCode>),
     Closed,
     Unreachable,
@@ -89,7 +89,7 @@ impl<'a> Future for ReceiveResponse<'a> {
 
         // Check if we're ready to retrieve response
         match &mut lc_slot.response {
-            ResponseData::NotReady => (),
+            ResponseData::None => (),
             ResponseData::Unreachable => unreachable!("Polled after ready"),
             ResponseData::Closed => return Poll::Ready(Err(ReceiveResponseError::ServerClosed)),
             resp @ ResponseData::Ready(..) => {
@@ -105,8 +105,11 @@ impl<'a> Future for ReceiveResponse<'a> {
                 // NOTE: In this line, we're 'trying' to upgrade the pointer and checks if it's
                 // expired or not. However, in actual implementation, the backed `RpcContext`
                 // implementor will be cast itself to `Arc<dyn Codec>` and will be cloned, which
-                // means, as long as the `RequestContext` is alive, the `Arc<dyn Codec>` will
-                // never be invalidated.
+                // means, as long as the `RequestContext` is alive, the `Arc<dyn Codec>` will never
+                // be invalidated.
+                //
+                // However, here, we explicitly check if the `Arc<dyn Codec>` is still alive or not
+                // to future change of internal implementation.
                 let codec = this
                     .reqs
                     .codec
@@ -255,12 +258,54 @@ impl RequestContext {
     /// # Panics
     ///
     /// Panics if the request ID is not found from the registry
-    pub(super) fn free_id(&self, id: RequestId) {
-        todo!()
+    pub(super) fn cancel_request_alloc(&self, id: RequestId) {
+        let mut table = self.pending_tasks.write();
+
+        let _e = table.remove(&id);
+        debug_assert!(_e.is_some(), "Request ID not found from the registry!");
     }
 
-    /// Set the response for the request ID.
-    pub(crate) fn set_response(&self, id: RequestId, resp: Response) {
-        todo!()
+    /// Sets the response for the request ID.
+    ///
+    /// Called from the background receive runner.
+    pub(crate) fn set_response(&self, id: RequestId, data: Bytes, errc: Option<ResponseErrorCode>) {
+        let table = self.pending_tasks.read();
+        let Some(mut slot) = table.get(&id).map(|x| x.lock()) else {
+            // User canceled the request before the response was received.
+            return;
+        };
+
+        slot.set_then_wake(ResponseData::Ready(data, errc));
+    }
+
+    /// Invalidate all pending requests. This is called when the connection is closed.
+    ///
+    /// This will be called after deferred runner rx channel is closed.
+    pub(crate) fn invalidate_all_requests(&self) {
+        let table = self.pending_tasks.read();
+        for (_, slot) in table.iter() {
+            slot.lock().set_then_wake(ResponseData::Closed)
+        }
+    }
+
+    /// Called by deferred runner, when the request is canceled due to write error
+    pub(crate) fn invalidate_request(&self, id: RequestId) {
+        let table = self.pending_tasks.read();
+        let Some(mut slot) = table.get(&id).map(|x| x.lock()) else {
+            // User canceled the request before the response was received.
+            return;
+        };
+
+        slot.set_then_wake(ResponseData::Closed)
+    }
+}
+
+impl PendingTask {
+    fn set_then_wake(&mut self, resp: ResponseData) {
+        self.response = resp;
+
+        if let Some(waker) = self.registered_waker.take() {
+            waker.wake();
+        }
     }
 }
