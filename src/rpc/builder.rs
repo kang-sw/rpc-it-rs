@@ -73,6 +73,10 @@ where
     fn tx_deferred(&self) -> &mpsc::Sender<DeferredDirective> {
         todo!()
     }
+
+    fn on_request_unhandled(&self, req_id: &[u8]) {
+        todo!()
+    }
 }
 
 impl<U, C> std::fmt::Debug for RpcContextImpl<U, C>
