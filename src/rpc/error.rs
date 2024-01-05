@@ -6,7 +6,7 @@ use tokio::sync::mpsc::error::TrySendError;
 
 use crate::codec::{self, Codec};
 
-use super::driver::DeferredDirective;
+use super::DeferredDirective;
 
 #[derive(Debug, Error)]
 pub enum SendMsgError {

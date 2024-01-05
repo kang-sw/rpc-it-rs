@@ -19,6 +19,9 @@ use super::{
     DeferredDirective, RpcContext, UserData,
 };
 
+/// Handles error during receiving inbound messages inside runner.
+pub trait ReceiveErrorHandler {}
+
 ///
 pub struct Builder<Wr, Rd, U, C> {
     writer: Wr,
