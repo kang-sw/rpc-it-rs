@@ -135,6 +135,14 @@ mod receiver {
         pub fn is_request(&self) -> bool {
             matches!(&self.inner, InboundInner::Request { .. })
         }
+
+        // TODO: response_ok
+
+        // TODO: response_error
+
+        // TODO: response_error_with
+
+        // TODO: drop_request = drops request without sending any response.
     }
 
     impl<'a, U> ParseMessage for Inbound<'a, U>

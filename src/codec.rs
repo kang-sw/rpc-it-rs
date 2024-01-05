@@ -10,17 +10,41 @@ use crate::defs::RequestId;
 /// Set of predefined error codes for RPC responses. The codec implementation is responsible for
 /// mapping these error codes to the corresponding error codes of the underlying protocol. For
 /// example, JSON-RPC uses the `code` field of the response object to encode the error code.
-#[derive(Debug, Error, Clone, Copy)]
+#[derive(Default, Debug, Error, Clone, Copy)]
 #[non_exhaustive]
 pub enum ResponseErrorCode {
-    #[error("Custom error. Parse payload to view details.")]
-    Custom,
+    /// Possibly in the sender side, the error content didn't originated from this crate, or
+    /// [`ResponseErrorCode`] does not define corresponding error code for the underlying protocol.
+    /// As the error payload is always preserved, you can parse the payload as generalized
+    /// object(e.g. json_value::Value),
+    #[default]
+    #[error("Unknown error. Parse the payload to acquire more information")]
+    Unknown,
+
+    /// Sometimes the RPC protocol itself defines an error code, which is not defined in this crate.
+    #[error("Internal error code: {0} (0x{0:08x})")]
+    Internal(u32),
+
+    #[error("Server failed to parse the request argument.")]
+    InvalidArgument,
+
+    #[error("Unauthorized access to the requested method")]
+    Unauthorized,
+
+    #[error("Server is too busy!")]
+    Busy,
 
     #[error("Requested method was not routed")]
-    MethodNotRouted,
+    InvalidMethodName,
 
-    #[error("Server aborted the request")]
+    #[error("Server explicitly aborted the request")]
     Aborted,
+
+    /// This is a bit special response code that when the request [`crate::Inbound`] is dropped
+    /// without any response being sent, this error code will be automatically replied by drop guard
+    /// of the request.
+    #[error("Server unhandled the request")]
+    Unhandled,
 }
 
 // ========================================================== Codec ===|
