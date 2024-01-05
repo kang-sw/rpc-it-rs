@@ -55,6 +55,31 @@ pub struct ErrorResponse {
     pub(super) data: Bytes,
 }
 
+/// Describes why did the write runner stopped.
+#[derive(Debug)]
+pub enum WriteRunnerExitType {
+    AllHandleDropped,
+
+    /// The writer was closed manually
+    ManualCloseImmediate,
+
+    /// The writer was closed manually. All the remaining write requests were flushed.
+    ManualClose,
+}
+
+/// Describes what kind of error occurred during write runner execution.
+#[derive(Error, Debug)]
+pub enum WriteRunnerError {
+    #[error("Failed to close the writer: {0}")]
+    WriterCloseFailed(std::io::Error),
+
+    #[error("Failed to flush the writer: {0}")]
+    WriterFlushFailed(std::io::Error),
+
+    #[error("Failed to write: {0}")]
+    WriteFailed(std::io::Error),
+}
+
 // ==== DeferredActionError ====
 
 pub(crate) fn convert_deferred_write_err(e: TrySendError<DeferredDirective>) -> TrySendMsgError {

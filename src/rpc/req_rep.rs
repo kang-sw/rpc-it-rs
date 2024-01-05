@@ -211,6 +211,14 @@ impl ParseMessage for ErrorResponse {
 // ==== RequestContext ====
 
 impl RequestContext {
+    pub(super) fn new(codec: Weak<dyn Codec>) -> Self {
+        Self {
+            codec,
+            req_id_gen: Default::default(),
+            pending_tasks: Default::default(),
+        }
+    }
+
     /// Allocate a new request ID.
     ///
     /// Returns a newly allocated nonzero request ID. This function is used to generate unique

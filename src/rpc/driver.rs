@@ -2,8 +2,6 @@ use bytes::Bytes;
 
 use crate::defs::RequestId;
 
-use super::Receiver;
-
 /// A message to be sent to the background dedicated writer task.
 pub(crate) enum DeferredDirective {
     /// Close the writer transport immediately after receiving this message.
@@ -31,8 +29,5 @@ pub(crate) enum InboundMessageInner {
     // TODO: Notify, Request
 }
 
-// ========================================================== Service ===|
-
-impl Receiver {
-    // TODO:
-}
+/// Handles error during receiving inbound messages inside runner.
+pub trait ReceiveErrorHandler {}
