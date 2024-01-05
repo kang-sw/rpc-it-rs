@@ -92,11 +92,10 @@ impl<'a, U> Future for ReceiveResponse<'a, U> {
         // Check if we're ready to retrieve response
         match &mut lc_slot.response {
             ResponseData::None => (),
-            ResponseData::Unreachable => unreachable!("Polled after ready"),
             ResponseData::Closed => return Poll::Ready(Err(ReceiveResponseError::Disconnected)),
             resp @ ResponseData::Ready(..) => {
-                let ResponseData::Ready(payload, errc) = replace(resp, ResponseData::Unreachable)
-                else {
+                let resp = replace(resp, ResponseData::Unreachable);
+                let ResponseData::Ready(payload, errc) = resp else {
                     unreachable!()
                 };
 
@@ -129,6 +128,8 @@ impl<'a, U> Future for ReceiveResponse<'a, U> {
                     Ok(Response { codec, payload })
                 });
             }
+
+            ResponseData::Unreachable => panic!("Polled after ready"),
         }
 
         let new_waker = match &mut this.state {
