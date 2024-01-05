@@ -5,8 +5,7 @@ use super::*;
 /// A RPC client handle which can only send RPC notifications.
 #[derive(Debug)]
 pub struct NotifySender<U> {
-    pub(super) context: Arc<dyn RpcContext<U>>,
-    pub(super) tx_deferred: mpsc::Sender<DeferredDirective>,
+    pub(super) context: Arc<dyn RpcCore<U>>,
 }
 
 /// A weak RPC client handle which can only send RPC notifications.
@@ -14,8 +13,7 @@ pub struct NotifySender<U> {
 /// Should be upgraded to [`NotifySender`] before use.
 #[derive(Debug)]
 pub struct WeakNotifySender<U> {
-    pub(super) context: Weak<dyn RpcContext<U>>,
-    pub(super) tx_deferred: mpsc::WeakSender<DeferredDirective>,
+    pub(super) context: Weak<dyn RpcCore<U>>,
 }
 
 // ==== Request Capability ====
@@ -99,13 +97,15 @@ impl<U: UserData> NotifySender<U> {
     }
 
     fn try_send_frame(&self, buf: DeferredDirective) -> Result<(), TrySendMsgError> {
-        self.tx_deferred
+        self.context
+            .tx_deferred()
             .try_send(buf)
             .map_err(error::convert_deferred_write_err)
     }
 
     async fn send_frame(&self, buf: DeferredDirective) -> Result<(), SendMsgError> {
-        self.tx_deferred
+        self.context
+            .tx_deferred()
             .send(buf)
             .await
             .map_err(|_| SendMsgError::BackgroundRunnerClosed)
@@ -129,7 +129,8 @@ impl<U: UserData> NotifySender<U> {
     ///
     /// If `drop_after_this` is specified, any deferred outbound message will be dropped.
     pub fn try_shutdown_writer(&self, drop_after_this: bool) -> Result<(), TrySendMsgError> {
-        self.tx_deferred
+        self.context
+            .tx_deferred()
             .try_send(if drop_after_this {
                 DeferredDirective::CloseImmediately
             } else {
@@ -140,7 +141,8 @@ impl<U: UserData> NotifySender<U> {
 
     /// See [`NotifySender::try_close_writer`]
     pub async fn shutdown_writer(&self, drop_after_this: bool) -> Result<(), TrySendMsgError> {
-        self.tx_deferred
+        self.context
+            .tx_deferred()
             .send(if drop_after_this {
                 DeferredDirective::CloseImmediately
             } else {
@@ -153,14 +155,16 @@ impl<U: UserData> NotifySender<U> {
     /// Requests flush to the background writer task. As actual flush operation is done in
     /// background writer task, you can't get the actual result of the flush operation.
     pub fn try_flush_writer(&self) -> Result<(), TrySendMsgError> {
-        self.tx_deferred
+        self.context
+            .tx_deferred()
             .try_send(DeferredDirective::Flush)
             .map_err(error::convert_deferred_action_err)
     }
 
     /// See [`NotifySender::try_flush_writer`]
     pub async fn flush_writer(&self) -> Result<(), TrySendMsgError> {
-        self.tx_deferred
+        self.context
+            .tx_deferred()
             .send(DeferredDirective::Flush)
             .await
             .map_err(|_| TrySendMsgError::BackgroundRunnerClosed)
@@ -170,7 +174,6 @@ impl<U: UserData> NotifySender<U> {
     pub fn downgrade(&self) -> WeakNotifySender<U> {
         WeakNotifySender {
             context: Arc::downgrade(&self.context),
-            tx_deferred: self.tx_deferred.downgrade(),
         }
     }
 }
@@ -179,7 +182,6 @@ impl<U> Clone for NotifySender<U> {
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
-            tx_deferred: self.tx_deferred.clone(),
         }
     }
 }
@@ -189,11 +191,7 @@ impl<U> WeakNotifySender<U> {
     pub fn upgrade(&self) -> Option<NotifySender<U>> {
         self.context
             .upgrade()
-            .zip(self.tx_deferred.upgrade())
-            .map(|(context, tx_deferred)| NotifySender {
-                context,
-                tx_deferred,
-            })
+            .map(|context| NotifySender { context })
     }
 }
 
@@ -201,7 +199,6 @@ impl<U> Clone for WeakNotifySender<U> {
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
-            tx_deferred: self.tx_deferred.clone(),
         }
     }
 }

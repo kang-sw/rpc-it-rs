@@ -16,16 +16,16 @@ use crate::{
 use super::{
     error::{WriteRunnerError, WriteRunnerExitType},
     req_rep::RequestContext,
-    DeferredDirective, RpcContext, UserData,
+    DeferredDirective, ReceiveErrorHandler, RpcCore, UserData,
 };
 
-/// Handles error during receiving inbound messages inside runner.
-pub trait ReceiveErrorHandler {}
+const NAIVE_UNBOUNDED: usize = u32::MAX as _;
 
 ///
-pub struct Builder<Wr, Rd, U, C> {
+pub struct Builder<Wr, Rd, U, C, RH> {
     writer: Wr,
     reader: Rd,
+    read_event_handler: RH,
     user_data: U,
     codec: C,
     cfg: InitConfig,
@@ -34,6 +34,7 @@ pub struct Builder<Wr, Rd, U, C> {
 struct RpcContextImpl<U, C> {
     user_data: U,
     codec: C,
+    tx_deferred: mpsc::Sender<DeferredDirective>,
     r: Option<ReceiverContext>,
 }
 
@@ -43,12 +44,12 @@ struct ReceiverContext {}
 #[derive(Default)]
 struct InitConfig {
     /// Channel capacity for deferred directive queue.
-    writer_channel_capacity: usize,
+    writer_channel_capacity: Option<NonZeroUsize>,
 }
 
 // ========================================================== RpcContext ===|
 
-impl<U, C> RpcContext<U> for RpcContextImpl<U, C>
+impl<U, C> RpcCore<U> for RpcContextImpl<U, C>
 where
     U: UserData,
     C: Codec,
@@ -76,6 +77,10 @@ where
     fn decr_request_sender_refcnt(&self) {
         todo!()
     }
+
+    fn tx_deferred(&self) -> &mpsc::Sender<DeferredDirective> {
+        todo!()
+    }
 }
 
 impl<U, C> std::fmt::Debug for RpcContextImpl<U, C>
@@ -94,18 +99,19 @@ where
 
 // ========================================================== Builder ===|
 
-pub fn create_builder() -> Builder<(), (), (), ()> {
+pub fn create_builder() -> Builder<(), (), (), (), ()> {
     Builder {
         writer: (),
         reader: (),
+        read_event_handler: (),
         user_data: (),
         codec: (),
         cfg: InitConfig::default(),
     }
 }
 
-impl<Wr, Rd, U, C> Builder<Wr, Rd, U, C> {
-    pub fn with_writer<Wr2>(self, writer: Wr2) -> Builder<Wr2, Rd, U, C>
+impl<Wr, Rd, U, C, RH> Builder<Wr, Rd, U, C, RH> {
+    pub fn with_writer<Wr2>(self, writer: Wr2) -> Builder<Wr2, Rd, U, C, RH>
     where
         Wr2: AsyncFrameWrite,
     {
@@ -115,10 +121,11 @@ impl<Wr, Rd, U, C> Builder<Wr, Rd, U, C> {
             user_data: self.user_data,
             codec: self.codec,
             cfg: self.cfg,
+            read_event_handler: self.read_event_handler,
         }
     }
 
-    pub fn with_reader<Rd2>(self, reader: Rd2) -> Builder<Wr, Rd2, U, C>
+    pub fn with_reader<Rd2>(self, reader: Rd2) -> Builder<Wr, Rd2, U, C, RH>
     where
         Rd2: AsyncFrameRead,
     {
@@ -128,57 +135,90 @@ impl<Wr, Rd, U, C> Builder<Wr, Rd, U, C> {
             user_data: self.user_data,
             codec: self.codec,
             cfg: self.cfg,
+            read_event_handler: self.read_event_handler,
         }
     }
 
-    pub fn with_user_data<U2>(self, user_data: U2) -> Builder<Wr, Rd, U2, C> {
+    pub fn with_user_data<U2>(self, user_data: U2) -> Builder<Wr, Rd, U2, C, RH> {
         Builder {
             writer: self.writer,
             reader: self.reader,
             user_data,
             codec: self.codec,
             cfg: self.cfg,
+            read_event_handler: self.read_event_handler,
         }
     }
 
-    pub fn with_codec<C2>(self, codec: C2) -> Builder<Wr, Rd, U, C2> {
+    pub fn with_codec<C2>(self, codec: C2) -> Builder<Wr, Rd, U, C2, RH> {
         Builder {
+            codec,
             writer: self.writer,
             reader: self.reader,
             user_data: self.user_data,
-            codec,
             cfg: self.cfg,
+            read_event_handler: self.read_event_handler,
         }
     }
 
     pub fn with_write_channel_capacity(self, capacity: NonZeroUsize) -> Self {
         Builder {
             cfg: InitConfig {
-                writer_channel_capacity: capacity.get(),
-                ..self.cfg
+                writer_channel_capacity: Some(capacity),
             },
             ..self
         }
     }
+
+    pub fn with_read_event_handler<RH2>(
+        self,
+        read_event_handler: RH2,
+    ) -> Builder<Wr, Rd, U, C, RH2> {
+        Builder {
+            writer: self.writer,
+            reader: self.reader,
+            user_data: self.user_data,
+            codec: self.codec,
+            cfg: self.cfg,
+            read_event_handler,
+        }
+    }
 }
 
-impl<Wr, Rd, U, C> Builder<Wr, Rd, U, C>
+impl<Wr, Rd, U, C, RH> Builder<Wr, Rd, U, C, RH>
 where
     Wr: AsyncFrameWrite,
     Rd: AsyncFrameRead,
     U: UserData,
     C: Codec,
+    RH: ReceiveErrorHandler,
 {
     /// Creates client.
     #[must_use = "The client will not run unless you spawn task manually"]
     pub fn build(self) -> (super::RequestSender<U>, super::Receiver<U>, impl Future) {
-        let runner = async {};
+        let _runner = async {};
 
-        (todo!(), todo!(), runner)
+        (todo!(), todo!(), _runner)
     }
 }
 
-impl<Wr, Rd, U, C> Builder<Wr, Rd, U, C>
+impl<Wr, Rd, U, C, RH> Builder<Wr, Rd, U, C, RH>
+where
+    Rd: AsyncFrameRead,
+    U: UserData,
+    C: Codec,
+    RH: ReceiveErrorHandler,
+{
+    /// Creates read-only service
+    #[must_use = "The client will not run unless you spawn task manually"]
+    pub fn build_read_only(self) -> (super::Receiver<U>, impl Future) {
+        let _runner = async {};
+
+        (todo!(), _runner)
+    }
+}
+
+impl<Wr, Rd, U, C, RH> Builder<Wr, Rd, U, C, RH>
 where
     Wr: AsyncFrameWrite,
     U: UserData,
@@ -194,26 +234,26 @@ where
     ) {
         let Self {
             writer,
-            reader: _, // It's unused!
             user_data,
             codec,
             cfg,
+            .. // Read side is not needed.
         } = self;
 
-        let (tx_directive, rx) = mpsc::channel(cfg.writer_channel_capacity);
+        let (tx_directive, rx) = mpsc::channel(
+            cfg.writer_channel_capacity
+                .map(|x| x.get())
+                .unwrap_or(NAIVE_UNBOUNDED),
+        );
+
         let context = Arc::new(RpcContextImpl {
             user_data,
             codec,
+            tx_deferred: tx_directive.clone(),
             r: None,
         });
 
-        (
-            NotifySender {
-                context,
-                tx_deferred: tx_directive,
-            },
-            write_runner(writer, rx, None),
-        )
+        (NotifySender { context }, write_runner(writer, rx, None))
     }
 }
 

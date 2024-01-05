@@ -36,7 +36,7 @@ pub mod defs {
         }
 
         /// Handy method to get usize range with less typing.
-        pub(crate) fn r(&self) -> Range<usize> {
+        pub(crate) fn range(&self) -> Range<usize> {
             (*self).into()
         }
     }
@@ -101,8 +101,8 @@ pub extern crate serde;
 pub(crate) use inner::*;
 
 pub use rpc::{
-    create_builder, NotifySender, ReceiveResponse, RequestSender, Response, UserData,
-    WeakNotifySender, WeakRequestSender,
+    create_builder, Inbound, NotifySender, ReceiveErrorHandler, ReceiveResponse, Receiver,
+    RequestSender, Response, UserData, WeakNotifySender, WeakRequestSender,
 };
 
 pub use codec::{Codec, ParseMessage, ResponseErrorCode};

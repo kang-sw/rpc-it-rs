@@ -23,6 +23,8 @@ pub enum ResponseErrorCode {
     Aborted,
 }
 
+// ========================================================== Codec ===|
+
 pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
     fn encode_notify(
         &self,
@@ -62,6 +64,38 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
     }
 }
 
+impl<T> Codec for std::sync::Arc<T>
+where
+    T: std::fmt::Debug + 'static + Send + Sync + Codec,
+{
+    fn encode_notify(
+        &self,
+        method: &str,
+        params: &dyn DynSerialize,
+        buf: &mut BytesMut,
+    ) -> Result<(), EncodeError> {
+        (**self).encode_notify(method, params, buf)
+    }
+
+    fn encode_request(
+        &self,
+        request_id: RequestId,
+        method: &str,
+        params: &dyn DynSerialize,
+        buf: &mut BytesMut,
+    ) -> Result<(), EncodeError> {
+        (**self).encode_request(request_id, method, params, buf)
+    }
+
+    fn deserialize_payload(
+        &self,
+        payload: &[u8],
+        visitor: &mut dyn FnMut(&mut dyn DynDeserializer) -> Result<(), erased_serde::Error>,
+    ) -> Result<(), erased_serde::Error> {
+        (**self).deserialize_payload(payload, visitor)
+    }
+}
+
 pub mod error {
     use thiserror::Error;
 
@@ -71,6 +105,8 @@ pub mod error {
         UnsupportedAction,
     }
 }
+
+// ========================================================== ParseMessage ===|
 
 /// A generic trait to parse a message into concrete type.
 pub trait ParseMessage {

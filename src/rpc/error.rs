@@ -8,6 +8,7 @@ use crate::codec::{self, Codec};
 
 use super::DeferredDirective;
 
+/// Error that occurs when sending request/notify
 #[derive(Debug, Error)]
 pub enum SendMsgError {
     #[error("Encoding failed: {0}")]
@@ -17,6 +18,7 @@ pub enum SendMsgError {
     BackgroundRunnerClosed,
 }
 
+/// Error that occurs when trying to send request/notify
 #[derive(Debug, Error)]
 pub enum TrySendMsgError {
     #[error("Encoding failed: {0}")]
@@ -36,13 +38,11 @@ pub enum TrySendMsgError {
     ChannelAtCapacity,
 }
 
+/// Error that occurs when receiving response
 #[derive(Debug, Error)]
 pub enum ReceiveResponseError {
-    #[error("RPC server was closed.")]
-    ServerClosed,
-
-    #[error("RPC client was closed.")]
-    Shutdown,
+    #[error("RPC service was disposed.")]
+    Disconnected,
 
     #[error("Server returned an error: {0:?}")]
     ErrorResponse(ErrorResponse),
@@ -52,7 +52,7 @@ pub enum ReceiveResponseError {
 pub struct ErrorResponse {
     pub(super) errc: codec::ResponseErrorCode,
     pub(super) codec: Arc<dyn Codec>,
-    pub(super) data: Bytes,
+    pub(super) payload: Bytes,
 }
 
 /// Describes why did the write runner stopped.

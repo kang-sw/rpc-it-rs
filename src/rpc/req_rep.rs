@@ -23,7 +23,7 @@ use super::{
 /// Response message from RPC server.
 pub struct Response {
     codec: Arc<dyn Codec>,
-    data: Bytes,
+    payload: Bytes,
 }
 
 /// A context for pending RPC requests.
@@ -93,9 +93,9 @@ impl<'a, U> Future for ReceiveResponse<'a, U> {
         match &mut lc_slot.response {
             ResponseData::None => (),
             ResponseData::Unreachable => unreachable!("Polled after ready"),
-            ResponseData::Closed => return Poll::Ready(Err(ReceiveResponseError::ServerClosed)),
+            ResponseData::Closed => return Poll::Ready(Err(ReceiveResponseError::Disconnected)),
             resp @ ResponseData::Ready(..) => {
-                let ResponseData::Ready(data, errc) = replace(resp, ResponseData::Unreachable)
+                let ResponseData::Ready(payload, errc) = replace(resp, ResponseData::Unreachable)
                 else {
                     unreachable!()
                 };
@@ -117,16 +117,16 @@ impl<'a, U> Future for ReceiveResponse<'a, U> {
                     .req
                     .codec
                     .upgrade()
-                    .ok_or(ReceiveResponseError::Shutdown)?;
+                    .ok_or(ReceiveResponseError::Disconnected)?;
 
                 return Poll::Ready(if let Some(errc) = errc {
                     Err(ReceiveResponseError::ErrorResponse(ErrorResponse {
                         errc,
                         codec,
-                        data,
+                        payload,
                     }))
                 } else {
-                    Ok(Response { codec, data })
+                    Ok(Response { codec, payload })
                 });
             }
         }
@@ -192,7 +192,7 @@ impl<'a, U> ReceiveResponse<'a, U> {
 
 impl ParseMessage for Response {
     fn codec_payload_pair(&self) -> (&dyn Codec, &[u8]) {
-        (self.codec.as_ref(), self.data.as_ref())
+        (self.codec.as_ref(), self.payload.as_ref())
     }
 }
 
@@ -204,7 +204,7 @@ impl ErrorResponse {
 
 impl ParseMessage for ErrorResponse {
     fn codec_payload_pair(&self) -> (&dyn Codec, &[u8]) {
-        (self.codec.as_ref(), self.data.as_ref())
+        (self.codec.as_ref(), self.payload.as_ref())
     }
 }
 
