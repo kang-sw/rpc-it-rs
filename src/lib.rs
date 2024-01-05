@@ -8,36 +8,36 @@ pub mod defs {
     use std::{num::NonZeroU32, ops::Range};
 
     pub(crate) type SizeType = u32;
+    pub(crate) type NonzeroSizeType = NonZeroU32;
+
+    // ========================================================== RangeType ===|
 
     /// 32-bit range type. Defines set of helper methods for working with ranges.
-    #[derive(Clone, Copy)]
+    #[derive(Default, Clone, Copy)]
     pub(crate) struct RangeType([SizeType; 2]);
 
-    // ==== RangeType ====
-
-    impl From<Range<usize>> for RangeType {
-        fn from(value: Range<usize>) -> Self {
-            Self([value.start as SizeType, value.end as SizeType])
-        }
-    }
-
-    impl From<RangeType> for Range<usize> {
-        fn from(value: RangeType) -> Self {
-            Self {
-                start: value.0[0] as usize,
-                end: value.0[1] as usize,
-            }
-        }
-    }
-
     impl RangeType {
-        pub fn new(start: usize, end: usize) -> Self {
-            Self([start as SizeType, end as SizeType])
+        pub fn new(start: SizeType, end: SizeType) -> Self {
+            Self([start, end])
         }
 
         /// Handy method to get usize range with less typing.
         pub(crate) fn range(&self) -> Range<usize> {
-            (*self).into()
+            self.0[0] as usize..self.0[1] as usize
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    pub(crate) struct NonzeroRangeType(SizeType, NonzeroSizeType);
+
+    impl NonzeroRangeType {
+        pub fn new(start: SizeType, end: NonzeroSizeType) -> Self {
+            Self(start, end)
+        }
+
+        /// Handy method to get usize range with less typing.
+        pub(crate) fn range(&self) -> Range<usize> {
+            self.0 as usize..self.1.get() as usize
         }
     }
 

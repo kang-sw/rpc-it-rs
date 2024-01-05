@@ -70,14 +70,6 @@ where
         todo!()
     }
 
-    fn incr_request_sender_refcnt(&self) {
-        todo!()
-    }
-
-    fn decr_request_sender_refcnt(&self) {
-        todo!()
-    }
-
     fn tx_deferred(&self) -> &mpsc::Sender<DeferredDirective> {
         todo!()
     }
@@ -191,7 +183,7 @@ where
     Rd: AsyncFrameRead,
     U: UserData,
     C: Codec,
-    RH: ReceiveErrorHandler,
+    RH: ReceiveErrorHandler<U>,
 {
     /// Creates client.
     #[must_use = "The client will not run unless you spawn task manually"]
@@ -207,7 +199,7 @@ where
     Rd: AsyncFrameRead,
     U: UserData,
     C: Codec,
-    RH: ReceiveErrorHandler,
+    RH: ReceiveErrorHandler<U>,
 {
     /// Creates read-only service
     #[must_use = "The client will not run unless you spawn task manually"]

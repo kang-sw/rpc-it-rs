@@ -19,32 +19,57 @@ pub enum ResponseErrorCode {
     /// object(e.g. json_value::Value),
     #[default]
     #[error("Unknown error. Parse the payload to acquire more information")]
-    Unknown,
-
-    /// Sometimes the RPC protocol itself defines an error code, which is not defined in this crate.
-    #[error("Internal error code: {0} (0x{0:08x})")]
-    Internal(u32),
+    Unknown = 0,
 
     #[error("Server failed to parse the request argument.")]
-    InvalidArgument,
+    InvalidArgument = 1,
 
     #[error("Unauthorized access to the requested method")]
-    Unauthorized,
+    Unauthorized = 2,
 
     #[error("Server is too busy!")]
-    Busy,
+    Busy = 3,
 
     #[error("Requested method was not routed")]
-    InvalidMethodName,
+    InvalidMethodName = 4,
 
     #[error("Server explicitly aborted the request")]
-    Aborted,
+    Aborted = 5,
 
     /// This is a bit special response code that when the request [`crate::Inbound`] is dropped
     /// without any response being sent, this error code will be automatically replied by drop guard
     /// of the request.
     #[error("Server unhandled the request")]
-    Unhandled,
+    Unhandled = 6,
+}
+
+impl From<u8> for ResponseErrorCode {
+    fn from(code: u8) -> Self {
+        match code {
+            0 => Self::Unknown,
+            1 => Self::InvalidArgument,
+            2 => Self::Unauthorized,
+            3 => Self::Busy,
+            4 => Self::InvalidMethodName,
+            5 => Self::Aborted,
+            6 => Self::Unhandled,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl From<ResponseErrorCode> for u8 {
+    fn from(code: ResponseErrorCode) -> Self {
+        match code {
+            ResponseErrorCode::Unknown => 0,
+            ResponseErrorCode::InvalidArgument => 1,
+            ResponseErrorCode::Unauthorized => 2,
+            ResponseErrorCode::Busy => 3,
+            ResponseErrorCode::InvalidMethodName => 4,
+            ResponseErrorCode::Aborted => 5,
+            ResponseErrorCode::Unhandled => 6,
+        }
+    }
 }
 
 // ========================================================== Codec ===|

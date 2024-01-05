@@ -35,12 +35,8 @@ pub(crate) trait RpcCore<U: UserData>: std::fmt::Debug {
     /// Only available for [`RequestSender`].
     fn shutdown_rx_channel(&self);
 
-    /// Increments the reference count of the [`RequestSender`] handle.
-    fn incr_request_sender_refcnt(&self);
-
-    /// Decrements the reference count of the [`RequestSender`] handle. If all request senders are
-    /// dropped, the background writer's response handler side will be shut down.
-    fn decr_request_sender_refcnt(&self);
+    /// Only available for [`RequestSender`]. Called when a request is dropped in unhandled state.
+    fn on_request_unhandled(&self, req_id: &[u8]);
 }
 
 /// A trait constraint for user data type of a RPC connection.
@@ -56,35 +52,30 @@ mod sender;
 mod receiver {
     use std::{borrow::Cow, sync::Arc};
 
-    use bytes::Bytes;
+    use bytes::{Bytes, BytesMut};
     use tokio::sync::mpsc;
 
-    use crate::{defs::RangeType, Codec, ParseMessage, UserData};
+    use crate::{
+        defs::{NonzeroRangeType, RangeType},
+        Codec, ParseMessage, ResponseErrorCode, UserData,
+    };
 
-    use super::RpcCore;
+    use super::{
+        error::{SendMsgError, TrySendMsgError},
+        RpcCore,
+    };
 
     /// Handles error during receiving inbound messages inside runner.
-    pub trait ReceiveErrorHandler {}
+    pub trait ReceiveErrorHandler<T: UserData> {}
+
+    /// Default implementation for any type of user data. It ignores every error.
+    impl<T> ReceiveErrorHandler<T> for () where T: UserData {}
 
     /// A receiver which deals with inbound notifies / requests.
     #[derive(Debug)]
     pub struct Receiver<U> {
         context: Arc<dyn RpcCore<U>>,
-        channel: mpsc::Receiver<InboundInner>,
-    }
-
-    pub(crate) enum InboundInner {
-        Request {
-            buffer: Bytes,
-            method: RangeType,
-            payload: RangeType,
-            req_id: RangeType,
-        },
-        Notify {
-            buffer: Bytes,
-            method: RangeType,
-            payload: RangeType,
-        },
+        channel: mpsc::Receiver<InboundDelivery>,
     }
 
     // ==== impl:Receiver ====
@@ -94,12 +85,31 @@ mod receiver {
     // ========================================================== Inbound ===|
 
     /// A inbound message that was received from remote. It is either a notification or a request.
-    pub struct Inbound<'a, U> {
+    pub struct Inbound<'a, U>
+    where
+        U: UserData,
+    {
         owner: Cow<'a, Arc<dyn RpcCore<U>>>,
-        inner: InboundInner,
+        inner: InboundDelivery,
+    }
+
+    /// An inbound message delivered from the background receiver.
+    #[derive(Default)]
+    pub(crate) struct InboundDelivery {
+        buffer: Bytes,
+        method: RangeType,
+        payload: RangeType,
+        req_id: Option<NonzeroRangeType>,
+    }
+
+    /// Determines which response type to send.
+    pub enum ResponseErrorAs<T: serde::Serialize> {
+        Code(ResponseErrorCode),
+        Object(T),
     }
 
     // ==== impl:Inbound ====
+
     impl<'a, U> Inbound<'a, U>
     where
         U: UserData,
@@ -112,37 +122,98 @@ mod receiver {
             self.owner.codec()
         }
 
-        pub fn into_owned(self) -> Inbound<'static, U> {
+        pub fn cloned_codec(&self) -> Arc<dyn Codec> {
+            (*self.owner).clone().self_as_codec()
+        }
+
+        /// Convert this inbound into owned lifetime.
+        pub fn into_owned(mut self) -> Inbound<'static, U> {
             Inbound {
                 owner: Cow::Owned(Arc::clone(&self.owner)),
-                inner: self.inner,
+                inner: std::mem::take(&mut self.inner),
             }
         }
 
         fn payload_bytes(&self) -> &[u8] {
-            let (b, p) = match &self.inner {
-                InboundInner::Request {
-                    buffer, payload, ..
-                } => (buffer, payload),
-                InboundInner::Notify {
-                    buffer, payload, ..
-                } => (buffer, payload),
-            };
-
-            &b[p.range()]
+            &self.inner.buffer[self.inner.payload.range()]
         }
 
         pub fn is_request(&self) -> bool {
-            matches!(&self.inner, InboundInner::Request { .. })
+            self.inner.req_id.is_some()
         }
 
-        // TODO: response_ok
+        /// Retrieve raw method bytes
+        pub fn method_bytes(&self) -> &[u8] {
+            &self.inner.buffer[self.inner.method.range()]
+        }
 
-        // TODO: response_error
+        /// Try to parse method name as UTF-8 string.
+        pub fn method(&self) -> Option<&str> {
+            std::str::from_utf8(self.method_bytes()).ok()
+        }
 
-        // TODO: response_error_with
+        /// Try to retrieve request ID. If it's not a request, returns `None`.
+        pub fn request_id(&self) -> Option<&[u8]> {
+            self.inner
+                .req_id
+                .as_ref()
+                .map(|r| &self.inner.buffer[r.range()])
+        }
 
-        // TODO: drop_request = drops request without sending any response.
+        /// Response handle result.
+        ///
+        /// # Panics
+        ///
+        /// Panics if it's not a request or response was already sent.
+        pub async fn response<T: serde::Serialize>(
+            &mut self,
+            buf: &mut BytesMut,
+            result: Result<T, ResponseErrorAs<T>>,
+        ) -> Result<(), SendMsgError> {
+            todo!()
+        }
+
+        /// Try to send response.
+        ///
+        /// # Panics
+        ///
+        /// Panics if it's not a request or response was already sent.
+        pub fn try_response<T: serde::Serialize>(
+            &mut self,
+            buf: &mut BytesMut,
+            result: Result<T, ResponseErrorAs<T>>,
+        ) -> Result<(), TrySendMsgError> {
+            todo!()
+        }
+
+        /// Drops the request without sending any response. This prevents drop-guard automatically
+        /// respond [`ResponseErrorCode::Unhandled`].
+        pub fn drop_request(&mut self) {
+            self.inner.req_id = None;
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn __can_compile_response_into_error() {
+        #![allow(warnings)]
+        let mut _ib: Inbound<()> = todo!();
+        _ib.response(
+            &mut Default::default(),
+            Err(ResponseErrorCode::Unhandled.into()),
+        );
+        _ib.response(&mut Default::default(), Err((&()).into()));
+    }
+
+    impl<'a, U> Drop for Inbound<'a, U>
+    where
+        U: UserData,
+    {
+        fn drop(&mut self) {
+            if let Some(req_id) = self.request_id() {
+                self.owner.on_request_unhandled(req_id);
+            }
+        }
     }
 
     impl<'a, U> ParseMessage for Inbound<'a, U>
@@ -151,6 +222,23 @@ mod receiver {
     {
         fn codec_payload_pair(&self) -> (&dyn Codec, &[u8]) {
             (self.owner.codec(), self.payload_bytes())
+        }
+    }
+
+    // ==== Errors ====
+
+    impl From<ResponseErrorCode> for ResponseErrorAs<()> {
+        fn from(code: ResponseErrorCode) -> Self {
+            Self::Code(code)
+        }
+    }
+
+    impl<T> From<T> for ResponseErrorAs<T>
+    where
+        T: serde::Serialize,
+    {
+        fn from(obj: T) -> Self {
+            Self::Object(obj)
         }
     }
 }
