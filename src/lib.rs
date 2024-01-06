@@ -5,9 +5,11 @@ pub mod defs {
 
     // ========================================================== Basic Types ===|
 
-    use std::{num::NonZeroU32, ops::Range};
+    use std::{num::NonZeroU32, ops::Range, sync::atomic::AtomicU64};
 
     pub(crate) type SizeType = u32;
+    pub(crate) type LongSizeType = u64;
+    pub(crate) type AtomicLongSizeType = AtomicU64;
     pub(crate) type NonzeroSizeType = NonZeroU32;
 
     // ========================================================== RangeType ===|

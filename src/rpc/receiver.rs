@@ -1,9 +1,11 @@
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, mem::transmute, sync::Arc};
 
 use bytes::{Bytes, BytesMut};
 
 use crate::{
-    defs::{NonzeroRangeType, RangeType},
+    defs::{
+        AtomicLongSizeType, LongSizeType, NonzeroRangeType, NonzeroSizeType, RangeType, SizeType,
+    },
     Codec, ParseMessage, ResponseError, UserData,
 };
 
@@ -46,7 +48,9 @@ pub(crate) struct InboundDelivery {
     buffer: Bytes,
     method: RangeType,
     payload: RangeType,
-    req_id: Option<NonzeroRangeType>,
+
+    // Start / End index of request ID in the buffer. If value is 0, it's a notification.
+    req_id: LongSizeType,
 }
 
 /// A type of response error that can be sent by [`Inbound::response`].
@@ -110,23 +114,28 @@ where
                 buffer: self.inner.buffer.clone(),
                 method: self.inner.method,
                 payload: self.inner.payload,
-                req_id: None,
+                req_id: 0,
             },
         }
     }
 
     /// Retrieve request atomicly.
     fn atomic_take_request(&self) -> Option<NonzeroRangeType> {
-        todo!()
+        // SAFETY: POD manipulation
+        let [begin, end] = unsafe {
+            let ptr = &self.inner.req_id as *const _ as *mut _;
+            let atomic = AtomicLongSizeType::from_ptr(ptr);
+            let value = atomic.swap(0, std::sync::atomic::Ordering::Acquire);
+
+            // The value was
+            transmute::<_, [SizeType; 2]>(value)
+        };
+
+        NonzeroSizeType::new(end).map(|x| NonzeroRangeType::new(begin, x))
     }
 
-    /// # Panics
-    ///
-    /// If request is not empty. This is logic error!
-    fn atomic_set_request(&self, req_id: NonzeroRangeType) {}
-
     pub fn is_request(&self) -> bool {
-        self.inner.req_id.is_some()
+        self.inner.req_id != 0
     }
 
     /// A shorthand for unwrapping result [`Inbound::parse_method`].
