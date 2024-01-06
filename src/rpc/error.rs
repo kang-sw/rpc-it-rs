@@ -18,6 +18,15 @@ pub enum SendMsgError {
     BackgroundRunnerClosed,
 }
 
+#[derive(Debug, Error)]
+pub enum SendResponseError {
+    #[error("Sending message failed")]
+    MsgError(#[from] SendMsgError),
+
+    #[error("This inbound is not request / or it is already responded")]
+    InboundNotRequest,
+}
+
 /// Error that occurs when trying to send request/notify
 #[derive(Debug, Error)]
 pub enum TrySendMsgError {
@@ -38,6 +47,15 @@ pub enum TrySendMsgError {
     ChannelAtCapacity,
 }
 
+#[derive(Debug, Error)]
+pub enum TrySendResponseError {
+    #[error("Sending message failed")]
+    MsgError(#[from] TrySendMsgError),
+
+    #[error("This inbound is not request / or it is already responded")]
+    InboundNotRequest,
+}
+
 /// Error that occurs when receiving response
 #[derive(Debug, Error)]
 pub enum ReceiveResponseError {
@@ -50,7 +68,7 @@ pub enum ReceiveResponseError {
 
 #[derive(Debug)]
 pub struct ErrorResponse {
-    pub(super) errc: codec::ResponseErrorCode,
+    pub(super) errc: codec::ResponseError,
     pub(super) codec: Arc<dyn Codec>,
     pub(super) payload: Bytes,
 }

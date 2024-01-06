@@ -91,12 +91,15 @@ mod inner {
 
 // ========================================================== Re-exports ===|
 
-// ==== Dependency Crates ====
+// ==== Exported Dependencies ====
 
+pub extern crate bytes;
 pub extern crate erased_serde;
 pub extern crate serde;
 
 // ==== Exposed APIs ====
+
+pub use bytes::{Bytes, BytesMut};
 
 pub(crate) use inner::*;
 
@@ -105,5 +108,5 @@ pub use rpc::{
     RequestSender, Response, UserData, WeakNotifySender, WeakRequestSender,
 };
 
-pub use codec::{Codec, ParseMessage, ResponseErrorCode};
+pub use codec::{Codec, ParseMessage, ResponseError};
 pub use io::{AsyncFrameRead, AsyncFrameWrite};

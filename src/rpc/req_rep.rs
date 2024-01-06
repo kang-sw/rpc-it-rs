@@ -11,7 +11,7 @@ use hashbrown::HashMap;
 use parking_lot::{Mutex, RwLock};
 
 use crate::{
-    codec::{Codec, ParseMessage, ResponseErrorCode},
+    codec::{Codec, ParseMessage, ResponseError},
     defs::RequestId,
 };
 
@@ -51,7 +51,7 @@ struct PendingTask {
 enum ResponseData {
     #[default]
     None,
-    Ready(Bytes, Option<ResponseErrorCode>),
+    Ready(Bytes, Option<ResponseError>),
     Closed,
     Unreachable,
 }
@@ -198,7 +198,7 @@ impl ParseMessage for Response {
 }
 
 impl ErrorResponse {
-    pub fn errc(&self) -> ResponseErrorCode {
+    pub fn errc(&self) -> ResponseError {
         self.errc
     }
 }
@@ -284,7 +284,7 @@ impl RequestContext {
     /// Sets the response for the request ID.
     ///
     /// Called from the background receive runner.
-    pub(crate) fn set_response(&self, id: RequestId, data: Bytes, errc: Option<ResponseErrorCode>) {
+    pub(crate) fn set_response(&self, id: RequestId, data: Bytes, errc: Option<ResponseError>) {
         let table = self.pending_tasks.read();
         let Some(mut slot) = table.get(&id).map(|x| x.lock()) else {
             // User canceled the request before the response was received.

@@ -4,11 +4,11 @@ use bytes::{Bytes, BytesMut};
 
 use crate::{
     defs::{NonzeroRangeType, RangeType},
-    Codec, ParseMessage, ResponseErrorCode, UserData,
+    Codec, ParseMessage, ResponseError, UserData,
 };
 
 use super::{
-    error::{SendMsgError, TrySendMsgError},
+    error::{SendMsgError, SendResponseError, TrySendMsgError, TrySendResponseError},
     RpcCore,
 };
 
@@ -49,11 +49,8 @@ pub(crate) struct InboundDelivery {
     req_id: Option<NonzeroRangeType>,
 }
 
-/// Determines which response type to send.
-pub enum ResponseErrorAs<T: serde::Serialize> {
-    Code(ResponseErrorCode),
-    Object(T),
-}
+/// A type of response error that can be sent by [`Inbound::response`].
+pub struct ResponsePayload<T: serde::Serialize>(Result<T, (ResponseError, Option<T>)>);
 
 // ==== impl:Inbound ====
 
@@ -73,7 +70,17 @@ where
         (*self.owner).clone().self_as_codec()
     }
 
-    /// Convert this inbound into owned lifetime.
+    /// Consumes this struct and returns an owned version of it.
+    ///
+    /// If what you only have is a reference to this struct, you can use [`Inbound::clone_notify`]
+    ///
+    /// ```no_run
+    /// use rpc_it::Inbound;
+    ///
+    /// fn elevate_inbound<'a>(ib: &mut Inbound<'a, ()>) {
+    ///   let owned = ib.take().into_owned();
+    /// }
+    /// ```
     pub fn into_owned(mut self) -> Inbound<'static, U> {
         Inbound {
             owner: Cow::Owned(Arc::clone(&self.owner)),
@@ -81,75 +88,118 @@ where
         }
     }
 
+    /// Retrieves message out of the reference.
+    pub fn take(&mut self) -> Inbound<'_, U> {
+        todo!()
+    }
+
     fn payload_bytes(&self) -> &[u8] {
         &self.inner.buffer[self.inner.payload.range()]
     }
+
+    /// Clones the notify part of the inbound message. Since response can be sent only once, this
+    /// struct does not define generic method for completely cloning the internal state.
+    ///
+    /// If you want to "retrieve" the request out of this struct, as long as you have a mutable
+    /// reference to self, you can use [`Inbound::take`] method to retrieve the request out of this
+    /// struct as this defines [`Default`] implementation.
+    pub fn clone_notify(&self) -> Inbound<'a, U> {
+        Inbound {
+            owner: self.owner.clone(),
+            inner: InboundDelivery {
+                buffer: self.inner.buffer.clone(),
+                method: self.inner.method,
+                payload: self.inner.payload,
+                req_id: None,
+            },
+        }
+    }
+
+    /// Retrieve request atomicly.
+    fn atomic_take_request(&self) -> Option<NonzeroRangeType> {
+        todo!()
+    }
+
+    /// # Panics
+    ///
+    /// If request is not empty. This is logic error!
+    fn atomic_set_request(&self, req_id: NonzeroRangeType) {}
 
     pub fn is_request(&self) -> bool {
         self.inner.req_id.is_some()
     }
 
-    /// Retrieve raw method bytes
-    pub fn method_bytes(&self) -> &[u8] {
-        &self.inner.buffer[self.inner.method.range()]
-    }
+    /// A shorthand for unwrapping result [`Inbound::parse_method`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if method name is not a valid UTF-8 string.
+    pub fn method(&self) -> &str {
+        let bytes = &self.inner.buffer[self.inner.method.range()];
 
-    /// Try to parse method name as UTF-8 string.
-    pub fn method(&self) -> Option<&str> {
-        std::str::from_utf8(self.method_bytes()).ok()
-    }
+        // If it's not UTF-8 string, it's crate logic error.
+        debug_assert!(std::str::from_utf8(bytes).is_ok());
 
-    /// Try to retrieve request ID. If it's not a request, returns `None`.
-    pub fn request_id(&self) -> Option<&[u8]> {
-        self.inner
-            .req_id
-            .as_ref()
-            .map(|r| &self.inner.buffer[r.range()])
+        // SAFETY:
+        // * The receiver task firstly verifies if the method name is valid UTF-8 string.
+        // * Thus, in this context, the method name bytes is guaranteed to be valid UTF-8 string.
+        unsafe { std::str::from_utf8_unchecked(bytes) }
     }
 
     /// Response handle result.
     ///
-    /// # Panics
+    /// # Usage
     ///
-    /// Panics if it's not a request or response was already sent.
+    /// ```no_run
+    /// use rpc_it::{Inbound, ResponseError, BytesMut};
+    ///
+    /// async fn response_examples(b: &mut BytesMut, ib: &mut Inbound<'_, ()>) {
+    ///   // This returns plain ok response, with parameter "hello, world!"
+    ///   ib.response(b, Ok("hello, world!"));
+    ///
+    ///   // This returns predefined error code `ResponseError::MethodNotFound`
+    ///   ib.response(b, ResponseError::MethodNotFound);
+    ///
+    ///   // This will serialize the error object as-is, without specifying `ResponseError`.
+    ///   //
+    ///   // However, the actual implementation of error serialization is up to the codec.
+    ///   ib.response(b, Err("Ta-Da!"));
+    ///
+    ///   // This is identical with the above example.
+    ///   ib.response(b, (ResponseError::Unknown, "Ta-Da!"));
+    ///
+    ///   // This will serialize the error object in codec-custom way.
+    ///   ib.response(b, (ResponseError::MethodNotFound, ib.method()));
+    ///
+    ///   // NOTE: In practice, this method panics since we can send response ONLY ONCE!
+    /// }
+    /// ```
     pub async fn response<T: serde::Serialize>(
-        &mut self,
+        &self,
         buf: &mut BytesMut,
-        result: Result<T, ResponseErrorAs<T>>,
-    ) -> Result<(), SendMsgError> {
+        result: impl Into<ResponsePayload<T>>,
+    ) -> Result<(), SendResponseError> {
         todo!()
     }
 
     /// Try to send response.
     ///
-    /// # Panics
+    /// # Usage
     ///
-    /// Panics if it's not a request or response was already sent.
+    /// See documentation of [`Inbound::response`].
     pub fn try_response<T: serde::Serialize>(
-        &mut self,
+        &self,
         buf: &mut BytesMut,
-        result: Result<T, ResponseErrorAs<T>>,
-    ) -> Result<(), TrySendMsgError> {
+        result: impl Into<ResponsePayload<T>>,
+    ) -> Result<(), TrySendResponseError> {
         todo!()
     }
 
     /// Drops the request without sending any response. This prevents drop-guard automatically
-    /// respond [`ResponseErrorCode::Unhandled`].
-    pub fn drop_request(&mut self) {
-        self.inner.req_id = None;
+    /// respond [`ResponseError::Unhandled`].
+    pub fn drop_request(&self) {
+        todo!()
     }
-}
-
-#[test]
-#[ignore]
-fn __can_compile_response_into_error() {
-    #![allow(warnings)]
-    let mut _ib: Inbound<()> = todo!();
-    _ib.response(
-        &mut Default::default(),
-        Err(ResponseErrorCode::Unhandled.into()),
-    );
-    _ib.response(&mut Default::default(), Err((&()).into()));
 }
 
 impl<'a, U> Drop for Inbound<'a, U>
@@ -157,7 +207,7 @@ where
     U: UserData,
 {
     fn drop(&mut self) {
-        if let Some(req_id) = self.request_id() {
+        if let Some(req_id) = todo!() {
             self.owner.on_request_unhandled(req_id);
         }
     }
@@ -174,17 +224,29 @@ where
 
 // ==== Errors ====
 
-impl From<ResponseErrorCode> for ResponseErrorAs<()> {
-    fn from(code: ResponseErrorCode) -> Self {
-        Self::Code(code)
+impl From<ResponseError> for ResponsePayload<()> {
+    fn from(code: ResponseError) -> Self {
+        Self(Err((code, None)))
     }
 }
 
-impl<T> From<T> for ResponseErrorAs<T>
+impl<T> From<Result<T, T>> for ResponsePayload<T>
 where
     T: serde::Serialize,
 {
-    fn from(obj: T) -> Self {
-        Self::Object(obj)
+    fn from(result: Result<T, T>) -> Self {
+        match result {
+            Ok(obj) => Self(Ok(obj)),
+            Err(obj) => Self(Err((ResponseError::Unknown, Some(obj)))),
+        }
+    }
+}
+
+impl<T> From<(ResponseError, T)> for ResponsePayload<T>
+where
+    T: serde::Serialize,
+{
+    fn from((code, obj): (ResponseError, T)) -> Self {
+        Self(Err((code, Some(obj))))
     }
 }

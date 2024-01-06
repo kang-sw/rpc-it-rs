@@ -12,13 +12,13 @@ use crate::defs::RequestId;
 /// example, JSON-RPC uses the `code` field of the response object to encode the error code.
 #[derive(Default, Debug, Error, Clone, Copy)]
 #[non_exhaustive]
-pub enum ResponseErrorCode {
+pub enum ResponseError {
     /// Possibly in the sender side, the error content didn't originated from this crate, or
-    /// [`ResponseErrorCode`] does not define corresponding error code for the underlying protocol.
+    /// [`ResponseError`] does not define corresponding error code for the underlying protocol.
     /// As the error payload is always preserved, you can parse the payload as generalized
     /// object(e.g. json_value::Value),
     #[default]
-    #[error("Unknown error. Parse the payload to acquire more information")]
+    #[error("Error code couldn't parsed. Parse the payload to acquire more information")]
     Unknown = 0,
 
     #[error("Server failed to parse the request argument.")]
@@ -31,7 +31,7 @@ pub enum ResponseErrorCode {
     Busy = 3,
 
     #[error("Requested method was not routed")]
-    InvalidMethodName = 4,
+    MethodNotFound = 4,
 
     #[error("Server explicitly aborted the request")]
     Aborted = 5,
@@ -41,33 +41,51 @@ pub enum ResponseErrorCode {
     /// of the request.
     #[error("Server unhandled the request")]
     Unhandled = 6,
+
+    #[error("Non UTF-8 Method Name")]
+    NonUtf8MethodName = 7,
+
+    #[error("Couldn't parse the request message")]
+    ParseFailed = 8,
 }
 
-impl From<u8> for ResponseErrorCode {
+impl ResponseError {
+    /// Unknown is kind of special error code, which is used when the error code is not specified
+    /// by the underlying protocol, or the error code is not defined in this crate.
+    pub fn is_error_code(&self) -> bool {
+        !matches!(self, Self::Unknown)
+    }
+}
+
+impl From<u8> for ResponseError {
     fn from(code: u8) -> Self {
         match code {
             0 => Self::Unknown,
             1 => Self::InvalidArgument,
             2 => Self::Unauthorized,
             3 => Self::Busy,
-            4 => Self::InvalidMethodName,
+            4 => Self::MethodNotFound,
             5 => Self::Aborted,
             6 => Self::Unhandled,
+            7 => Self::NonUtf8MethodName,
+            8 => Self::ParseFailed,
             _ => Self::Unknown,
         }
     }
 }
 
-impl From<ResponseErrorCode> for u8 {
-    fn from(code: ResponseErrorCode) -> Self {
+impl From<ResponseError> for u8 {
+    fn from(code: ResponseError) -> Self {
         match code {
-            ResponseErrorCode::Unknown => 0,
-            ResponseErrorCode::InvalidArgument => 1,
-            ResponseErrorCode::Unauthorized => 2,
-            ResponseErrorCode::Busy => 3,
-            ResponseErrorCode::InvalidMethodName => 4,
-            ResponseErrorCode::Aborted => 5,
-            ResponseErrorCode::Unhandled => 6,
+            ResponseError::Unknown => 0,
+            ResponseError::InvalidArgument => 1,
+            ResponseError::Unauthorized => 2,
+            ResponseError::Busy => 3,
+            ResponseError::MethodNotFound => 4,
+            ResponseError::Aborted => 5,
+            ResponseError::Unhandled => 6,
+            ResponseError::NonUtf8MethodName => 7,
+            ResponseError::ParseFailed => 8,
         }
     }
 }
