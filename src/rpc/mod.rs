@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::sync::Weak;
 
 use bytes::BytesMut;
-use tokio::sync::mpsc;
 
 use crate::codec::error::EncodeError;
 use crate::codec::Codec;
@@ -53,7 +52,6 @@ mod receiver {
     use std::{borrow::Cow, sync::Arc};
 
     use bytes::{Bytes, BytesMut};
-    use tokio::sync::mpsc;
 
     use crate::{
         defs::{NonzeroRangeType, RangeType},

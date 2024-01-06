@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use mpsc::TrySendError;
 use thiserror::Error;
-use tokio::sync::mpsc::error::TrySendError;
 
 use crate::codec::{self, Codec};
 
@@ -24,8 +24,8 @@ pub enum TrySendMsgError {
     #[error("Encoding failed: {0}")]
     EncodeFailed(#[from] codec::error::EncodeError),
 
-    #[error("Background runner is already closed!")]
-    BackgroundRunnerClosed,
+    #[error("A command channel to background runner was already closed")]
+    ChannelClosed,
 
     /// The channel is at capacity.
     ///
@@ -84,7 +84,7 @@ pub enum WriteRunnerError {
 
 pub(crate) fn convert_deferred_write_err(e: TrySendError<DeferredDirective>) -> TrySendMsgError {
     match e {
-        TrySendError::Closed(_) => TrySendMsgError::BackgroundRunnerClosed,
+        TrySendError::Closed(_) => TrySendMsgError::ChannelClosed,
         // XXX: In future, we should deal with re-sending failed message.
         TrySendError::Full(DeferredDirective::WriteNoti(_)) => TrySendMsgError::ChannelAtCapacity,
         TrySendError::Full(_) => unreachable!(),
@@ -93,7 +93,7 @@ pub(crate) fn convert_deferred_write_err(e: TrySendError<DeferredDirective>) -> 
 
 pub(crate) fn convert_deferred_action_err(e: TrySendError<DeferredDirective>) -> TrySendMsgError {
     match e {
-        TrySendError::Closed(_) => TrySendMsgError::BackgroundRunnerClosed,
+        TrySendError::Closed(_) => TrySendMsgError::ChannelClosed,
         TrySendError::Full(_) => TrySendMsgError::ChannelAtCapacity,
     }
 }

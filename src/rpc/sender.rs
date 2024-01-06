@@ -129,27 +129,39 @@ impl<U: UserData> NotifySender<U> {
     ///
     /// If `drop_after_this` is specified, any deferred outbound message will be dropped.
     pub fn try_shutdown_writer(&self, drop_after_this: bool) -> Result<(), TrySendMsgError> {
-        self.context
-            .tx_deferred()
+        let tx_deferred = self.context.tx_deferred();
+
+        tx_deferred
             .try_send(if drop_after_this {
                 DeferredDirective::CloseImmediately
             } else {
                 DeferredDirective::CloseAfterFlush
             })
-            .map_err(error::convert_deferred_action_err)
+            .map_err(error::convert_deferred_action_err)?;
+
+        // Then prevent further messages from being sent immediately.
+        tx_deferred.close();
+
+        Ok(())
     }
 
     /// See [`NotifySender::try_close_writer`]
     pub async fn shutdown_writer(&self, drop_after_this: bool) -> Result<(), TrySendMsgError> {
-        self.context
-            .tx_deferred()
+        let tx_deferred = self.context.tx_deferred();
+
+        tx_deferred
             .send(if drop_after_this {
                 DeferredDirective::CloseImmediately
             } else {
                 DeferredDirective::CloseAfterFlush
             })
             .await
-            .map_err(|_| TrySendMsgError::BackgroundRunnerClosed)
+            .map_err(|_| TrySendMsgError::ChannelClosed)?;
+
+        // Then prevent further messages from being sent immediately.
+        tx_deferred.close();
+
+        Ok(())
     }
 
     /// Requests flush to the background writer task. As actual flush operation is done in
@@ -167,7 +179,7 @@ impl<U: UserData> NotifySender<U> {
             .tx_deferred()
             .send(DeferredDirective::Flush)
             .await
-            .map_err(|_| TrySendMsgError::BackgroundRunnerClosed)
+            .map_err(|_| TrySendMsgError::ChannelClosed)
     }
 
     /// Downgrade this handle to a weak handle.

@@ -5,7 +5,6 @@
 use std::{future::poll_fn, num::NonZeroUsize, sync::Arc};
 
 use futures::Future;
-use tokio::sync::mpsc;
 
 use crate::{
     codec::Codec,
@@ -236,11 +235,9 @@ where
             .. // Read side is not needed.
         } = self;
 
-        let (tx_directive, rx) = mpsc::channel(
-            cfg.writer_channel_capacity
-                .map(|x| x.get())
-                .unwrap_or(NAIVE_UNBOUNDED),
-        );
+        let (tx_directive, rx) = cfg
+            .writer_channel_capacity
+            .map_or_else(mpsc::unbounded, |x| mpsc::bounded(x.get()));
 
         let context = Arc::new(RpcContextImpl {
             user_data,
@@ -257,23 +254,26 @@ where
 
 async fn write_runner<Wr>(
     writer: Wr,
-    mut rx_directive: mpsc::Receiver<DeferredDirective>,
+    rx_directive: mpsc::Receiver<DeferredDirective>,
     reqs: Option<Arc<RequestContext>>,
 ) -> Result<WriteRunnerExitType, WriteRunnerError>
 where
     Wr: AsyncFrameWrite,
 {
-    tokio::pin!(writer);
+    futures::pin_mut!(writer);
 
     // Implements bulk receive to minimize number of polls on the channel
 
     let exec_result = async {
         let mut exit_type = WriteRunnerExitType::AllHandleDropped;
-        while let Some(msg) = rx_directive.recv().await {
+        while let Ok(msg) = rx_directive.recv().await {
             match msg {
                 DeferredDirective::CloseImmediately => {
                     // Prevent further messages from being sent immediately. This is basically
                     // best-effort attempt, which simply neglects remaining messages in the queue.
+                    //
+                    // This can return false(already closed), where the sender closes the
+                    // channel preemptively to block channel as soon as possible.
                     rx_directive.close();
 
                     poll_fn(|cx| writer.as_mut().poll_close(cx))
@@ -283,7 +283,7 @@ where
                     return Ok(WriteRunnerExitType::ManualCloseImmediate);
                 }
                 DeferredDirective::CloseAfterFlush => {
-                    rx_directive.close(); // Simply prevents further messages from being sent
+                    rx_directive.close(); // Same as above.
 
                     // To flush rest of the messages, just continue the loop. Since we closed the
                     // channel already, the loop will be terminated soon after consuming all the

@@ -4,8 +4,7 @@ use std::{
 };
 
 use bytes::{Buf, Bytes};
-use futures::Stream;
-use tokio::io::AsyncWrite;
+use futures::{AsyncWrite, Stream};
 
 /// [`AsyncFrameWrite`] is a trait defining the interface for writing data frames
 /// to the underlying transport. This trait can either be a straightforward wrapper
@@ -69,7 +68,7 @@ where
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        AsyncWrite::poll_shutdown(self, cx)
+        AsyncWrite::poll_close(self, cx)
     }
 }
 
