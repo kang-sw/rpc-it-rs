@@ -295,12 +295,12 @@ where
                         .await
                         .map_err(WriteRunnerError::WriterFlushFailed)?;
                 }
-                DeferredDirective::WriteNoti(mut payload) => {
+                DeferredDirective::WriteMsg(mut payload) => {
                     poll_fn(|cx| writer.as_mut().poll_write_frame(cx, &mut payload))
                         .await
                         .map_err(WriteRunnerError::WriteFailed)?;
                 }
-                DeferredDirective::WriteReq(mut payload, req_id) => {
+                DeferredDirective::WriteReqMsg(mut payload, req_id) => {
                     debug_assert!(reqs.is_some(), "Write only client cannot send requests");
 
                     let write_result =

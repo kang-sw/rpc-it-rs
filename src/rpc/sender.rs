@@ -57,12 +57,12 @@ pub(crate) enum DeferredDirective {
     /// Flush the writer transport.
     Flush,
 
-    /// Write a notification message.
-    WriteNoti(Bytes),
+    /// Write a notification/response message.
+    WriteMsg(Bytes),
 
     /// Write a request message. If the sending of the request is aborted by the writer, the
     /// request message will be revoked and will wake up the pending task.
-    WriteReq(Bytes, RequestId),
+    WriteReqMsg(Bytes, RequestId),
 }
 
 // ========================================================== NotifySender ===|
@@ -77,7 +77,7 @@ impl<U: UserData> NotifySender<U> {
     ) -> Result<(), SendMsgError> {
         buf.clear();
         self.context.codec().encode_notify(method, params, buf)?;
-        self.send_frame(DeferredDirective::WriteNoti(buf.split().freeze()))
+        self.send_frame(DeferredDirective::WriteMsg(buf.split().freeze()))
             .await?;
 
         Ok(())
@@ -91,7 +91,7 @@ impl<U: UserData> NotifySender<U> {
     ) -> Result<(), TrySendMsgError> {
         buf.clear();
         self.context.codec().encode_notify(method, params, buf)?;
-        self.try_send_frame(DeferredDirective::WriteNoti(buf.split().freeze()))?;
+        self.try_send_frame(DeferredDirective::WriteMsg(buf.split().freeze()))?;
 
         Ok(())
     }
@@ -108,7 +108,7 @@ impl<U: UserData> NotifySender<U> {
             .tx_deferred()
             .send(buf)
             .await
-            .map_err(|_| SendMsgError::BackgroundRunnerClosed)
+            .map_err(|_| SendMsgError::ChannelClosed)
     }
 
     pub fn user_data(&self) -> &U {
@@ -228,7 +228,7 @@ impl<U: UserData> RequestSender<U> {
         let resp = self.encode_request(buf, method, params)?;
         let request_id = resp.request_id();
 
-        self.send_frame(DeferredDirective::WriteReq(
+        self.send_frame(DeferredDirective::WriteReqMsg(
             buf.split().freeze(),
             request_id,
         ))
@@ -246,7 +246,7 @@ impl<U: UserData> RequestSender<U> {
         let resp = self.encode_request(buf, method, params)?;
         let request_id = resp.request_id();
 
-        self.try_send_frame(DeferredDirective::WriteReq(
+        self.try_send_frame(DeferredDirective::WriteReqMsg(
             buf.split().freeze(),
             request_id,
         ))?;

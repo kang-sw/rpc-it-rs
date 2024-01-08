@@ -37,6 +37,14 @@ pub mod defs {
             Self(start, end)
         }
 
+        pub fn begin(&self) -> SizeType {
+            self.0
+        }
+
+        pub fn end(&self) -> NonzeroSizeType {
+            self.1
+        }
+
         /// Handy method to get usize range with less typing.
         pub(crate) fn range(&self) -> Range<usize> {
             self.0 as usize..self.1.get() as usize

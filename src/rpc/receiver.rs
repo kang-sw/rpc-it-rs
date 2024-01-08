@@ -1,11 +1,17 @@
-use std::{borrow::Cow, mem::transmute, sync::Arc};
+use std::{
+    borrow::Cow,
+    mem::{take, transmute},
+    sync::Arc,
+};
 
 use bytes::{Bytes, BytesMut};
 
 use crate::{
+    codec::{error::EncodeError, EncodeResponsePayload},
     defs::{
         AtomicLongSizeType, LongSizeType, NonzeroRangeType, NonzeroSizeType, RangeType, SizeType,
     },
+    rpc::DeferredDirective,
     Codec, ParseMessage, ResponseError, UserData,
 };
 
@@ -88,13 +94,22 @@ where
     pub fn into_owned(mut self) -> Inbound<'static, U> {
         Inbound {
             owner: Cow::Owned(Arc::clone(&self.owner)),
-            inner: std::mem::take(&mut self.inner),
+            inner: take(&mut self.inner),
         }
     }
 
     /// Retrieves message out of the reference.
     pub fn take(&mut self) -> Inbound<'_, U> {
-        todo!()
+        let req_id = self.atomic_take_req_range();
+        Inbound {
+            owner: Cow::Borrowed(&self.owner),
+            inner: InboundDelivery {
+                buffer: take(&mut self.inner.buffer),
+                method: take(&mut self.inner.method),
+                payload: take(&mut self.inner.payload),
+                req_id: Self::req_id_to_inner(req_id),
+            },
+        }
     }
 
     fn payload_bytes(&self) -> &[u8] {
@@ -120,8 +135,8 @@ where
     }
 
     /// Retrieve request atomicly.
-    fn atomic_take_request(&self) -> Option<NonzeroRangeType> {
-        // SAFETY: POD manipulation
+    fn atomic_take_req_range(&self) -> Option<NonzeroRangeType> {
+        // SAFETY: Just byte mucking
         let [begin, end] = unsafe {
             let ptr = &self.inner.req_id as *const _ as *mut _;
             let atomic = AtomicLongSizeType::from_ptr(ptr);
@@ -132,6 +147,21 @@ where
         };
 
         NonzeroSizeType::new(end).map(|x| NonzeroRangeType::new(begin, x))
+    }
+
+    fn req_id_to_inner(range: Option<NonzeroRangeType>) -> LongSizeType {
+        // SAFETY: Just byte mucking
+        unsafe {
+            transmute(
+                range
+                    .map(|range| [range.begin(), range.end().get()])
+                    .unwrap_or_default(),
+            )
+        }
+    }
+
+    fn retrieve_req_id(&self, id_buf_range: NonzeroRangeType) -> &[u8] {
+        &self.inner.buffer[id_buf_range.range()]
     }
 
     pub fn is_request(&self) -> bool {
@@ -188,26 +218,69 @@ where
         buf: &mut BytesMut,
         result: impl Into<ResponsePayload<T>>,
     ) -> Result<(), SendResponseError> {
-        todo!()
+        self.encode_response(buf, result)
+            .ok_or(SendResponseError::InboundNotRequest)?
+            .map_err(SendMsgError::EncodeFailed)?;
+
+        self.owner
+            .tx_deferred()
+            .send(DeferredDirective::WriteMsg(buf.split().freeze()))
+            .await
+            .map_err(|_| SendMsgError::ChannelClosed.into())
     }
 
     /// Try to send response.
     ///
     /// # Usage
     ///
-    /// See documentation of [`Inbound::response`].
+    /// See [`Inbound::response`].
     pub fn try_response<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
         result: impl Into<ResponsePayload<T>>,
     ) -> Result<(), TrySendResponseError> {
-        todo!()
+        self.encode_response(buf, result)
+            .ok_or(TrySendResponseError::InboundNotRequest)?
+            .map_err(TrySendMsgError::EncodeFailed)?;
+
+        self.owner
+            .tx_deferred()
+            .try_send(DeferredDirective::WriteMsg(buf.split().freeze()))
+            .map_err(|e| {
+                match e {
+                    mpsc::TrySendError::Full(_) => TrySendMsgError::ChannelAtCapacity,
+                    mpsc::TrySendError::Closed(_) => TrySendMsgError::ChannelClosed,
+                }
+                .into()
+            })
+    }
+
+    fn encode_response<T: serde::Serialize>(
+        &self,
+        buf: &mut BytesMut,
+        result: impl Into<ResponsePayload<T>>,
+    ) -> Option<Result<(), EncodeError>> {
+        let req_range = self.atomic_take_req_range()?;
+        let req_id = self.retrieve_req_id(req_range);
+
+        let payload = result.into().0;
+        type R<'a> = EncodeResponsePayload<'a>;
+
+        let encoded = match &payload {
+            Ok(obj) => R::Ok(obj),
+            Err((ResponseError::Unknown, Some(ref obj))) => R::ErrObjectOnly(obj),
+            Err((errc, Some(ref obj))) => R::Err(*errc, obj),
+            Err((errc, None)) => R::ErrCodeOnly(*errc),
+        };
+
+        Some(self.owner.codec().encode_response(req_id, encoded, buf))
     }
 
     /// Drops the request without sending any response. This prevents drop-guard automatically
-    /// respond [`ResponseError::Unhandled`].
+    /// responding [`ResponseError::Unhandled`].
     pub fn drop_request(&self) {
-        todo!()
+        // Simply take the request range, and drop it.
+        let _ = self.atomic_take_req_range();
     }
 }
 
@@ -216,7 +289,8 @@ where
     U: UserData,
 {
     fn drop(&mut self) {
-        if let Some(req_id) = todo!() {
+        if let Some(req_id) = self.atomic_take_req_range() {
+            let req_id = self.retrieve_req_id(req_id);
             self.owner.on_request_unhandled(req_id);
         }
     }

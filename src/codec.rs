@@ -49,6 +49,13 @@ pub enum ResponseError {
     ParseFailed = 8,
 }
 
+pub enum EncodeResponsePayload<'a> {
+    Ok(&'a dyn DynSerialize),
+    ErrCodeOnly(ResponseError),
+    ErrObjectOnly(&'a dyn DynSerialize),
+    Err(ResponseError, &'a dyn DynSerialize),
+}
+
 impl ResponseError {
     /// Unknown is kind of special error code, which is used when the error code is not specified
     /// by the underlying protocol, or the error code is not defined in this crate.
@@ -118,6 +125,25 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
         Err(EncodeError::UnsupportedAction)
     }
 
+    /// This is called from server side, where it responds to the request with received request_id.
+    ///
+    /// # NOTE
+    ///
+    /// During encoding request, we can use our internal request id representation as we know how to
+    /// deal with 4-byte representation encoding and decoding. However, when we're responding to
+    /// received request, we don't know how the request id was encoded as it may not be originated
+    /// from this crate's implementation. Therefore, we need to send back the original bytes of
+    /// received request id as-is.
+    fn encode_response(
+        &self,
+        request_id_raw: &[u8],
+        result: EncodeResponsePayload,
+        buf: &mut BytesMut,
+    ) -> Result<(), EncodeError> {
+        let _ = (request_id_raw, result, buf);
+        Err(EncodeError::UnsupportedAction)
+    }
+
     fn deserialize_payload(
         &self,
         payload: &[u8],
@@ -154,6 +180,15 @@ where
         (**self).encode_request(request_id, method, params, buf)
     }
 
+    fn encode_response(
+        &self,
+        request_id_raw: &[u8],
+        result: EncodeResponsePayload,
+        buf: &mut BytesMut,
+    ) -> Result<(), EncodeError> {
+        (**self).encode_response(request_id_raw, result, buf)
+    }
+
     fn deserialize_payload(
         &self,
         payload: &[u8],
@@ -168,6 +203,13 @@ pub mod error {
 
     #[derive(Debug, Error)]
     pub enum EncodeError {
+        #[error("Unsupported type of action")]
+        UnsupportedAction,
+    }
+
+    #[derive(Debug, Error)]
+
+    pub enum DecodeError {
         #[error("Unsupported type of action")]
         UnsupportedAction,
     }

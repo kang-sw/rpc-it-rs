@@ -14,8 +14,8 @@ pub enum SendMsgError {
     #[error("Encoding failed: {0}")]
     EncodeFailed(#[from] codec::error::EncodeError),
 
-    #[error("Background runner is already closed!")]
-    BackgroundRunnerClosed,
+    #[error("A command channel to background runner was already closed")]
+    ChannelClosed,
 }
 
 #[derive(Debug, Error)]
@@ -104,7 +104,7 @@ pub(crate) fn convert_deferred_write_err(e: TrySendError<DeferredDirective>) -> 
     match e {
         TrySendError::Closed(_) => TrySendMsgError::ChannelClosed,
         // XXX: In future, we should deal with re-sending failed message.
-        TrySendError::Full(DeferredDirective::WriteNoti(_)) => TrySendMsgError::ChannelAtCapacity,
+        TrySendError::Full(DeferredDirective::WriteMsg(_)) => TrySendMsgError::ChannelAtCapacity,
         TrySendError::Full(_) => unreachable!(),
     }
 }
