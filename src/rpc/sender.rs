@@ -4,6 +4,7 @@ use super::*;
 
 /// A RPC client handle which can only send RPC notifications.
 #[derive(Debug)]
+#[repr(transparent)]
 pub struct NotifySender<U> {
     pub(super) context: Arc<dyn RpcCore<U>>,
 }

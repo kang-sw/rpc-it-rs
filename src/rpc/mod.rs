@@ -31,9 +31,6 @@ pub(crate) trait RpcCore<U: UserData>: std::fmt::Debug {
     /// Borrow `tx_deferred` channel
     fn tx_deferred(&self) -> &mpsc::Sender<DeferredDirective>;
 
-    /// Only available for [`RequestSender`].
-    fn shutdown_rx_channel(&self);
-
     /// Only available for [`RequestSender`]. Called when a request is dropped in unhandled state.
     fn on_request_unhandled(&self, req_id: &[u8]);
 }

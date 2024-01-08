@@ -12,11 +12,11 @@ use crate::{
         AtomicLongSizeType, LongSizeType, NonzeroRangeType, NonzeroSizeType, RangeType, SizeType,
     },
     rpc::DeferredDirective,
-    Codec, ParseMessage, ResponseError, UserData,
+    Codec, NotifySender, ParseMessage, ResponseError, UserData,
 };
 
 use super::{
-    error::{SendMsgError, SendResponseError, TrySendMsgError, TrySendResponseError},
+    error::{SendMsgError, SendResponseError, TryRecvError, TrySendMsgError, TrySendResponseError},
     RpcCore,
 };
 
@@ -27,7 +27,10 @@ pub trait ReceiveErrorHandler<T: UserData> {}
 impl<T> ReceiveErrorHandler<T> for () where T: UserData {}
 
 /// A receiver which deals with inbound notifies / requests.
-#[derive(Debug)]
+///
+/// It internally utilizes MPMC channel, where you can balance inbound loads over multiple
+/// executors.
+#[derive(Debug, Clone)]
 pub struct Receiver<U> {
     context: Arc<dyn RpcCore<U>>,
     channel: mpsc::Receiver<InboundDelivery>,
@@ -35,7 +38,61 @@ pub struct Receiver<U> {
 
 // ==== impl:Receiver ====
 
-impl<U> Receiver<U> {}
+impl<U> Receiver<U>
+where
+    U: UserData,
+{
+    pub fn user_data(&self) -> &U {
+        self.context.user_data()
+    }
+
+    pub fn codec(&self) -> &dyn Codec {
+        self.context.codec()
+    }
+
+    pub fn cloned_codec(&self) -> Arc<dyn Codec> {
+        self.context.clone().self_as_codec()
+    }
+
+    /// Receive an inbound message from remote.
+    pub async fn recv(&self) -> Option<Inbound<'_, U>> {
+        self.channel
+            .recv()
+            .await
+            .map(|inner| Inbound {
+                owner: Cow::Borrowed(&self.context),
+                inner,
+            })
+            .ok()
+    }
+
+    /// Tries to receive an inbound message from remote.
+    pub async fn try_recv(&self) -> Result<Inbound<'_, U>, TryRecvError> {
+        self.channel
+            .try_recv()
+            .map(|inner| Inbound {
+                owner: Cow::Borrowed(&self.context),
+                inner,
+            })
+            .map_err(|e| match e {
+                mpsc::TryRecvError::Empty => TryRecvError::Empty,
+                mpsc::TryRecvError::Closed => TryRecvError::Closed,
+            })
+    }
+
+    /// Closes rx channel.
+    pub fn shutdown_reader(self) {
+        self.channel.close();
+        // TODO: Check if this can close background writer channel immediately.
+    }
+
+    /// Create a new [`NotifySender`] for this receiver.
+    pub fn notify_sender(&self) -> NotifySender<U> {
+        NotifySender {
+            context: self.context.clone(),
+        }
+    }
+}
 
 // ========================================================== Inbound ===|
 

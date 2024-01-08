@@ -47,6 +47,16 @@ pub enum TrySendMsgError {
     ChannelAtCapacity,
 }
 
+/// Error when trying to receive an inbound message
+#[derive(Debug, Error)]
+pub enum TryRecvError {
+    #[error("A receive channel was closed. No more message to consume!")]
+    Closed,
+
+    #[error("No message available")]
+    Empty,
+}
+
 #[derive(Debug, Error)]
 pub enum TrySendResponseError {
     #[error("Sending message failed")]

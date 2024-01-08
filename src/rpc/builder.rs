@@ -65,10 +65,6 @@ where
         todo!()
     }
 
-    fn shutdown_rx_channel(&self) {
-        todo!()
-    }
-
     fn tx_deferred(&self) -> &mpsc::Sender<DeferredDirective> {
         todo!()
     }
