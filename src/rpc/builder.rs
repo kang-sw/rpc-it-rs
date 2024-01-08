@@ -18,8 +18,6 @@ use super::{
     DeferredDirective, ReceiveErrorHandler, RpcCore, UserData,
 };
 
-const NAIVE_UNBOUNDED: usize = u32::MAX as _;
-
 ///
 pub struct Builder<Wr, Rd, U, C, RH> {
     writer: Wr,
@@ -62,6 +60,10 @@ where
     }
 
     fn user_data(&self) -> &U {
+        todo!()
+    }
+
+    fn shutdown_rx_channel(&self) {
         todo!()
     }
 

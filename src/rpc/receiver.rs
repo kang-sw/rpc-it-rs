@@ -33,6 +33,9 @@ impl<T> ReceiveErrorHandler<T> for () where T: UserData {}
 #[derive(Debug, Clone)]
 pub struct Receiver<U> {
     context: Arc<dyn RpcCore<U>>,
+
+    /// Even if all receivers are dropped, the background task possibly retain if there's any
+    /// present [`crate::RequestSender`] instance.
     channel: mpsc::Receiver<InboundDelivery>,
 }
 
@@ -83,7 +86,7 @@ where
     /// Closes rx channel.
     pub fn shutdown_reader(self) {
         self.channel.close();
-        // TODO: Check if this can close background writer channel immediately.
+        self.context.shutdown_rx_channel();
     }
 
     /// Create a new [`NotifySender`] for this receiver.
