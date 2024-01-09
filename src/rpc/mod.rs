@@ -28,8 +28,10 @@ pub(crate) trait RpcCore<U: UserData>: std::fmt::Debug {
     fn codec(&self) -> &dyn Codec;
     fn user_data(&self) -> &U;
 
-    /// Borrow `tx_deferred` channel
-    fn tx_deferred(&self) -> &mpsc::Sender<DeferredDirective>;
+    /// Borrow `tx_deferred` channel. It only returns valid reference if the writer is defined.
+    ///
+    /// For [`NotifySender`] reference,  it is always defined.
+    fn tx_deferred(&self) -> Option<&mpsc::Sender<DeferredDirective>>;
 
     /// Only available for [`RequestSender`].
     fn shutdown_rx_channel(&self);

@@ -13,9 +13,9 @@ use crate::{
 };
 
 use super::{
-    error::{WriteRunnerError, WriteRunnerExitType},
+    error::{ReadRunnerError, ReadRunnerExitType, WriteRunnerError, WriteRunnerExitType},
     req_rep::RequestContext,
-    DeferredDirective, ReceiveErrorHandler, RpcCore, UserData,
+    DeferredDirective, InboundDelivery, ReceiveErrorHandler, RpcCore, UserData,
 };
 
 ///
@@ -31,8 +31,12 @@ pub struct Builder<Wr, Rd, U, C, RH> {
 struct RpcContextImpl<U, C> {
     user_data: U,
     codec: C,
-    tx_deferred: mpsc::Sender<DeferredDirective>,
+    t: Option<SenderContext>,
     r: Option<ReceiverContext>,
+}
+
+struct SenderContext {
+    tx_deferred: mpsc::Sender<DeferredDirective>,
 }
 
 struct ReceiverContext {}
@@ -42,6 +46,9 @@ struct ReceiverContext {}
 struct InitConfig {
     /// Channel capacity for deferred directive queue.
     writer_channel_capacity: Option<NonZeroUsize>,
+
+    /// Maximum queued inbound count.
+    inbound_queue_capacity: Option<NonZeroUsize>,
 }
 
 // ========================================================== RpcContext ===|
@@ -52,27 +59,71 @@ where
     C: Codec,
 {
     fn self_as_codec(self: Arc<Self>) -> Arc<dyn Codec> {
-        todo!()
+        self
     }
 
     fn codec(&self) -> &dyn Codec {
-        todo!()
+        self
     }
 
     fn user_data(&self) -> &U {
-        todo!()
+        &self.user_data
     }
 
     fn shutdown_rx_channel(&self) {
-        todo!()
+        todo!("Send shutdown signal to the channel")
     }
 
-    fn tx_deferred(&self) -> &mpsc::Sender<DeferredDirective> {
-        todo!()
+    fn tx_deferred(&self) -> Option<&mpsc::Sender<DeferredDirective>> {
+        self.t.as_ref().map(|x| &x.tx_deferred)
     }
 
     fn on_request_unhandled(&self, req_id: &[u8]) {
-        todo!()
+        todo!("Tries to send `unhandled` error response")
+    }
+}
+
+impl<U, C> Codec for RpcContextImpl<U, C>
+where
+    C: Codec,
+    U: UserData,
+{
+    fn encode_notify(
+        &self,
+        method: &str,
+        params: &dyn erased_serde::Serialize,
+        buf: &mut bytes::BytesMut,
+    ) -> Result<(), crate::codec::error::EncodeError> {
+        self.codec.encode_notify(method, params, buf)
+    }
+
+    fn encode_request(
+        &self,
+        request_id: crate::defs::RequestId,
+        method: &str,
+        params: &dyn erased_serde::Serialize,
+        buf: &mut bytes::BytesMut,
+    ) -> Result<(), crate::codec::error::EncodeError> {
+        self.codec.encode_request(request_id, method, params, buf)
+    }
+
+    fn encode_response(
+        &self,
+        request_id_raw: &[u8],
+        result: crate::codec::EncodeResponsePayload,
+        buf: &mut bytes::BytesMut,
+    ) -> Result<(), crate::codec::error::EncodeError> {
+        self.codec.encode_response(request_id_raw, result, buf)
+    }
+
+    fn deserialize_payload(
+        &self,
+        payload: &[u8],
+        visitor: &mut dyn FnMut(
+            &mut dyn erased_serde::Deserializer,
+        ) -> Result<(), erased_serde::Error>,
+    ) -> Result<(), erased_serde::Error> {
+        self.codec.deserialize_payload(payload, visitor)
     }
 }
 
@@ -104,6 +155,8 @@ pub fn create_builder() -> Builder<(), (), (), (), ()> {
 }
 
 impl<Wr, Rd, U, C, RH> Builder<Wr, Rd, U, C, RH> {
+    // TODO: Add documentation for these methods.
+
     pub fn with_writer<Wr2>(self, writer: Wr2) -> Builder<Wr2, Rd, U, C, RH>
     where
         Wr2: AsyncFrameWrite,
@@ -158,6 +211,17 @@ impl<Wr, Rd, U, C, RH> Builder<Wr, Rd, U, C, RH> {
         Builder {
             cfg: InitConfig {
                 writer_channel_capacity: Some(capacity),
+                ..self.cfg
+            },
+            ..self
+        }
+    }
+
+    pub fn with_inbound_queue_capacity(self, capacity: NonZeroUsize) -> Self {
+        Builder {
+            cfg: InitConfig {
+                inbound_queue_capacity: Some(capacity),
+                ..self.cfg
             },
             ..self
         }
@@ -202,7 +266,7 @@ where
     C: Codec,
     RH: ReceiveErrorHandler<U>,
 {
-    /// Creates read-only service
+    /// Creates read-only service. The receiver may never take any request.
     #[must_use = "The client will not run unless you spawn task manually"]
     pub fn build_read_only(self) -> (super::Receiver<U>, impl Future) {
         let _runner = async {};
@@ -240,7 +304,9 @@ where
         let context = Arc::new(RpcContextImpl {
             user_data,
             codec,
-            tx_deferred: tx_directive.clone(),
+            t: Some(SenderContext {
+                tx_deferred: tx_directive.clone(),
+            }),
             r: None,
         });
 
@@ -249,6 +315,19 @@ where
 }
 
 // ========================================================== Runners ===|
+
+async fn read_runner<Rd, RH, C, U>(
+    reader: Rd,
+    tx_inbound: mpsc::Sender<InboundDelivery>,
+) -> Result<ReadRunnerExitType, ReadRunnerError>
+where
+    Rd: AsyncFrameRead,
+    RH: ReceiveErrorHandler<U>,
+    C: Codec,
+    U: UserData,
+{
+    todo!()
+}
 
 async fn write_runner<Wr>(
     writer: Wr,

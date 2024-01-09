@@ -108,6 +108,14 @@ pub enum WriteRunnerError {
     WriteFailed(std::io::Error),
 }
 
+/// Describes why did the read runner stopped.
+#[derive(Debug)]
+pub enum ReadRunnerExitType {}
+
+/// Describes what kind of error occurred during read runner execution.
+#[derive(Error, Debug)]
+pub enum ReadRunnerError {}
+
 // ==== DeferredActionError ====
 
 pub(crate) fn convert_deferred_write_err(e: TrySendError<DeferredDirective>) -> TrySendMsgError {

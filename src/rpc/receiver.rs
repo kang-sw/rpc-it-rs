@@ -21,7 +21,7 @@ use super::{
 };
 
 /// Handles error during receiving inbound messages inside runner.
-pub trait ReceiveErrorHandler<T: UserData> {}
+pub trait ReceiveErrorHandler<T: UserData>: 'static + Send {}
 
 /// Default implementation for any type of user data. It ignores every error.
 impl<T> ReceiveErrorHandler<T> for () where T: UserData {}
@@ -32,11 +32,11 @@ impl<T> ReceiveErrorHandler<T> for () where T: UserData {}
 /// executors.
 #[derive(Debug, Clone)]
 pub struct Receiver<U> {
-    context: Arc<dyn RpcCore<U>>,
+    pub(super) context: Arc<dyn RpcCore<U>>,
 
     /// Even if all receivers are dropped, the background task possibly retain if there's any
     /// present [`crate::RequestSender`] instance.
-    channel: mpsc::Receiver<InboundDelivery>,
+    pub(super) channel: mpsc::Receiver<InboundDelivery>,
 }
 
 // ==== impl:Receiver ====
@@ -87,13 +87,6 @@ where
     pub fn shutdown_reader(self) {
         self.channel.close();
         self.context.shutdown_rx_channel();
-    }
-
-    /// Create a new [`NotifySender`] for this receiver.
-    pub fn notify_sender(&self) -> NotifySender<U> {
-        NotifySender {
-            context: self.context.clone(),
-        }
     }
 }
 
@@ -284,6 +277,7 @@ where
 
         self.owner
             .tx_deferred()
+            .ok_or(SendMsgError::ChannelClosed)?
             .send(DeferredDirective::WriteMsg(buf.split().freeze()))
             .await
             .map_err(|_| SendMsgError::ChannelClosed.into())
@@ -305,6 +299,7 @@ where
 
         self.owner
             .tx_deferred()
+            .ok_or(TrySendMsgError::ChannelClosed)?
             .try_send(DeferredDirective::WriteMsg(buf.split().freeze()))
             .map_err(|e| {
                 match e {

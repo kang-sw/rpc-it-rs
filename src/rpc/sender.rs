@@ -97,16 +97,19 @@ impl<U: UserData> NotifySender<U> {
         Ok(())
     }
 
+    fn tx_deferred(&self) -> &mpsc::Sender<DeferredDirective> {
+        // SAFETY: Once [`NotifySender`] is created, the writer channel is always defined.
+        unsafe { self.context.tx_deferred().unwrap_unchecked() }
+    }
+
     fn try_send_frame(&self, buf: DeferredDirective) -> Result<(), TrySendMsgError> {
-        self.context
-            .tx_deferred()
+        self.tx_deferred()
             .try_send(buf)
             .map_err(error::convert_deferred_write_err)
     }
 
     async fn send_frame(&self, buf: DeferredDirective) -> Result<(), SendMsgError> {
-        self.context
-            .tx_deferred()
+        self.tx_deferred()
             .send(buf)
             .await
             .map_err(|_| SendMsgError::ChannelClosed)
@@ -130,7 +133,7 @@ impl<U: UserData> NotifySender<U> {
     ///
     /// If `drop_after_this` is specified, any deferred outbound message will be dropped.
     pub fn try_shutdown_writer(&self, drop_after_this: bool) -> Result<(), TrySendMsgError> {
-        let tx_deferred = self.context.tx_deferred();
+        let tx_deferred = self.tx_deferred();
 
         tx_deferred
             .try_send(if drop_after_this {
@@ -148,7 +151,7 @@ impl<U: UserData> NotifySender<U> {
 
     /// See [`NotifySender::try_close_writer`]
     pub async fn shutdown_writer(&self, drop_after_this: bool) -> Result<(), TrySendMsgError> {
-        let tx_deferred = self.context.tx_deferred();
+        let tx_deferred = self.tx_deferred();
 
         tx_deferred
             .send(if drop_after_this {
@@ -168,16 +171,14 @@ impl<U: UserData> NotifySender<U> {
     /// Requests flush to the background writer task. As actual flush operation is done in
     /// background writer task, you can't get the actual result of the flush operation.
     pub fn try_flush_writer(&self) -> Result<(), TrySendMsgError> {
-        self.context
-            .tx_deferred()
+        self.tx_deferred()
             .try_send(DeferredDirective::Flush)
             .map_err(error::convert_deferred_action_err)
     }
 
     /// See [`NotifySender::try_flush_writer`]
     pub async fn flush_writer(&self) -> Result<(), TrySendMsgError> {
-        self.context
-            .tx_deferred()
+        self.tx_deferred()
             .send(DeferredDirective::Flush)
             .await
             .map_err(|_| TrySendMsgError::ChannelClosed)
