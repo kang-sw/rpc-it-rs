@@ -34,7 +34,7 @@ fn verify_notify() {
         let contents: &[&str] = &[
             r#"{"jsonrpc":"2.0","method":"test","params":{"test":"test"}}"#,
             r#"{"jsonrpc":"2.0","method":"t-e-st-23","params":1234}"#,
-            r#"{"jsonrpc":"2.0","method":"close","params":{}}"#,
+            r#"{"jsonrpc":"2.0","method":"close","params":null}"#,
         ];
 
         for content in contents {

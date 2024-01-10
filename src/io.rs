@@ -158,54 +158,28 @@ mod in_memory {
 
     // ==== InMemoryTx ====
 
-    // impl AsyncFrameWrite for InMemoryTx {
-    //     fn poll_write_frame(
-    //         self: Pin<&mut Self>,
-    //         cx: &mut Context<'_>,
-    //         buffer: &mut Bytes,
-    //     ) -> Poll<std::io::Result<()>> {
-    //         if self.0.closed.load(Ordering::Relaxed) {
-    //             return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
-    //         }
-
-    //         match self.0.queue.push(buffer.split_off(0)) {
-    //             Ok(..) => {
-    //                 if let Some(w) = self.0.sig_msg_sent.take() {
-    //                     w.wake()
-    //                 }
-
-    //                 Ok(()).into()
-    //             }
-    //             Err(revoked) => {
-    //                 *buffer = revoked;
-    //                 self.0.sig_ready_to_recv.register(cx.waker());
-    //                 Poll::Pending
-    //             }
-    //         }
-    //     }
-
-    //     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-    //         todo!()
-    //     }
-
-    //     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-    //         todo!()
-    //     }
-    // }
-
     impl futures::Sink<Bytes> for InMemoryTx {
         type Error = std::io::Error;
 
         fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-            if self.0.closed.load(Ordering::Relaxed) {
-                return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+            macro_rules! check {
+                () => {
+                    if self.0.closed.load(Ordering::Relaxed) {
+                        return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+                    }
+
+                    if self.0.semaphore.load(Ordering::Relaxed) > 0 {
+                        return Poll::Ready(Ok(()));
+                    }
+                };
             }
 
-            if self.0.semaphore.load(Ordering::Relaxed) > 0 {
-                return Poll::Ready(Ok(()));
-            }
+            check!();
 
             self.0.sig_ready_to_recv.register(cx.waker());
+
+            check!();
+
             Poll::Pending
         }
 
@@ -244,13 +218,24 @@ mod in_memory {
             self: Pin<&mut Self>,
             _cx: &mut Context<'_>,
         ) -> Poll<Result<(), Self::Error>> {
+            self.drop_impl();
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl InMemoryTx {
+        fn drop_impl(&self) {
             self.0.closed.store(true, Ordering::Relaxed);
 
             if let Some(w) = self.0.sig_msg_sent.take() {
                 w.wake()
             }
+        }
+    }
 
-            Poll::Ready(Ok(()))
+    impl Drop for InMemoryTx {
+        fn drop(&mut self) {
+            self.drop_impl();
         }
     }
 
@@ -272,14 +257,14 @@ mod in_memory {
 
                         return std::task::Poll::Ready(Ok(Some(msg)));
                     }
+
+                    if self.0.closed.load(Ordering::Relaxed) {
+                        return Poll::Ready(Ok(None));
+                    }
                 };
             }
 
             try_recv!();
-
-            if self.0.closed.load(Ordering::Relaxed) {
-                return Poll::Ready(Ok(None));
-            }
 
             self.0.sig_msg_sent.register(cx.waker());
 
@@ -295,6 +280,22 @@ mod in_memory {
 
         fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
             AsyncFrameRead::poll_read_frame(self, cx).map(|x| x.ok().flatten())
+        }
+    }
+
+    impl InMemoryRx {
+        fn drop_impl(&self) {
+            self.0.closed.store(true, Ordering::Relaxed);
+
+            if let Some(w) = self.0.sig_ready_to_recv.take() {
+                w.wake()
+            }
+        }
+    }
+
+    impl Drop for InMemoryRx {
+        fn drop(&mut self) {
+            self.drop_impl();
         }
     }
 }
