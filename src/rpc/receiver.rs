@@ -10,7 +10,7 @@ use futures::StreamExt;
 use crate::{
     codec::{error::EncodeError, EncodeResponsePayload},
     defs::{
-        AtomicLongSizeType, LongSizeType, NonzeroRangeType, NonzeroSizeType, RangeType, SizeType,
+        AtomicLongSizeType, LongSizeType, NonZeroRangeType, NonzeroSizeType, RangeType, SizeType,
     },
     rpc::DeferredDirective,
     Codec, ParseMessage, ResponseError, UserData,
@@ -201,7 +201,7 @@ where
     }
 
     /// Retrieve request atomicly.
-    fn atomic_take_req_range(&self) -> Option<NonzeroRangeType> {
+    fn atomic_take_req_range(&self) -> Option<NonZeroRangeType> {
         // SAFETY: Just byte mucking
         let [begin, end] = unsafe {
             let ptr = &self.inner.req_id as *const _ as *mut _;
@@ -212,10 +212,10 @@ where
             transmute::<_, [SizeType; 2]>(value)
         };
 
-        NonzeroSizeType::new(end).map(|x| NonzeroRangeType::new(begin, x))
+        NonzeroSizeType::new(end).map(|x| NonZeroRangeType::new(begin, x))
     }
 
-    fn req_id_to_inner(range: Option<NonzeroRangeType>) -> LongSizeType {
+    fn req_id_to_inner(range: Option<NonZeroRangeType>) -> LongSizeType {
         // SAFETY: Just byte mucking
         unsafe {
             transmute(
@@ -226,7 +226,7 @@ where
         }
     }
 
-    fn retrieve_req_id(&self, id_buf_range: NonzeroRangeType) -> &[u8] {
+    fn retrieve_req_id(&self, id_buf_range: NonZeroRangeType) -> &[u8] {
         &self.inner.buffer[id_buf_range.range()]
     }
 

@@ -7,7 +7,7 @@ pub mod defs {
 
     use std::{num::NonZeroU32, ops::Range, sync::atomic::AtomicU64};
 
-    pub(crate) type SizeType = u32;
+    pub type SizeType = u32;
     pub(crate) type LongSizeType = u64;
     pub(crate) type AtomicLongSizeType = AtomicU64;
     pub(crate) type NonzeroSizeType = NonZeroU32;
@@ -30,9 +30,9 @@ pub mod defs {
     }
 
     #[derive(Clone, Copy)]
-    pub(crate) struct NonzeroRangeType(SizeType, NonzeroSizeType);
+    pub(crate) struct NonZeroRangeType(SizeType, NonzeroSizeType);
 
-    impl NonzeroRangeType {
+    impl NonZeroRangeType {
         pub fn new(start: SizeType, end: NonzeroSizeType) -> Self {
             Self(start, end)
         }
@@ -82,16 +82,7 @@ pub mod defs {
 }
 
 pub mod ext_io {}
-pub mod ext_codec {
-    //! Implementations of RPC codecs ([`Codec`]) for various protocols
-
-    #[cfg(feature = "jsonrpc")]
-    pub mod jsonrpc {}
-    #[cfg(feature = "mspack-rpc")]
-    pub mod msgpackrpc {}
-    #[cfg(feature = "mspack-rpc-postcard")]
-    pub mod msgpackrpc_postcard {}
-}
+pub mod ext_codec;
 mod inner {
     /// Internal utility to notify that this routine is unlikely to be called.
     #[cold]
@@ -114,7 +105,7 @@ pub use bytes::{Bytes, BytesMut};
 pub(crate) use inner::*;
 
 pub use rpc::{
-    create_builder, Inbound, NotifySender, ReceiveErrorHandler, ReceiveResponse, Receiver,
+    create_builder, error, Inbound, NotifySender, ReceiveErrorHandler, ReceiveResponse, Receiver,
     RequestSender, Response, UserData, WeakNotifySender, WeakRequestSender,
 };
 

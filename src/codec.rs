@@ -1,3 +1,6 @@
+use std::num::NonZeroU64;
+use std::ops::Range;
+
 use bytes::BytesMut;
 use erased_serde::Deserializer as DynDeserializer;
 use erased_serde::Serialize as DynSerialize;
@@ -6,6 +9,7 @@ use thiserror::Error;
 
 use self::error::*;
 use crate::defs::RequestId;
+use crate::defs::SizeType;
 
 /// Set of predefined error codes for RPC responses. The codec implementation is responsible for
 /// mapping these error codes to the corresponding error codes of the underlying protocol. For
@@ -100,6 +104,17 @@ impl From<ResponseError> for u8 {
 // ========================================================== Codec ===|
 
 pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
+    /// Returns the hash value of this codec. If two codec instances return same hash, their
+    /// notification result can be safely reused over multiple message transfer. If notification
+    /// encoding is stateful(e.g. contextually encrypted), this method should return `None`.
+    ///
+    /// This method is primarily used for broadcasting notification over multiple rpc channels.
+    fn codec_noti_hash(&self) -> Option<NonZeroU64> {
+        // NOTE: Can't provide default implementation, as it prevents trait object from being
+        // created.
+        None
+    }
+
     fn encode_notify(
         &self,
         method: &str,
@@ -144,6 +159,7 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
         Err(EncodeError::UnsupportedAction)
     }
 
+    /// Create deserializer from the payload part of the original message.
     fn deserialize_payload(
         &self,
         payload: &[u8],
@@ -155,7 +171,62 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
             "Codec <{type_name}> does not support argument deserialization"
         )))
     }
+
+    /// Given frame of the raw bytes, decode it into a message.
+    ///
+    /// # NOTE
+    ///
+    /// The frame size is guaranteed to be shorter than 2^32-1 bytes. Therefore, any range in
+    /// returned [`InboundFrameType`] should be able to be represented in `u32` type.
+    fn decode_inbound(&self, frame: &[u8]) -> Result<InboundFrameType, DecodeError> {
+        let _ = frame;
+        Err(DecodeError::UnsupportedAction)
+    }
 }
+
+/// Internal utilities for [`Codec`] implementations.
+#[doc(hidden)]
+pub trait CodecUtil: 'static {
+    fn impl_codec_noti_hash(&self) -> Option<std::num::NonZeroU64> {
+        let mut hasher = std::hash::BuildHasher::build_hasher(
+            &hashbrown::hash_map::DefaultHashBuilder::default(),
+        );
+
+        std::hash::Hash::hash(&std::any::TypeId::of::<Self>(), &mut hasher);
+        Some(std::hash::Hasher::finish(&hasher).try_into().unwrap())
+    }
+}
+
+impl<T> CodecUtil for T where T: Codec {}
+
+/// Describes the inbound frame chunk.
+#[derive(Clone)]
+pub enum InboundFrameType {
+    Request {
+        /// The raw request id bytes range.
+        req_id_raw: Range<SizeType>,
+        method: Range<SizeType>,
+        params: Range<SizeType>,
+    },
+    Notify {
+        method: Range<SizeType>,
+        params: Range<SizeType>,
+    },
+    Response {
+        req_id: RequestId,
+
+        /// If this value presents, it means that the response is an error response. When response
+        /// error code couldn't be parsed but still it's an error, use [`ResponseError::Unknown`]
+        /// variant instead.
+        errc: Option<ResponseError>,
+
+        /// If response is error, this payload will be the error object's range. If it's the
+        /// protocol that can explicitly encode error code, this value can be empty(`[0, 0)`).
+        payload: Range<SizeType>,
+    },
+}
+
+// ==== Codec ====
 
 impl<T> Codec for std::sync::Arc<T>
 where
@@ -212,6 +283,9 @@ pub mod error {
     pub enum DecodeError {
         #[error("Unsupported type of action")]
         UnsupportedAction,
+
+        #[error("Parse failed: {0}")]
+        ParseFailed(#[from] erased_serde::Error),
     }
 }
 

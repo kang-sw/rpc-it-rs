@@ -45,26 +45,31 @@ pub trait AsyncFrameRead {
 // ==== AsyncFrameWrite ====
 
 /// Implements [`AsyncFrameWrite`] for any type that implements [`tokio::io::AsyncWrite`].
-impl<T> AsyncFrameWrite for T
+impl<T, E> AsyncFrameWrite for T
 where
-    T: Sink<Bytes, Error = std::io::Error> + Send + 'static,
+    T: Sink<Bytes, Error = E> + Send + 'static,
+    E: std::error::Error + Send + Sync + 'static,
 {
     fn poll_write_frame(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut Bytes,
     ) -> Poll<std::io::Result<()>> {
-        futures::ready!(self.as_mut().poll_ready(cx))?;
-        Poll::Ready(self.start_send(buf.split_off(0)))
+        futures::ready!(self.as_mut().poll_ready(cx)).map_err(error_mapping)?;
+        Poll::Ready(self.start_send(buf.split_off(0)).map_err(error_mapping))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Sink::poll_flush(self, cx)
+        Sink::poll_flush(self, cx).map_err(error_mapping)
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Sink::poll_close(self, cx)
+        Sink::poll_close(self, cx).map_err(error_mapping)
     }
+}
+
+fn error_mapping(e: impl std::error::Error + Send + Sync + 'static) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, e)
 }
 
 // ==== AsyncFrameRead ====

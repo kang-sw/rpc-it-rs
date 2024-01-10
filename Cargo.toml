@@ -23,8 +23,21 @@ hashbrown = "0.14.3"
 futures = "0.3"
 assert = { version = "1.1.0", package = "static_assertions" }
 
+serde_json = { version = "1", optional = true, features = ["raw_value"] }
+
 [dev-dependencies]
 serde = { version = "1.0", features = ["derive"] }
 
 
 [features]
+
+# Add JSONRPC support to the library
+jsonrpc = ["dep:serde_json"]
+
+# Add msgpack-rpc support to the library
+msgpack-rpc = []
+
+# Add msgpack-rpc as postcard support to the library
+#
+# This feature implements postcard serialization in msgpack-rpc scheme. See [https://github.com/msgpack-rpc/msgpack-rpc]
+mspack-rpc-postcard = []

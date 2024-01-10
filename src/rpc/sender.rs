@@ -150,11 +150,11 @@ impl<U: UserData> NotifySender<U> {
     }
 
     /// See [`NotifySender::try_close_writer`]
-    pub async fn shutdown_writer(&self, drop_after_this: bool) -> Result<(), TrySendMsgError> {
+    pub async fn shutdown_writer(&self, discard_unsent: bool) -> Result<(), TrySendMsgError> {
         let tx_deferred = self.tx_deferred();
 
         tx_deferred
-            .send(if drop_after_this {
+            .send(if discard_unsent {
                 DeferredDirective::CloseImmediately
             } else {
                 DeferredDirective::CloseAfterFlush
