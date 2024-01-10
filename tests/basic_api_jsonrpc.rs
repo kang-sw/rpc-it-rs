@@ -1,14 +1,11 @@
-#![cfg(feature = "jsonrpc")]
+#![cfg(all(feature = "jsonrpc", feature = "in-memory-io"))]
 
-mod common;
-
-use common::WriteAdapter;
+use futures::StreamExt;
 use rpc_it::ext_codec::jsonrpc;
 
 #[test]
 fn verify_notify() {
-    let (tx, rx) = mpsc::bounded::<bytes::Bytes>(1);
-    let tx = WriteAdapter(tx);
+    let (tx, rx) = rpc_it::io::in_memory(128);
 
     let (tx_rpc, task_runner) = rpc_it::create_builder()
         .with_codec(jsonrpc::Codec)
@@ -32,25 +29,20 @@ fn verify_notify() {
     };
 
     let task_recv = async {
-        let msg = rx.recv().await.unwrap();
-        assert_eq!(
-            msg,
-            &b"{\"jsonrpc\":\"2.0\",\"method\":\"test\",\"params\":{\"test\":\"test\"}}"[..]
-        );
+        let mut rx = rx;
 
-        let msg = rx.recv().await.unwrap();
-        assert_eq!(
-            msg,
-            &b"{\"jsonrpc\":\"2.0\",\"method\":\"t-e-st-23\",\"params\":1234}"[..]
-        );
+        let contents: &[&str] = &[
+            r#"{"jsonrpc":"2.0","method":"test","params":{"test":"test"}}"#,
+            r#"{"jsonrpc":"2.0","method":"t-e-st-23","params":1234}"#,
+            r#"{"jsonrpc":"2.0","method":"close","params":{}}"#,
+        ];
 
-        let msg = rx.recv().await.unwrap();
-        assert_eq!(
-            msg,
-            &b"{\"jsonrpc\":\"2.0\",\"method\":\"close\",\"params\":null}"[..]
-        );
+        for content in contents {
+            let msg = rx.next().await.unwrap();
+            assert_eq!(msg, content);
+        }
 
-        rx.recv().await.unwrap_err();
+        assert!(rx.next().await.is_none());
     };
 
     futures::executor::block_on(async {

@@ -2,6 +2,9 @@
 
 #[cfg(feature = "jsonrpc")]
 pub mod jsonrpc {
+    use bytes::BufMut;
+    use serde::{ser::Error, Serialize};
+
     use crate::codec::CodecUtil;
 
     #[derive(Debug)]
@@ -47,8 +50,22 @@ pub mod jsonrpc {
             params: &dyn erased_serde::Serialize,
             buf: &mut bytes::BytesMut,
         ) -> Result<(), crate::codec::error::EncodeError> {
-            let _ = (method, params, buf);
-            Err(crate::codec::error::EncodeError::UnsupportedAction)
+            #[derive(serde::Serialize)]
+            struct Encode<'a> {
+                jsonrpc: &'static str,
+                method: &'a str,
+                params: &'a dyn erased_serde::Serialize,
+            }
+
+            Encode {
+                jsonrpc: "2.0",
+                method,
+                params,
+            }
+            .serialize(&mut serde_json::Serializer::new(buf.writer()))
+            .map_err(<erased_serde::Error as serde::ser::Error>::custom)?;
+
+            Ok(())
         }
 
         fn encode_request(
@@ -58,8 +75,24 @@ pub mod jsonrpc {
             params: &dyn erased_serde::Serialize,
             buf: &mut bytes::BytesMut,
         ) -> Result<(), crate::codec::error::EncodeError> {
-            let _ = (request_id, method, params, buf);
-            Err(crate::codec::error::EncodeError::UnsupportedAction)
+            #[derive(serde::Serialize)]
+            struct Encode<'a> {
+                jsonrpc: &'static str,
+                method: &'a str,
+                params: &'a dyn erased_serde::Serialize,
+                id: &'a str,
+            }
+
+            Encode {
+                jsonrpc: "2.0",
+                method,
+                params,
+                id: itoa::Buffer::new().format(request_id.value().get()),
+            }
+            .serialize(&mut serde_json::Serializer::new(buf.writer()))
+            .map_err(<erased_serde::Error as serde::ser::Error>::custom)?;
+
+            Ok(())
         }
 
         fn encode_response(
@@ -68,8 +101,7 @@ pub mod jsonrpc {
             result: crate::codec::EncodeResponsePayload,
             buf: &mut bytes::BytesMut,
         ) -> Result<(), crate::codec::error::EncodeError> {
-            let _ = (request_id_raw, result, buf);
-            Err(crate::codec::error::EncodeError::UnsupportedAction)
+            todo!()
         }
 
         fn deserialize_payload(
@@ -79,11 +111,7 @@ pub mod jsonrpc {
                 &mut dyn erased_serde::Deserializer,
             ) -> Result<(), erased_serde::Error>,
         ) -> Result<(), erased_serde::Error> {
-            let _ = (payload, visitor);
-            let type_name = std::any::type_name::<Self>();
-            Err(serde::ser::Error::custom(format!(
-                "Codec <{type_name}> does not support argument deserialization"
-            )))
+            todo!()
         }
 
         fn codec_noti_hash(&self) -> Option<std::num::NonZeroU64> {
@@ -94,8 +122,7 @@ pub mod jsonrpc {
             &self,
             frame: &[u8],
         ) -> Result<crate::codec::InboundFrameType, crate::codec::error::DecodeError> {
-            let _ = frame;
-            Err(crate::codec::error::DecodeError::UnsupportedAction)
+            todo!()
         }
     }
 }

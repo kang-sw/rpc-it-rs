@@ -434,6 +434,11 @@ where
                         .map_err(WriteRunnerError::WriterFlushFailed)?;
                 }
                 DeferredDirective::WriteMsg(mut payload) => {
+                    writer
+                        .as_mut()
+                        .start_frame()
+                        .map_err(WriteRunnerError::WriteFailed)?;
+
                     poll_fn(|cx| writer.as_mut().poll_write_frame(cx, &mut payload))
                         .await
                         .map_err(WriteRunnerError::WriteFailed)?;

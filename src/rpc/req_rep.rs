@@ -7,6 +7,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use futures::future::FusedFuture;
 use hashbrown::HashMap;
 use parking_lot::{Mutex, RwLock};
 
@@ -99,7 +100,7 @@ impl<'a, U> Future for ReceiveResponse<'a, U> {
                     unreachable!()
                 };
 
-                // Drops lock a bit early.
+                // Minimize the lock duration
                 drop(lc_slot);
                 drop(lc_entry);
 
@@ -155,6 +156,12 @@ impl<'a, U> Future for ReceiveResponse<'a, U> {
         }
 
         Poll::Pending
+    }
+}
+
+impl<'a, U> FusedFuture for ReceiveResponse<'a, U> {
+    fn is_terminated(&self) -> bool {
+        matches!(self.state, ReceiveResponseState::Expired)
     }
 }
 

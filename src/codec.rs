@@ -276,6 +276,9 @@ pub mod error {
     pub enum EncodeError {
         #[error("Unsupported type of action")]
         UnsupportedAction,
+
+        #[error("Serialize failed: {0}")]
+        SerializeFailed(#[from] erased_serde::Error),
     }
 
     #[derive(Debug, Error)]

@@ -81,7 +81,6 @@ pub mod defs {
     }
 }
 
-pub mod ext_io {}
 pub mod ext_codec;
 mod inner {
     /// Internal utility to notify that this routine is unlikely to be called.
