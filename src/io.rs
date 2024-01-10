@@ -3,8 +3,8 @@ use std::{
     task::{Context, Poll},
 };
 
-use bytes::{Buf, Bytes};
-use futures::{AsyncWrite, Stream};
+use bytes::Bytes;
+use futures::{Sink, Stream};
 
 /// [`AsyncFrameWrite`] is a trait defining the interface for writing data frames
 /// to the underlying transport. This trait can either be a straightforward wrapper
@@ -47,28 +47,23 @@ pub trait AsyncFrameRead {
 /// Implements [`AsyncFrameWrite`] for any type that implements [`tokio::io::AsyncWrite`].
 impl<T> AsyncFrameWrite for T
 where
-    T: AsyncWrite + Send + 'static,
+    T: Sink<Bytes, Error = std::io::Error> + Send + 'static,
 {
     fn poll_write_frame(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut Bytes,
     ) -> Poll<std::io::Result<()>> {
-        match AsyncWrite::poll_write(self, cx, buf.as_ref())? {
-            Poll::Ready(x) => {
-                buf.advance(x);
-                Poll::Ready(Ok(()))
-            }
-            Poll::Pending => Poll::Pending,
-        }
+        futures::ready!(self.as_mut().poll_ready(cx))?;
+        Poll::Ready(self.start_send(buf.split_off(0)))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        AsyncWrite::poll_flush(self, cx)
+        Sink::poll_flush(self, cx)
     }
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        AsyncWrite::poll_close(self, cx)
+        Sink::poll_close(self, cx)
     }
 }
 
@@ -81,10 +76,9 @@ where
     fn poll_read_frame(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<Bytes>> {
         match Stream::poll_next(self, cx) {
             Poll::Ready(Some(x)) => Poll::Ready(x),
-            Poll::Ready(None) => Poll::Ready(Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "unexpected EOF",
-            ))),
+            Poll::Ready(None) => {
+                Poll::Ready(Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)))
+            }
             Poll::Pending => Poll::Pending,
         }
     }

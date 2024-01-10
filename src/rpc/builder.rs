@@ -4,7 +4,8 @@
 
 use std::{future::poll_fn, num::NonZeroUsize, sync::Arc};
 
-use futures::Future;
+use bytes::{Buf, Bytes};
+use futures::{AsyncWrite, Future};
 
 use crate::{
     codec::Codec,
@@ -157,7 +158,7 @@ pub fn create_builder() -> Builder<(), (), (), (), ()> {
 impl<Wr, Rd, U, C, RH> Builder<Wr, Rd, U, C, RH> {
     // TODO: Add documentation for these methods.
 
-    pub fn with_writer<Wr2>(self, writer: Wr2) -> Builder<Wr2, Rd, U, C, RH>
+    pub fn with_frame_writer<Wr2>(self, writer: Wr2) -> Builder<Wr2, Rd, U, C, RH>
     where
         Wr2: AsyncFrameWrite,
     {
@@ -171,7 +172,67 @@ impl<Wr, Rd, U, C, RH> Builder<Wr, Rd, U, C, RH> {
         }
     }
 
-    pub fn with_reader<Rd2>(self, reader: Rd2) -> Builder<Wr, Rd2, U, C, RH>
+    pub fn with_stream_writer<Wr2>(self, writer: Wr2) -> Builder<Wr2, Rd, U, C, RH>
+    where
+        Wr2: AsyncWrite,
+    {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        #[repr(transparent)]
+        struct WriterAdapter<Wr2>(Wr2);
+
+        impl<Wr2> WriterAdapter<Wr2> {
+            fn as_inner_pinned(self: Pin<&mut Self>) -> Pin<&mut Wr2> {
+                unsafe { self.map_unchecked_mut(|x| &mut x.0) }
+            }
+        }
+
+        impl<Wr2> AsyncFrameWrite for WriterAdapter<Wr2>
+        where
+            Wr2: 'static + AsyncWrite + Send,
+        {
+            fn poll_write_frame(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+                buf: &mut Bytes,
+            ) -> Poll<std::io::Result<()>> {
+                let mut this = self.as_inner_pinned();
+
+                while !buf.is_empty() {
+                    match futures::ready!(this.as_mut().poll_write(cx, buf))? {
+                        0 => {
+                            return Poll::Ready(Err(std::io::Error::from(
+                                std::io::ErrorKind::WriteZero,
+                            )))
+                        }
+                        nwrite => buf.advance(nwrite),
+                    }
+                }
+
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+                self.as_inner_pinned().poll_flush(cx)
+            }
+
+            fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+                self.as_inner_pinned().poll_close(cx)
+            }
+        }
+
+        Builder {
+            writer,
+            reader: self.reader,
+            user_data: self.user_data,
+            codec: self.codec,
+            cfg: self.cfg,
+            read_event_handler: self.read_event_handler,
+        }
+    }
+
+    pub fn with_frame_reader<Rd2>(self, reader: Rd2) -> Builder<Wr, Rd2, U, C, RH>
     where
         Rd2: AsyncFrameRead,
     {

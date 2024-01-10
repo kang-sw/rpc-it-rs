@@ -5,6 +5,7 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
+use futures::StreamExt;
 
 use crate::{
     codec::{error::EncodeError, EncodeResponsePayload},
@@ -12,7 +13,7 @@ use crate::{
         AtomicLongSizeType, LongSizeType, NonzeroRangeType, NonzeroSizeType, RangeType, SizeType,
     },
     rpc::DeferredDirective,
-    Codec, NotifySender, ParseMessage, ResponseError, UserData,
+    Codec, ParseMessage, ResponseError, UserData,
 };
 
 use super::{
@@ -81,6 +82,18 @@ where
                 mpsc::TryRecvError::Empty => TryRecvError::Empty,
                 mpsc::TryRecvError::Closed => TryRecvError::Closed,
             })
+    }
+
+    /// Change this channel into a stream. It'll return self-contained references of inbound. It'll
+    /// a bit more inefficient than calling `recv` since it clones single [`Arc`] for each inbound
+    /// message.
+    pub fn into_stream(self) -> impl futures::Stream<Item = Inbound<'static, U>> {
+        let Self { channel, context } = self;
+
+        channel.map(move |item| Inbound {
+            owner: Cow::Owned(context.clone()),
+            inner: item,
+        })
     }
 
     /// Closes rx channel.
