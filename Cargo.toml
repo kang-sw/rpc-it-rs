@@ -35,7 +35,7 @@ serde = { version = "1.0", features = ["derive"] }
 
 [features]
 # Add JSONRPC support to the library
-jsonrpc = ["dep:serde_json", "dep:itoa"]
+jsonrpc = ["dep:serde_json", "dep:itoa", "dep:atoi"]
 
 # Add msgpack-rpc support to the library
 msgpack-rpc = []

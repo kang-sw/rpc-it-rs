@@ -277,6 +277,15 @@ pub mod error {
         #[error("Unsupported type of action")]
         UnsupportedAction,
 
+        #[error("Non UTF-8 string detected: method name")]
+        NonUtf8StringMethodName,
+
+        #[error("Non UTF-8 string detected: payload content")]
+        NonUtf8StringPayloadContent,
+
+        #[error("Non UTF-8 string detected: request id")]
+        NonUtf8StringRequestId,
+
         #[error("Serialize failed: {0}")]
         SerializeFailed(#[from] erased_serde::Error),
     }
@@ -286,6 +295,12 @@ pub mod error {
     pub enum DecodeError {
         #[error("Unsupported type of action")]
         UnsupportedAction,
+
+        #[error("Unsupported protocol")]
+        UnsupportedProtocol,
+
+        #[error("Failed to retrieve request ID")]
+        RequestIdRetrievalFailed,
 
         #[error("Parse failed: {0}")]
         ParseFailed(#[from] erased_serde::Error),
