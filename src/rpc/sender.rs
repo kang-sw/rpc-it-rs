@@ -225,7 +225,9 @@ impl<U: UserData> RequestSender<U> {
         method: &str,
         params: &T,
     ) -> Result<ReceiveResponse<U>, SendMsgError> {
-        let resp = self.encode_request(buf, method, params)?;
+        let resp = self
+            .encode_request(buf, method, params)
+            .ok_or(SendMsgError::ReceiverExpired)??;
         let request_id = resp.request_id();
 
         self.send_frame(DeferredDirective::WriteReqMsg(
@@ -243,7 +245,9 @@ impl<U: UserData> RequestSender<U> {
         method: &str,
         params: &T,
     ) -> Result<ReceiveResponse<U>, TrySendMsgError> {
-        let resp = self.encode_request(buf, method, params)?;
+        let resp = self
+            .encode_request(buf, method, params)
+            .ok_or(TrySendMsgError::ReceiverExpired)??;
         let request_id = resp.request_id();
 
         self.try_send_frame(DeferredDirective::WriteReqMsg(
@@ -265,23 +269,23 @@ impl<U: UserData> RequestSender<U> {
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<ReceiveResponse<U>, EncodeError> {
+    ) -> Option<Result<ReceiveResponse<U>, EncodeError>> {
         buf.clear();
 
         let reqs = self.reqs();
-        let request_id = reqs.allocate_new_request();
+        let request_id = reqs.allocate_new_request()?;
         let encode_result = self.codec().encode_request(request_id, method, params, buf);
 
         if let Err(err) = encode_result {
             self.reqs().cancel_request_alloc(request_id);
-            return Err(err);
+            return Some(Err(err));
         }
 
-        Ok(ReceiveResponse {
+        Some(Ok(ReceiveResponse {
             owner: Cow::Borrowed(self),
             req_id: request_id,
             state: Default::default(),
-        })
+        }))
     }
 
     pub fn downgrade(&self) -> WeakRequestSender<U> {

@@ -38,6 +38,7 @@ pub struct Builder<Wr, Rd, U, C, RH> {
 struct RpcContextImpl<U, C> {
     user_data: U,
     codec: C,
+    reqs: Option<RequestContext>,
     send_ctx: Option<SenderContext>,
     recv_ctx: Option<ReceiverContext>,
 }
@@ -377,6 +378,7 @@ where
         let context = Arc::new(RpcContextImpl {
             user_data,
             codec,
+            reqs: None,
             send_ctx: Some(SenderContext {
                 tx_deferred: tx_directive.clone(),
             }),
@@ -457,7 +459,7 @@ where
                     let ib = match ctx.codec.decode_inbound(&msg) {
                         Ok(ib) => ib,
                         Err(e) => {
-                            handler.on_inbound_decode_error(&msg, e);
+                            handler.on_inbound_decode_error(&ctx.user_data, &msg, e)?;
                             continue;
                         }
                     };
@@ -578,7 +580,7 @@ where
 
         // Since any further trials to send requests will fail, we can invalidate all pending
         // requests here safely.
-        reqs.invalidate_all_requests();
+        reqs.mark_expired();
     }
 
     exec_result

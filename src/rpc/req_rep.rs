@@ -2,7 +2,10 @@ use std::{
     borrow::Cow,
     future::Future,
     mem::replace,
-    sync::{atomic::AtomicU32, Arc, Weak},
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc, Weak,
+    },
     task::{Poll, Waker},
 };
 
@@ -40,6 +43,9 @@ pub(super) struct RequestContext {
 
     /// A set of pending requests that are waiting to be responded.        
     pending_tasks: RwLock<HashMap<RequestId, Mutex<PendingTask>>>,
+
+    /// Is the request context still alive?
+    expired: AtomicBool,
 }
 
 #[derive(Default, Debug)]
@@ -88,6 +94,10 @@ where
         */
 
         let reqs = this.owner.reqs();
+        if reqs.expired.load(Ordering::SeqCst) {
+            return Poll::Ready(Err(ReceiveResponseError::Disconnected));
+        }
+
         let lc_entry = reqs.pending_tasks.read();
         let mut lc_slot = lc_entry
             .get(&this.req_id)
@@ -220,6 +230,7 @@ impl RequestContext {
             codec,
             req_id_gen: Default::default(),
             pending_tasks: Default::default(),
+            expired: Default::default(),
         }
     }
 
@@ -233,12 +244,16 @@ impl RequestContext {
     /// # Returns
     ///
     /// The newly allocated request ID.
-    pub(super) fn allocate_new_request(&self) -> RequestId {
+    pub(super) fn allocate_new_request(&self) -> Option<RequestId> {
+        if self.expired.load(Ordering::Relaxed) {
+            return None;
+        }
+
         let mut table = self.pending_tasks.write();
         loop {
             let Ok(id) = self
                 .req_id_gen
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .fetch_add(1, Ordering::Relaxed)
                 .wrapping_add(1)
                 .try_into()
             else {
@@ -268,7 +283,7 @@ impl RequestContext {
                 continue;
             }
 
-            break id;
+            break Some(id);
         }
     }
 
@@ -299,9 +314,14 @@ impl RequestContext {
 
     /// Invalidate all pending requests. This is called when the connection is closed.
     ///
-    /// This will be called after deferred runner rx channel is closed.
-    pub(crate) fn invalidate_all_requests(&self) {
-        let table = self.pending_tasks.read();
+    /// This will be called either after when the deferred runner rx channel is closed.
+    pub(crate) fn mark_expired(&self) {
+        // Don't let the pending tasks to be registered anymore.
+        self.expired.store(true, Ordering::SeqCst);
+
+        // Acquires write lock, to assure exclusive access to `pending_tasks` table.
+        let table = self.pending_tasks.write();
+
         for (_, slot) in table.iter() {
             slot.lock().set_then_wake(ResponseData::Closed)
         }

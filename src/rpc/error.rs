@@ -10,15 +10,20 @@ use super::DeferredDirective;
 
 /// Error that occurs when sending request/notify
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SendMsgError {
     #[error("Encoding failed: {0}")]
     EncodeFailed(#[from] codec::error::EncodeError),
 
     #[error("A command channel to background runner was already closed")]
     ChannelClosed,
+
+    #[error("You tried to send request, but the receiver is already expired")]
+    ReceiverExpired,
 }
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum SendResponseError {
     #[error("Sending message failed")]
     MsgError(#[from] SendMsgError),
@@ -29,6 +34,7 @@ pub enum SendResponseError {
 
 /// Error that occurs when trying to send request/notify
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum TrySendMsgError {
     #[error("Encoding failed: {0}")]
     EncodeFailed(#[from] codec::error::EncodeError),
@@ -45,6 +51,9 @@ pub enum TrySendMsgError {
     /// Currently, there is no way provided to re-send failed message.
     #[error("Channel is at capacity!")]
     ChannelAtCapacity,
+
+    #[error("You tried to send request, but the receiver is already expired")]
+    ReceiverExpired,
 }
 
 /// Error when trying to receive an inbound message
@@ -120,6 +129,9 @@ pub enum ReadRunnerExitType {
 pub enum ReadRunnerError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+
+    #[error("User handler terminated this connection: {0}")]
+    UserHandlerError(#[from] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 // ==== DeferredActionError ====

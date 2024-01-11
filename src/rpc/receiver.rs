@@ -15,6 +15,7 @@ use crate::{
     defs::{
         AtomicLongSizeType, LongSizeType, NonZeroRangeType, NonzeroSizeType, RangeType, SizeType,
     },
+    error::ReadRunnerError,
     rpc::DeferredDirective,
     Codec, ParseMessage, ResponseError, UserData,
 };
@@ -25,8 +26,19 @@ use super::{
 };
 
 /// Handles error during receiving inbound messages inside runner.
+///
+/// By result of handled error, it can determine whether to continue receiving inbound(i.e. maintain
+/// the connection) or not.
 pub trait ReceiveErrorHandler<T: UserData>: 'static + Send {
-    fn on_inbound_decode_error(&mut self, payload: &[u8], error_type: DecodeError) {}
+    /// Error during decoding received inbound message.
+    fn on_inbound_decode_error(
+        &mut self,
+        user_data: &T,
+        unparsed_frame: &[u8],
+        error_type: DecodeError,
+    ) -> Result<(), ReadRunnerError> {
+        Ok(())
+    }
 }
 
 /// Default implementation for any type of user data. It ignores every error.
