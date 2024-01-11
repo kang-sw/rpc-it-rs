@@ -25,7 +25,6 @@ pub struct WeakNotifySender<U> {
 #[derive(Debug)]
 pub struct RequestSender<U> {
     pub(super) inner: NotifySender<U>,
-    pub(super) req: Arc<RequestContext>,
 }
 
 /// A weak RPC client handle which can send RPC requests and notifications.
@@ -34,7 +33,6 @@ pub struct RequestSender<U> {
 #[derive(Debug)]
 pub struct WeakRequestSender<U> {
     inner: WeakNotifySender<U>,
-    req: Weak<RequestContext>,
 }
 
 /// An awaitable response for a sent RPC request
@@ -270,11 +268,12 @@ impl<U: UserData> RequestSender<U> {
     ) -> Result<ReceiveResponse<U>, EncodeError> {
         buf.clear();
 
-        let request_id = self.req.allocate_new_request();
+        let reqs = self.reqs();
+        let request_id = reqs.allocate_new_request();
         let encode_result = self.codec().encode_request(request_id, method, params, buf);
 
         if let Err(err) = encode_result {
-            self.req.cancel_request_alloc(request_id);
+            self.reqs().cancel_request_alloc(request_id);
             return Err(err);
         }
 
@@ -288,8 +287,15 @@ impl<U: UserData> RequestSender<U> {
     pub fn downgrade(&self) -> WeakRequestSender<U> {
         WeakRequestSender {
             inner: self.inner.downgrade(),
-            req: Arc::downgrade(&self.req),
         }
+    }
+}
+
+impl<U> RequestSender<U> {
+    /// Unwraps request context from this handle; This is valid since it's unconditionally defined
+    /// when [`RequestSender`] is created.
+    pub(super) fn reqs(&self) -> &RequestContext {
+        self.context.request_context().unwrap()
     }
 }
 
@@ -297,7 +303,6 @@ impl<U> Clone for RequestSender<U> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            req: self.req.clone(),
         }
     }
 }
@@ -313,10 +318,7 @@ impl<U> std::ops::Deref for RequestSender<U> {
 
 impl<U> WeakRequestSender<U> {
     pub fn upgrade(&self) -> Option<RequestSender<U>> {
-        self.inner
-            .upgrade()
-            .zip(self.req.upgrade())
-            .map(|(inner, req)| RequestSender { inner, req })
+        self.inner.upgrade().map(|inner| RequestSender { inner })
     }
 }
 
@@ -324,7 +326,6 @@ impl<U> Clone for WeakRequestSender<U> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            req: self.req.clone(),
         }
     }
 }

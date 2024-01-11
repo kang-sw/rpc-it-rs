@@ -13,6 +13,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::{
     codec::{Codec, ParseMessage, ResponseError},
     defs::RequestId,
+    UserData,
 };
 
 use super::{
@@ -69,7 +70,10 @@ pub(super) enum ReceiveResponseState {
     Expired,
 }
 
-impl<'a, U> Future for ReceiveResponse<'a, U> {
+impl<'a, U> Future for ReceiveResponse<'a, U>
+where
+    U: UserData,
+{
     type Output = Result<Response, ReceiveResponseError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
@@ -83,7 +87,8 @@ impl<'a, U> Future for ReceiveResponse<'a, U> {
             - Expired: panic!
         */
 
-        let lc_entry = this.owner.req.pending_tasks.read();
+        let reqs = this.owner.reqs();
+        let lc_entry = reqs.pending_tasks.read();
         let mut lc_slot = lc_entry
             .get(&this.req_id)
             .expect("'req_id' not found; seems polled after ready!")
@@ -111,9 +116,7 @@ impl<'a, U> Future for ReceiveResponse<'a, U> {
                 //
                 // However, here, we explicitly check if the `Arc<dyn Codec>` is still alive or not
                 // to future change of internal implementation.
-                let codec = this
-                    .owner
-                    .req
+                let codec = reqs
                     .codec
                     .upgrade()
                     .ok_or(ReceiveResponseError::Disconnected)?;
@@ -164,7 +167,7 @@ impl<'a, U> Drop for ReceiveResponse<'a, U> {
             return;
         }
 
-        let _e = self.owner.req.pending_tasks.write().remove(&self.req_id);
+        let _e = self.owner.reqs().pending_tasks.write().remove(&self.req_id);
         debug_assert!(
             _e.is_some(),
             "ReceiveResponse is dropped before polled to ready!"

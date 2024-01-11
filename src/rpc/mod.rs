@@ -23,7 +23,7 @@ pub use self::req_rep::Response;
 /// Generic trait for underlying RPC connection.
 ///
 /// It hides complicated generic types and provides a unified interface for RPC connection.
-pub(crate) trait RpcCore<U: UserData>: std::fmt::Debug {
+trait RpcCore<U>: std::fmt::Debug {
     fn self_as_codec(self: Arc<Self>) -> Arc<dyn Codec>;
     fn codec(&self) -> &dyn Codec;
     fn user_data(&self) -> &U;
@@ -38,6 +38,9 @@ pub(crate) trait RpcCore<U: UserData>: std::fmt::Debug {
 
     /// Only available for [`RequestSender`]. Called when a request is dropped in unhandled state.
     fn on_request_unhandled(&self, req_id: &[u8]);
+
+    /// Conditionally retrieves request context
+    fn request_context(&self) -> Option<&RequestContext>;
 }
 
 /// A trait constraint for user data type of a RPC connection.

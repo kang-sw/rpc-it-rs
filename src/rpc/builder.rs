@@ -90,6 +90,10 @@ where
     fn on_request_unhandled(&self, req_id: &[u8]) {
         todo!("Tries to send `unhandled` error response")
     }
+
+    fn request_context(&self) -> Option<&RequestContext> {
+        todo!()
+    }
 }
 
 impl<U, C> Codec for RpcContextImpl<U, C>
