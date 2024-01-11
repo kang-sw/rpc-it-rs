@@ -29,6 +29,15 @@ pub mod defs {
         }
     }
 
+    impl<T> From<Range<T>> for RangeType
+    where
+        T: Into<SizeType>,
+    {
+        fn from(range: Range<T>) -> Self {
+            Self([range.start.into(), range.end.into()])
+        }
+    }
+
     #[derive(Clone, Copy)]
     pub(crate) struct NonZeroRangeType(SizeType, NonzeroSizeType);
 

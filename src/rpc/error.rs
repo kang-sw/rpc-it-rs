@@ -110,11 +110,17 @@ pub enum WriteRunnerError {
 
 /// Describes why did the read runner stopped.
 #[derive(Debug)]
-pub enum ReadRunnerExitType {}
+pub enum ReadRunnerExitType {
+    AllHandleDropped,
+    EOF,
+}
 
 /// Describes what kind of error occurred during read runner execution.
 #[derive(Error, Debug)]
-pub enum ReadRunnerError {}
+pub enum ReadRunnerError {
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+}
 
 // ==== DeferredActionError ====
 

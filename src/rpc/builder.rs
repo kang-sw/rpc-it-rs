@@ -2,15 +2,21 @@
 //!
 //! This is highest level API that the user interact with very-first.
 
-use std::{future::poll_fn, num::NonZeroUsize, sync::Arc};
+use std::{
+    future::poll_fn,
+    num::NonZeroUsize,
+    sync::{Arc, Weak},
+    task::Poll,
+};
 
 use bytes::{Buf, Bytes};
-use futures::{AsyncWrite, Future};
+use futures::{task::AtomicWaker, AsyncWrite, Future, FutureExt};
 
 use crate::{
-    codec::Codec,
+    codec::{Codec, InboundFrameType},
+    defs::{NonZeroRangeType, RangeType, RequestId},
     io::{AsyncFrameRead, AsyncFrameWrite},
-    NotifySender,
+    NotifySender, ResponseError,
 };
 
 use super::{
@@ -32,15 +38,17 @@ pub struct Builder<Wr, Rd, U, C, RH> {
 struct RpcContextImpl<U, C> {
     user_data: U,
     codec: C,
-    t: Option<SenderContext>,
-    r: Option<ReceiverContext>,
+    send_ctx: Option<SenderContext>,
+    recv_ctx: Option<ReceiverContext>,
 }
 
 struct SenderContext {
     tx_deferred: mpsc::Sender<DeferredDirective>,
 }
 
-struct ReceiverContext {}
+struct ReceiverContext {
+    drop_waker: AtomicWaker,
+}
 
 /// Non-generic configuration for [`Builder`].
 #[derive(Default)]
@@ -76,7 +84,7 @@ where
     }
 
     fn tx_deferred(&self) -> Option<&mpsc::Sender<DeferredDirective>> {
-        self.t.as_ref().map(|x| &x.tx_deferred)
+        self.send_ctx.as_ref().map(|x| &x.tx_deferred)
     }
 
     fn on_request_unhandled(&self, req_id: &[u8]) {
@@ -137,7 +145,7 @@ where
         f.debug_struct("RpcContextImpl")
             .field("user_data", &self.user_data)
             .field("codec", &self.codec)
-            .field("request_enabled", &self.r.is_some())
+            .field("request_enabled", &self.recv_ctx.is_some())
             .finish()
     }
 }
@@ -365,13 +373,37 @@ where
         let context = Arc::new(RpcContextImpl {
             user_data,
             codec,
-            t: Some(SenderContext {
+            send_ctx: Some(SenderContext {
                 tx_deferred: tx_directive.clone(),
             }),
-            r: None,
+            recv_ctx: None,
         });
 
         (NotifySender { context }, write_runner(writer, rx, None))
+    }
+}
+
+// ==== Context Utils ====
+
+impl<U, C> RpcContextImpl<U, C>
+where
+    U: UserData,
+    C: Codec,
+{
+    fn unwrap_recv(&self) -> &ReceiverContext {
+        self.recv_ctx.as_ref().unwrap()
+    }
+
+    fn unwrap_send(&self) -> &SenderContext {
+        self.send_ctx.as_ref().unwrap()
+    }
+}
+
+impl Drop for ReceiverContext {
+    fn drop(&mut self) {
+        if let Some(w) = self.drop_waker.take() {
+            w.wake();
+        }
     }
 }
 
@@ -379,7 +411,9 @@ where
 
 async fn read_runner<Rd, RH, C, U>(
     reader: Rd,
+    handler: RH,
     tx_inbound: mpsc::Sender<InboundDelivery>,
+    wctx: Weak<RpcContextImpl<U, C>>,
 ) -> Result<ReadRunnerExitType, ReadRunnerError>
 where
     Rd: AsyncFrameRead,
@@ -387,7 +421,77 @@ where
     C: Codec,
     U: UserData,
 {
-    todo!()
+    // - Already expired: This case is not an error!
+    // - `ReceiverContext` is missing: this is an error!
+    debug_assert!(wctx.upgrade().map(|x| x.recv_ctx.is_some()).unwrap_or(true));
+
+    // Two tasks:
+    // - Reads frames from the reader and decode it into inbound message
+    //   - During handling, when error occurs; it should be reported to the handler.
+    // - Awaits finish signal of rpc context.
+
+    let task_await_finish = poll_fn(|cx| {
+        let Some(context) = wctx.upgrade() else {
+            return Poll::Ready(());
+        };
+
+        context.unwrap_recv().drop_waker.register(cx.waker());
+        Poll::Pending
+    });
+
+    let task_read_loop = async {
+        let mut handler = handler;
+        futures::pin_mut!(reader);
+
+        loop {
+            match poll_fn(|cx| reader.as_mut().poll_read_frame(cx)).await {
+                Ok(Some(msg)) => {
+                    let Some(ctx) = wctx.upgrade() else {
+                        break Ok(ReadRunnerExitType::AllHandleDropped);
+                    };
+
+                    let ib = match ctx.codec.decode_inbound(&msg) {
+                        Ok(ib) => ib,
+                        Err(e) => {
+                            handler.on_inbound_decode_error(&msg, e);
+                            continue;
+                        }
+                    };
+
+                    let delivery = match ib {
+                        InboundFrameType::Request {
+                            req_id_raw,
+                            method,
+                            params,
+                        } => InboundDelivery::new_request(msg, method.into(), params.into(), {
+                            NonZeroRangeType::new(
+                                req_id_raw.start,
+                                req_id_raw.end.try_into().unwrap(),
+                            )
+                        }),
+                        InboundFrameType::Notify { method, params } => {
+                            InboundDelivery::new_notify(msg, method.into(), params.into())
+                        }
+                        InboundFrameType::Response {
+                            req_id,
+                            errc,
+                            payload,
+                        } => {
+                            ();
+                            todo!()
+                        }
+                    };
+                }
+                Ok(None) => break Ok(ReadRunnerExitType::AllHandleDropped),
+                Err(io_error) => break Err(ReadRunnerError::from(io_error)),
+            }
+        }
+    };
+
+    futures::select! {
+        _ = task_await_finish.fuse() => Ok(ReadRunnerExitType::AllHandleDropped),
+        r = task_read_loop.fuse() => r,
+    }
 }
 
 async fn write_runner<Wr>(
@@ -398,11 +502,11 @@ async fn write_runner<Wr>(
 where
     Wr: AsyncFrameWrite,
 {
-    futures::pin_mut!(writer);
-
     // Implements bulk receive to minimize number of polls on the channel
 
     let exec_result = async {
+        futures::pin_mut!(writer); // Constrain lifetime of `writer` to this block.
+
         let mut exit_type = WriteRunnerExitType::AllHandleDropped;
         while let Ok(msg) = rx_directive.recv().await {
             match msg {

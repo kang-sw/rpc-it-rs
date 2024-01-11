@@ -162,7 +162,7 @@ mod in_memory {
         type Error = std::io::Error;
 
         fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-            macro_rules! check {
+            macro_rules! check_ready {
                 () => {
                     if self.0.closed.load(Ordering::Relaxed) {
                         return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
@@ -174,11 +174,11 @@ mod in_memory {
                 };
             }
 
-            check!();
+            check_ready!();
 
             self.0.sig_ready_to_recv.register(cx.waker());
 
-            check!();
+            check_ready!();
 
             Poll::Pending
         }

@@ -8,7 +8,10 @@ use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
 
 use crate::{
-    codec::{error::EncodeError, EncodeResponsePayload},
+    codec::{
+        error::{DecodeError, EncodeError},
+        EncodeResponsePayload,
+    },
     defs::{
         AtomicLongSizeType, LongSizeType, NonZeroRangeType, NonzeroSizeType, RangeType, SizeType,
     },
@@ -22,16 +25,15 @@ use super::{
 };
 
 /// Handles error during receiving inbound messages inside runner.
-pub trait ReceiveErrorHandler<T: UserData>: 'static + Send {}
+pub trait ReceiveErrorHandler<T: UserData>: 'static + Send {
+    fn on_inbound_decode_error(&mut self, payload: &[u8], error_type: DecodeError) {}
+}
 
 /// Default implementation for any type of user data. It ignores every error.
 impl<T> ReceiveErrorHandler<T> for () where T: UserData {}
 
 /// A receiver which deals with inbound notifies / requests.
-///
-/// It internally utilizes MPMC channel, where you can balance inbound loads over multiple
-/// executors.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Receiver<U> {
     pub(super) context: Arc<dyn RpcCore<U>>,
 
@@ -100,6 +102,44 @@ where
     pub fn shutdown_reader(self) {
         self.channel.close();
         self.context.shutdown_rx_channel();
+    }
+}
+
+// ========================================================== Inbound Delivery ===|
+
+impl InboundDelivery {
+    pub(crate) fn new_request(
+        buffer: Bytes,
+        method: RangeType,
+        payload: RangeType,
+        req_id: NonZeroRangeType,
+    ) -> Self {
+        Self {
+            buffer,
+            method,
+            payload,
+            req_id: req_id_to_inner(Some(req_id)),
+        }
+    }
+
+    pub(crate) fn new_notify(buffer: Bytes, method: RangeType, payload: RangeType) -> Self {
+        Self {
+            buffer,
+            method,
+            payload,
+            req_id: 0,
+        }
+    }
+}
+
+fn req_id_to_inner(range: Option<NonZeroRangeType>) -> LongSizeType {
+    // SAFETY: Just byte mucking
+    unsafe {
+        transmute(
+            range
+                .map(|range| [range.begin(), range.end().get()])
+                .unwrap_or_default(),
+        )
     }
 }
 
@@ -173,7 +213,7 @@ where
                 buffer: take(&mut self.inner.buffer),
                 method: take(&mut self.inner.method),
                 payload: take(&mut self.inner.payload),
-                req_id: Self::req_id_to_inner(req_id),
+                req_id: req_id_to_inner(req_id),
             },
         }
     }
@@ -213,17 +253,6 @@ where
         };
 
         NonzeroSizeType::new(end).map(|x| NonZeroRangeType::new(begin, x))
-    }
-
-    fn req_id_to_inner(range: Option<NonZeroRangeType>) -> LongSizeType {
-        // SAFETY: Just byte mucking
-        unsafe {
-            transmute(
-                range
-                    .map(|range| [range.begin(), range.end().get()])
-                    .unwrap_or_default(),
-            )
-        }
     }
 
     fn retrieve_req_id(&self, id_buf_range: NonZeroRangeType) -> &[u8] {
