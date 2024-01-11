@@ -29,14 +29,39 @@ use super::{
 ///
 /// By result of handled error, it can determine whether to continue receiving inbound(i.e. maintain
 /// the connection) or not.
-pub trait ReceiveErrorHandler<T: UserData>: 'static + Send {
+pub trait ReceiveErrorHandler<U: UserData>: 'static + Send {
     /// Error during decoding received inbound message.
     fn on_inbound_decode_error(
         &mut self,
-        user_data: &T,
+        user_data: &U,
+        codec: &dyn Codec,
         unparsed_frame: &[u8],
         error_type: DecodeError,
     ) -> Result<(), ReadRunnerError> {
+        let _ = (user_data, unparsed_frame, error_type);
+        Ok(())
+    }
+
+    /// Called when response is received, when the request feature is not enabled, which is ideally
+    /// impossible to happen; You can treat this as remote protocol violation to disconnect the
+    /// remote peer, or just ignore it.
+    fn on_impossible_response_inbound(&mut self, user_data: &U) -> Result<(), ReadRunnerError> {
+        let _ = user_data;
+        Ok(())
+    }
+
+    /// When all receiver channels are dropped but since there are still [`crate::RequestSender`]
+    /// instances, the background receiver task is still able to handle inbound messages to deal
+    /// with responses from remote peer.
+    ///
+    /// This method is called when the background receiver task receives a inbound message other
+    /// than response, but there are no [`crate::Receiver`] instances to handle it.
+    fn on_unhandled_notify_or_request(
+        &mut self,
+        user_data: &U,
+        inbound: Inbound<U>,
+    ) -> Result<(), ReadRunnerError> {
+        let _ = (user_data, inbound);
         Ok(())
     }
 }
@@ -45,7 +70,7 @@ pub trait ReceiveErrorHandler<T: UserData>: 'static + Send {
 impl<T> ReceiveErrorHandler<T> for () where T: UserData {}
 
 /// A receiver which deals with inbound notifies / requests.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Receiver<U> {
     pub(super) context: Arc<dyn RpcCore<U>>,
 
@@ -88,10 +113,7 @@ where
     pub async fn try_recv(&self) -> Result<Inbound<'_, U>, TryRecvError> {
         self.channel
             .try_recv()
-            .map(|inner| Inbound {
-                owner: Cow::Borrowed(&self.context),
-                inner,
-            })
+            .map(|inner| Inbound::new(Cow::Borrowed(&self.context), inner))
             .map_err(|e| match e {
                 mpsc::TryRecvError::Empty => TryRecvError::Empty,
                 mpsc::TryRecvError::Closed => TryRecvError::Closed,
@@ -104,10 +126,7 @@ where
     pub fn into_stream(self) -> impl futures::Stream<Item = Inbound<'static, U>> {
         let Self { channel, context } = self;
 
-        channel.map(move |item| Inbound {
-            owner: Cow::Owned(context.clone()),
-            inner: item,
-        })
+        channel.map(move |item| Inbound::new(Cow::Owned(context.clone()), item))
     }
 
     /// Closes rx channel.
@@ -186,6 +205,10 @@ impl<'a, U> Inbound<'a, U>
 where
     U: UserData,
 {
+    pub(super) fn new(owner: Cow<'a, Arc<dyn RpcCore<U>>>, inner: InboundDelivery) -> Self {
+        Self { owner, inner }
+    }
+
     pub fn user_data(&self) -> &U {
         self.owner.user_data()
     }

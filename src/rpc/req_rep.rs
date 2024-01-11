@@ -245,11 +245,11 @@ impl RequestContext {
     ///
     /// The newly allocated request ID.
     pub(super) fn allocate_new_request(&self) -> Option<RequestId> {
+        let mut table = self.pending_tasks.write();
         if self.expired.load(Ordering::Relaxed) {
             return None;
         }
 
-        let mut table = self.pending_tasks.write();
         loop {
             let Ok(id) = self
                 .req_id_gen
@@ -302,22 +302,25 @@ impl RequestContext {
     /// Sets the response for the request ID.
     ///
     /// Called from the background receive runner.
-    pub(crate) fn set_response(&self, id: RequestId, data: Bytes, errc: Option<ResponseError>) {
+    pub fn set_response(&self, id: RequestId, data: Bytes, errc: Option<ResponseError>) -> bool {
         let table = self.pending_tasks.read();
         let Some(mut slot) = table.get(&id).map(|x| x.lock()) else {
             // User canceled the request before the response was received.
-            return;
+            return false;
         };
 
         slot.set_then_wake(ResponseData::Ready(data, errc));
+        true
     }
 
     /// Invalidate all pending requests. This is called when the connection is closed.
     ///
     /// This will be called either after when the deferred runner rx channel is closed.
-    pub(crate) fn mark_expired(&self) {
+    pub fn mark_expired(&self) {
         // Don't let the pending tasks to be registered anymore.
-        self.expired.store(true, Ordering::SeqCst);
+        if self.expired.swap(true, Ordering::SeqCst) {
+            return; // Already expired
+        }
 
         // Acquires write lock, to assure exclusive access to `pending_tasks` table.
         let table = self.pending_tasks.write();
@@ -327,8 +330,12 @@ impl RequestContext {
         }
     }
 
+    pub fn is_expired(&self) -> bool {
+        self.expired.load(Ordering::Relaxed)
+    }
+
     /// Called by deferred runner, when the request is canceled due to write error
-    pub(crate) fn invalidate_request(&self, id: RequestId) {
+    pub fn invalidate_request(&self, id: RequestId) {
         let table = self.pending_tasks.read();
         let Some(mut slot) = table.get(&id).map(|x| x.lock()) else {
             // User canceled the request before the response was received.
