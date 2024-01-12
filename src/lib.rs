@@ -19,10 +19,6 @@ pub mod defs {
     pub(crate) struct RangeType([SizeType; 2]);
 
     impl RangeType {
-        pub fn new(start: SizeType, end: SizeType) -> Self {
-            Self([start, end])
-        }
-
         /// Handy method to get usize range with less typing.
         pub(crate) fn range(&self) -> Range<usize> {
             self.0[0] as usize..self.0[1] as usize
