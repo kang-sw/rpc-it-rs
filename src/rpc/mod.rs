@@ -15,7 +15,7 @@ use self::req_rep::*;
 pub use self::receiver::*;
 pub use self::sender::*;
 
-pub use self::builder::create_builder;
+pub use self::builder::builder;
 pub use self::req_rep::Response;
 
 // ==== Basic RPC ====

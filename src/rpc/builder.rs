@@ -153,7 +153,7 @@ where
 
 // ========================================================== Builder ===|
 
-pub fn create_builder() -> Builder<(), (), (), (), ()> {
+pub fn builder() -> Builder<(), (), (), (), ()> {
     Builder {
         writer: (),
         reader: (),

@@ -109,7 +109,7 @@ pub use bytes::{Bytes, BytesMut};
 pub(crate) use inner::*;
 
 pub use rpc::{
-    create_builder, error, Inbound, NotifySender, ReceiveErrorHandler, ReceiveResponse, Receiver,
+    builder, error, Inbound, NotifySender, ReceiveErrorHandler, ReceiveResponse, Receiver,
     RequestSender, Response, UserData, WeakNotifySender, WeakRequestSender,
 };
 
