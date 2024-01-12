@@ -38,7 +38,7 @@ pub trait ReceiveErrorHandler<U: UserData>: 'static + Send {
         unparsed_frame: &[u8],
         error_type: DecodeError,
     ) -> Result<(), ReadRunnerError> {
-        let _ = (user_data, unparsed_frame, error_type);
+        let _ = (user_data, unparsed_frame, error_type, codec);
         Ok(())
     }
 
