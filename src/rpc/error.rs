@@ -8,6 +8,8 @@ use crate::codec::{self, Codec};
 
 use super::DeferredDirective;
 
+// ========================================================== Send Errors ===|
+
 /// Error that occurs when sending request/notify
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -56,6 +58,35 @@ pub enum TrySendMsgError {
     ReceiverExpired,
 }
 
+#[derive(Debug, Error)]
+pub enum TrySendResponseError {
+    #[error("Sending message failed")]
+    MsgError(#[from] TrySendMsgError),
+
+    #[error("This inbound is not request / or it is already responded")]
+    InboundNotRequest,
+}
+
+// ==== Utils for deferred ====
+
+pub(crate) fn convert_deferred_write_err(e: TrySendError<DeferredDirective>) -> TrySendMsgError {
+    match e {
+        TrySendError::Closed(_) => TrySendMsgError::ChannelClosed,
+        // XXX: In future, we should deal with re-sending failed message.
+        TrySendError::Full(DeferredDirective::WriteMsg(_)) => TrySendMsgError::ChannelAtCapacity,
+        TrySendError::Full(_) => unreachable!(),
+    }
+}
+
+pub(crate) fn convert_deferred_action_err(e: TrySendError<DeferredDirective>) -> TrySendMsgError {
+    match e {
+        TrySendError::Closed(_) => TrySendMsgError::ChannelClosed,
+        TrySendError::Full(_) => TrySendMsgError::ChannelAtCapacity,
+    }
+}
+
+// ========================================================== Recv Errors ===|
+
 /// Error when trying to receive an inbound message
 #[derive(Debug, Error)]
 pub enum TryRecvError {
@@ -64,15 +95,6 @@ pub enum TryRecvError {
 
     #[error("No message available")]
     Empty,
-}
-
-#[derive(Debug, Error)]
-pub enum TrySendResponseError {
-    #[error("Sending message failed")]
-    MsgError(#[from] TrySendMsgError),
-
-    #[error("This inbound is not request / or it is already responded")]
-    InboundNotRequest,
 }
 
 /// Error that occurs when receiving response
@@ -91,6 +113,21 @@ pub struct ErrorResponse {
     pub(super) codec: Arc<dyn Codec>,
     pub(super) payload: Bytes,
 }
+
+impl ReceiveResponseError {
+    pub fn as_error_response(&self) -> Option<&ErrorResponse> {
+        match self {
+            Self::ErrorResponse(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    pub fn is_disconnected_error(&self) -> bool {
+        matches!(self, Self::Disconnected)
+    }
+}
+
+// ========================================================== Runner Enums ===|
 
 /// Result of the read runner
 pub type ReadRunnerResult = Result<ReadRunnerExitType, ReadRunnerError>;
@@ -138,22 +175,4 @@ pub enum ReadRunnerError {
 
     #[error("User handler terminated this connection: {0}")]
     UserHandlerError(#[from] Box<dyn std::error::Error + Send + Sync + 'static>),
-}
-
-// ==== DeferredActionError ====
-
-pub(crate) fn convert_deferred_write_err(e: TrySendError<DeferredDirective>) -> TrySendMsgError {
-    match e {
-        TrySendError::Closed(_) => TrySendMsgError::ChannelClosed,
-        // XXX: In future, we should deal with re-sending failed message.
-        TrySendError::Full(DeferredDirective::WriteMsg(_)) => TrySendMsgError::ChannelAtCapacity,
-        TrySendError::Full(_) => unreachable!(),
-    }
-}
-
-pub(crate) fn convert_deferred_action_err(e: TrySendError<DeferredDirective>) -> TrySendMsgError {
-    match e {
-        TrySendError::Closed(_) => TrySendMsgError::ChannelClosed,
-        TrySendError::Full(_) => TrySendMsgError::ChannelAtCapacity,
-    }
 }

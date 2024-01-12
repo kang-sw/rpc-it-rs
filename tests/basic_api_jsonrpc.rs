@@ -1,9 +1,6 @@
 #![cfg(all(feature = "jsonrpc", feature = "in-memory-io"))]
 
-use std::{
-    clone,
-    sync::{atomic::AtomicUsize, Arc},
-};
+use std::sync::Arc;
 
 use bytes::BytesMut;
 use futures::{
@@ -12,7 +9,7 @@ use futures::{
     StreamExt,
 };
 use rpc_it::{
-    error::{ErrorResponse, ReceiveResponseError, SendMsgError},
+    error::{ReceiveResponseError, SendMsgError},
     ext_codec::jsonrpc,
     ParseMessage, ResponseError,
 };
@@ -212,14 +209,23 @@ fn verify_request() {
                 let req1 = client.request(b, "pewpew", &(1, 2)).await.unwrap();
                 let req2 = client.request(b, "tewtew", &(3, 4)).await.unwrap();
                 let req3 = client.request(b, "rewrew", &(5, 6)).await.unwrap();
+                let req4 = client.request(b, "qewqew", &(7, 8)).await.unwrap();
 
                 let rep1 = req1.await.unwrap().parse::<i32>().unwrap();
                 let rep2 = req2.await.unwrap().parse::<i32>().unwrap();
                 let rep3 = req3.await.unwrap().parse::<i32>().unwrap();
+                let rep4 = req4
+                    .await
+                    .unwrap_err()
+                    .as_error_response()
+                    .unwrap()
+                    .parse::<i32>()
+                    .unwrap();
 
                 assert_eq!(rep1, 3);
                 assert_eq!(rep2, 7);
                 assert_eq!(rep3, 11);
+                assert_eq!(rep4, 15);
 
                 println!("II.client: done");
                 drop(tc);
@@ -236,22 +242,27 @@ fn verify_request() {
                 let req1 = server.recv().await.unwrap();
                 let req2 = server.recv().await.unwrap();
                 let req3 = server.recv().await.unwrap();
+                let req4 = server.recv().await.unwrap();
 
                 assert_eq!(req1.method(), "pewpew");
                 assert_eq!(req2.method(), "tewtew");
                 assert_eq!(req3.method(), "rewrew");
+                assert_eq!(req4.method(), "qewqew");
 
                 let (x1, x2) = req1.parse::<(i32, i32)>().unwrap();
                 let (x3, x4) = req2.parse::<(i32, i32)>().unwrap();
                 let (x5, x6) = req3.parse::<(i32, i32)>().unwrap();
+                let (x7, x8) = req4.parse::<(i32, i32)>().unwrap();
 
                 assert_eq!((x1, x2), (1, 2));
                 assert_eq!((x3, x4), (3, 4));
                 assert_eq!((x5, x6), (5, 6));
+                assert_eq!((x7, x8), (7, 8));
 
                 req1.response(b, Ok(x1 + x2)).await.unwrap();
                 req2.response(b, Ok(x3 + x4)).await.unwrap();
                 req3.response(b, Ok(x5 + x6)).await.unwrap();
+                req4.response(b, Err(x7 + x8)).await.unwrap();
 
                 println!("II.server: done");
                 drop(tc);
