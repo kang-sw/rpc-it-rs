@@ -1,7 +1,8 @@
 use std::ops::Range;
 
 use bytes::BufMut;
-use serde::{Deserialize, Serialize};
+use serde::{de::Error, Deserialize, Serialize};
+use serde_json::value::RawValue as RawJsonValue;
 
 use crate::{
     codec::{
@@ -16,37 +17,31 @@ use crate::{
 #[derive(Debug)]
 pub struct Codec;
 
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum RawData<'a> {
-    Notification {
-        jsonrpc: &'a str,
-        method: &'a str,
-        params: &'a serde_json::value::RawValue,
-    },
-    Request {
-        jsonrpc: &'a str,
-        method: &'a str,
-        params: &'a serde_json::value::RawValue,
-        id: &'a str,
-    },
-    ResponseSuccess {
-        jsonrpc: &'a str,
-        result: &'a serde_json::value::RawValue,
-        id: &'a str,
-    },
-    ResponseError {
-        jsonrpc: &'a str,
-        error: RawErrorObject<'a>,
-        id: &'a str,
-    },
+#[derive(Debug, serde::Deserialize)]
+struct RawData<'a> {
+    jsonrpc: &'a str,
+
+    #[serde(borrow, default)]
+    method: Option<&'a str>,
+
+    #[serde(borrow, default)]
+    params: Option<&'a RawJsonValue>,
+
+    #[serde(borrow, default)]
+    result: Option<&'a RawJsonValue>,
+
+    #[serde(default)]
+    error: Option<RawErrorObject<'a>>,
+
+    #[serde(borrow, default)]
+    id: Option<&'a str>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct RawErrorObject<'a> {
     code: Option<i64>,
     #[serde(borrow)]
-    data: Option<&'a serde_json::value::RawValue>,
+    data: Option<&'a RawJsonValue>,
     // NOTE: Commenting out `message` field, as we're not using it.
     //
     // message: Option<&'a str>,
@@ -60,6 +55,9 @@ mod errc {
     pub const INVALID_PARAMS: i64 = -32602;
     pub const INTERNAL_ERROR: i64 = -32603;
     pub const PARSE_ERROR: i64 = -32700;
+
+    /// Offset for internal error code.
+    pub const INTERNAL_ERROR_OFFSET: i64 = -41000;
 }
 
 impl crate::Codec for Codec {
@@ -147,7 +145,7 @@ impl crate::Codec for Codec {
                 ResponseError::NonUtf8MethodName => errc::INVALID_REQUEST,
                 ResponseError::ParseFailed => errc::PARSE_ERROR,
                 ResponseError::Unauthorized => errc::INVALID_REQUEST,
-                _ => errc::INTERNAL_ERROR,
+                ec => u8::from(ec) as i64 + errc::INTERNAL_ERROR_OFFSET,
             }
         }
 
@@ -216,7 +214,8 @@ impl crate::Codec for Codec {
     }
 
     fn decode_inbound(&self, frame: &[u8]) -> Result<codec::InboundFrameType, DecodeError> {
-        let mut de = serde_json::Deserializer::from_slice(frame);
+        let frame = std::str::from_utf8(frame).map_err(|_| DecodeError::NonUtf8Input)?;
+        let mut de = serde_json::Deserializer::from_str(frame);
         let raw = RawData::deserialize(&mut de)
             .map_err(<erased_serde::Error as serde::de::Error>::custom)?;
 
@@ -227,64 +226,52 @@ impl crate::Codec for Codec {
             start as SizeType..end as SizeType
         };
 
-        let verify_rpc_version = |rpc_version: &str| -> Result<(), DecodeError> {
-            if rpc_version != "2.0" {
-                Err(DecodeError::UnsupportedProtocol)
-            } else {
-                Ok(())
-            }
-        };
+        if raw.jsonrpc != "2.0" {
+            return Err(DecodeError::UnsupportedProtocol);
+        }
 
         let frame_type = match raw {
-            RawData::Request {
-                jsonrpc,
-                method,
-                params,
-                id,
-            } => {
-                verify_rpc_version(jsonrpc)?;
-                InboundFrameType::Request {
-                    req_id_raw: range_of(id),
-                    method: range_of(method),
-                    params: range_of(params.get()),
-                }
-            }
-            RawData::Notification {
-                jsonrpc,
-                method,
-                params,
-            } => {
-                verify_rpc_version(jsonrpc)?;
-                InboundFrameType::Notify {
-                    method: range_of(method),
-                    params: range_of(params.get()),
-                }
-            }
-            RawData::ResponseSuccess {
-                jsonrpc,
-                result,
-                id,
-            } => {
-                verify_rpc_version(jsonrpc)?;
-
-                InboundFrameType::Response {
-                    req_id: req_id_from_str(id)?,
-                    errc: None,
-                    payload: range_of(result.get()),
-                }
-            }
-            RawData::ResponseError {
-                jsonrpc,
-                error: RawErrorObject { code, data },
-                id,
-            } => {
-                verify_rpc_version(jsonrpc)?;
-
-                InboundFrameType::Response {
-                    req_id: req_id_from_str(id)?,
-                    errc: Some(errc_to_error(code.unwrap_or(errc::INTERNAL_ERROR))),
-                    payload: data.map(|x| range_of(x.get())).unwrap_or_default(),
-                }
+            RawData {
+                method: Some(method),
+                params: Some(params),
+                id: Some(id),
+                ..
+            } => InboundFrameType::Request {
+                req_id_raw: range_of(id),
+                method: range_of(method),
+                params: range_of(params.get()),
+            },
+            RawData {
+                method: Some(method),
+                params: Some(params),
+                ..
+            } => InboundFrameType::Notify {
+                method: range_of(method),
+                params: range_of(params.get()),
+            },
+            RawData {
+                result: Some(result),
+                id: Some(id),
+                ..
+            } => InboundFrameType::Response {
+                req_id: req_id_from_str(id)?,
+                errc: None,
+                payload: range_of(result.get()),
+            },
+            RawData {
+                error: Some(RawErrorObject { code, data }),
+                id: Some(id),
+                ..
+            } => InboundFrameType::Response {
+                req_id: req_id_from_str(id)?,
+                errc: Some(errc_to_error(code.unwrap_or(errc::INTERNAL_ERROR))),
+                payload: data.map(|x| range_of(x.get())).unwrap_or_default(),
+            },
+            other => {
+                return Err(From::from(erased_serde::Error::custom(format!(
+                    "invalid frame: {:?}",
+                    other
+                ))));
             }
         };
 
@@ -298,7 +285,9 @@ fn errc_to_error(errc: i64) -> ResponseError {
         errc::METHOD_NOT_FOUND => ResponseError::MethodNotFound,
         errc::INVALID_PARAMS => ResponseError::InvalidArgument,
         errc::PARSE_ERROR => ResponseError::ParseFailed,
-        _ => ResponseError::Unknown,
+        other => ResponseError::from(
+            u8::try_from(other - errc::INTERNAL_ERROR_OFFSET).unwrap_or_default(),
+        ),
     }
 }
 

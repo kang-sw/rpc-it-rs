@@ -277,7 +277,7 @@ impl<Wr, Rd, U, C, RH> Builder<Wr, Rd, U, C, RH> {
         }
     }
 
-    pub fn with_write_channel_capacity(self, capacity: impl TryInto<NonZeroUsize>) -> Self {
+    pub fn with_outbound_queue_capacity(self, capacity: impl TryInto<NonZeroUsize>) -> Self {
         Builder {
             cfg: InitConfig {
                 writer_channel_capacity: capacity.try_into().ok(),
@@ -287,10 +287,10 @@ impl<Wr, Rd, U, C, RH> Builder<Wr, Rd, U, C, RH> {
         }
     }
 
-    pub fn with_inbound_queue_capacity(self, capacity: NonZeroUsize) -> Self {
+    pub fn with_inbound_queue_capacity(self, capacity: impl TryInto<NonZeroUsize>) -> Self {
         Builder {
             cfg: InitConfig {
-                inbound_queue_capacity: Some(capacity),
+                inbound_queue_capacity: capacity.try_into().ok(),
                 ..self.cfg
             },
             ..self

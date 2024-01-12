@@ -14,7 +14,7 @@ use crate::defs::SizeType;
 /// Set of predefined error codes for RPC responses. The codec implementation is responsible for
 /// mapping these error codes to the corresponding error codes of the underlying protocol. For
 /// example, JSON-RPC uses the `code` field of the response object to encode the error code.
-#[derive(Default, Debug, Error, Clone, Copy)]
+#[derive(Default, Debug, Error, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ResponseError {
     /// Possibly in the sender side, the error content didn't originated from this crate, or
@@ -302,6 +302,9 @@ pub mod error {
         #[error("Failed to retrieve request ID")]
         RequestIdRetrievalFailed,
 
+        #[error("UTF-8 input is expected")]
+        NonUtf8Input,
+
         #[error("Parse failed: {0}")]
         ParseFailed(#[from] erased_serde::Error),
     }
@@ -312,6 +315,7 @@ pub mod error {
 /// A generic trait to parse a message into concrete type.
 pub trait ParseMessage {
     /// Returns a pair of codec and payload bytes.
+    #[doc(hidden)]
     fn codec_payload_pair(&self) -> (&dyn Codec, &[u8]);
 
     /// This function parses the message into the specified destination.

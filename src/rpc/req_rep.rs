@@ -25,6 +25,7 @@ use super::{
 };
 
 /// Response message from RPC server.
+#[derive(Debug)]
 pub struct Response {
     codec: Arc<dyn Codec>,
     payload: Bytes,
