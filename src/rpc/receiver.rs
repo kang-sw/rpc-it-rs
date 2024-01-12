@@ -109,6 +109,13 @@ where
             .ok()
     }
 
+    /// Creates a new notify channel from this receiver.
+    pub fn notify_sender(&self) -> crate::NotifySender<U> {
+        crate::NotifySender {
+            context: Arc::clone(&self.context),
+        }
+    }
+
     /// Tries to receive an inbound message from remote.
     pub async fn try_recv(&self) -> Result<Inbound<'_, U>, TryRecvError> {
         self.channel
@@ -129,10 +136,14 @@ where
         channel.map(move |item| Inbound::new(Cow::Owned(context.clone()), item))
     }
 
-    /// Closes rx channel.
-    pub fn shutdown_reader(self) {
+    /// Closes inbound channel. Except for messages that were already pushed into the channel, no
+    /// additional messages will be pushed into the channel. If there's any alive senders that
+    /// can send request message, the background receiver task will be kept alive. Otherwise, it'll
+    /// be dropped on next message receive.
+    ///
+    /// To immediately close the background receiver task, all handles need to be dropped.
+    pub fn close_inbound_channel(self) {
         self.channel.close();
-        self.context.shutdown_rx_channel();
     }
 }
 
@@ -239,7 +250,7 @@ where
         }
     }
 
-    /// Retrieves message out of the reference.
+    /// Retrieves message out of the reference. Remaining reference will be invalidated.
     pub fn take(&mut self) -> Inbound<'_, U> {
         let req_id = self.atomic_take_req_range();
         Inbound {
@@ -294,6 +305,8 @@ where
         &self.inner.buffer[id_buf_range.range()]
     }
 
+    /// Check if this message is still a request, that can send valid response. This will return
+    /// false if the message is already responded, or it's a notification at first place.
     pub fn is_request(&self) -> bool {
         self.inner.req_id != 0
     }
@@ -408,8 +421,18 @@ where
         Some(self.owner.codec().encode_response(req_id, encoded, buf))
     }
 
-    /// Drops the request without sending any response. This prevents drop-guard automatically
-    /// responding [`ResponseError::Unhandled`].
+    /// Drops the request without sending any response. This function is used to override the
+    /// default behavior of the inbound request handling.
+    ///
+    /// By default, if an inbound request is dropped without a response, the system automatically
+    /// sends a [`ResponseError::Unhandled`] message to the remote client. This default mechanism
+    /// helps minimize the waiting time for the remote side, which might otherwise have to handle
+    /// timeouts for unhandled requests.
+    ///
+    /// However, there might be situations where you want to drop a request without sending any
+    /// response back. In such scenarios, this method can be explicitly called. It ensures that the
+    /// request is dropped silently, without triggering the automatic [`ResponseError::Unhandled`]
+    /// response from the drop guard.
     pub fn drop_request(&self) {
         // Simply take the request range, and drop it.
         let _ = self.atomic_take_req_range();
@@ -421,9 +444,12 @@ where
     U: UserData,
 {
     fn drop(&mut self) {
-        if let Some(req_id) = self.atomic_take_req_range() {
-            let req_id = self.retrieve_req_id(req_id);
-            self.owner.on_request_unhandled(req_id);
+        // Sends 'unhandled' message to remote if it's still an unhandled request message until it's
+        // being dropped. This is default behavior to prevent reducing remote side's request timeout
+        // handling overhead.
+        if self.is_request() {
+            self.try_response(&mut BytesMut::new(), ResponseError::Unhandled)
+                .ok();
         }
     }
 }

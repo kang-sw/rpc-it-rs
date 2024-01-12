@@ -33,12 +33,6 @@ trait RpcCore<U>: std::fmt::Debug {
     /// For [`NotifySender`] reference,  it is always defined.
     fn tx_deferred(&self) -> Option<&mpsc::Sender<DeferredDirective>>;
 
-    /// Only available for [`RequestSender`].
-    fn shutdown_rx_channel(&self);
-
-    /// Only available for [`RequestSender`]. Called when a request is dropped in unhandled state.
-    fn on_request_unhandled(&self, req_id: &[u8]);
-
     /// Conditionally retrieves request context
     fn request_context(&self) -> Option<&RequestContext>;
 }

@@ -15,15 +15,17 @@ use futures::{task::AtomicWaker, AsyncWrite, Future, FutureExt};
 
 use crate::{
     codec::{Codec, InboundFrameType},
-    defs::{NonZeroRangeType, RangeType, RequestId},
+    defs::{NonZeroRangeType, RangeType},
+    error::{ReadRunnerResult, WriteRunnerResult},
     io::{AsyncFrameRead, AsyncFrameWrite},
-    Inbound, NotifySender, ResponseError,
+    Inbound, NotifySender,
 };
 
 use super::{
     error::{ReadRunnerError, ReadRunnerExitType, WriteRunnerError, WriteRunnerExitType},
     req_rep::RequestContext,
-    DeferredDirective, InboundDelivery, ReceiveErrorHandler, RpcCore, UserData,
+    DeferredDirective, InboundDelivery, ReceiveErrorHandler, Receiver, RequestSender, RpcCore,
+    UserData,
 };
 
 ///
@@ -48,6 +50,7 @@ struct SenderContext {
     tx_deferred: mpsc::Sender<DeferredDirective>,
 }
 
+#[derive(Default)]
 struct ReceiverContext {
     drop_waker: AtomicWaker,
 }
@@ -81,20 +84,12 @@ where
         &self.user_data
     }
 
-    fn shutdown_rx_channel(&self) {
-        todo!("Send shutdown signal to the channel")
-    }
-
     fn tx_deferred(&self) -> Option<&mpsc::Sender<DeferredDirective>> {
         self.send_ctx.as_ref().map(|x| &x.tx_deferred)
     }
 
-    fn on_request_unhandled(&self, req_id: &[u8]) {
-        todo!("Tries to send `unhandled` error response")
-    }
-
     fn request_context(&self) -> Option<&RequestContext> {
-        todo!()
+        self.reqs.as_ref()
     }
 }
 
@@ -191,7 +186,7 @@ impl<Wr, Rd, U, C, RH> Builder<Wr, Rd, U, C, RH> {
         Wr2: AsyncWrite,
     {
         use std::pin::Pin;
-        use std::task::{Context, Poll};
+        use std::task::Context;
 
         #[repr(transparent)]
         struct WriterAdapter<Wr2>(Wr2);
@@ -317,6 +312,12 @@ impl<Wr, Rd, U, C, RH> Builder<Wr, Rd, U, C, RH> {
     }
 }
 
+macro_rules! must_use_message {
+    () => {
+        "futures do nothing unless you `.await` or poll them"
+    };
+}
+
 impl<Wr, Rd, U, C, RH> Builder<Wr, Rd, U, C, RH>
 where
     Wr: AsyncFrameWrite,
@@ -325,12 +326,75 @@ where
     C: Codec,
     RH: ReceiveErrorHandler<U>,
 {
-    /// Creates client.
-    #[must_use = "The client will not run unless you spawn task manually"]
-    pub fn build(self) -> (super::RequestSender<U>, super::Receiver<U>, impl Future) {
-        let _runner = async {};
+    /// Create a bidirectional RPC connection in client mode; which won't create inbound receiver
+    /// channel, but spawns reader task to enable receiving responses.
+    #[must_use = must_use_message!()]
+    pub fn build_client(
+        self,
+    ) -> (
+        RequestSender<U>,
+        impl Future<Output = ReadRunnerResult>,
+        impl Future<Output = WriteRunnerResult>,
+    ) {
+        let (tx_w, rx_w) = self.cfg.make_write_channel();
+        let context = Arc::new_cyclic(|w: &Weak<RpcContextImpl<U, C>>| RpcContextImpl {
+            user_data: self.user_data,
+            codec: self.codec,
+            reqs: Some(RequestContext::new(w.clone())),
+            send_ctx: Some(SenderContext {
+                tx_deferred: tx_w.clone(),
+            }),
+            recv_ctx: Some(ReceiverContext::default()),
+        });
 
-        (todo!(), todo!(), _runner)
+        let w_context = Arc::downgrade(&context);
+        let task_write = write_runner(self.writer, rx_w, w_context.clone());
+        let task_read = read_runner(self.reader, self.read_event_handler, None, w_context);
+
+        (
+            RequestSender {
+                inner: NotifySender { context },
+            },
+            task_read,
+            task_write,
+        )
+    }
+
+    /// Create a bidirectional RPC connection in server mode; which will create inbound receiver
+    /// channel. If you need sender channel either, you can spawn a sender handle from the receiver.
+    #[must_use = must_use_message!()]
+    pub fn build_server(
+        self,
+        enable_request: bool,
+    ) -> (
+        Receiver<U>,
+        impl Future<Output = ReadRunnerResult>,
+        impl Future<Output = WriteRunnerResult>,
+    ) {
+        let (tx_w, rx_w) = self.cfg.make_write_channel();
+        let (tx_ib, rx_ib) = self.cfg.make_inbound_channel();
+        let context = Arc::new_cyclic(|w: &Weak<RpcContextImpl<U, C>>| RpcContextImpl {
+            user_data: self.user_data,
+            codec: self.codec,
+            reqs: enable_request.then(|| RequestContext::new(w.clone())),
+            send_ctx: Some(SenderContext {
+                tx_deferred: tx_w.clone(),
+            }),
+            recv_ctx: Some(ReceiverContext::default()),
+        });
+
+        let w_context = Arc::downgrade(&context);
+        let task_write = write_runner(self.writer, rx_w, w_context.clone());
+        let task_read = read_runner(self.reader, self.read_event_handler, Some(tx_ib), w_context);
+
+        (
+            Receiver {
+                context,
+                channel: rx_ib,
+            },
+            task_read,
+            task_write,
+        )
     }
 }
 
@@ -342,11 +406,40 @@ where
     RH: ReceiveErrorHandler<U>,
 {
     /// Creates read-only service. The receiver may never take any request.
-    #[must_use = "The client will not run unless you spawn task manually"]
-    pub fn build_read_only(self) -> (super::Receiver<U>, impl Future) {
-        let _runner = async {};
+    #[must_use = must_use_message!()]
+    pub fn build_read_only(self) -> (Receiver<U>, impl Future) {
+        let Self {
+            reader,
+            read_event_handler,
+            user_data,
+            codec,
+            cfg,
+            ..
+        } = self;
 
-        (todo!(), _runner)
+        let (tx_ib, rx_ib) = cfg.make_inbound_channel();
+        let context = Arc::new(RpcContextImpl {
+            user_data,
+            codec,
+            reqs: None,
+            send_ctx: None,
+            recv_ctx: Some(Default::default()),
+        });
+
+        let task = read_runner(
+            reader,
+            read_event_handler,
+            Some(tx_ib),
+            Arc::downgrade(&context),
+        );
+
+        (
+            Receiver {
+                context,
+                channel: rx_ib,
+            },
+            task,
+        )
     }
 }
 
@@ -357,12 +450,12 @@ where
     C: Codec,
 {
     /// Creates write-only client.
-    #[must_use = "The client will not run unless you spawn task manually"]
+    #[must_use = must_use_message!()]
     pub fn build_write_only(
         self,
     ) -> (
         super::NotifySender<U>,
-        impl Future<Output = Result<WriteRunnerExitType, WriteRunnerError>>,
+        impl Future<Output = WriteRunnerResult>,
     ) {
         let Self {
             writer,
@@ -372,9 +465,7 @@ where
             .. // Read side is not needed.
         } = self;
 
-        let (tx_directive, rx) = cfg
-            .writer_channel_capacity
-            .map_or_else(mpsc::unbounded, |x| mpsc::bounded(x.get()));
+        let (tx_directive, rx) = cfg.make_write_channel();
 
         let context = Arc::new(RpcContextImpl {
             user_data,
@@ -386,7 +477,32 @@ where
             recv_ctx: None,
         });
 
-        (NotifySender { context }, write_runner(writer, rx, None))
+        (
+            NotifySender { context },
+            write_runner::<_, U, C>(writer, rx, Default::default()),
+        )
+    }
+}
+
+impl InitConfig {
+    fn make_write_channel(
+        &self,
+    ) -> (
+        mpsc::Sender<DeferredDirective>,
+        mpsc::Receiver<DeferredDirective>,
+    ) {
+        self.writer_channel_capacity
+            .map_or_else(mpsc::unbounded, |x| mpsc::bounded(x.get()))
+    }
+
+    fn make_inbound_channel(
+        &self,
+    ) -> (
+        mpsc::Sender<InboundDelivery>,
+        mpsc::Receiver<InboundDelivery>,
+    ) {
+        self.inbound_queue_capacity
+            .map_or_else(mpsc::unbounded, |x| mpsc::bounded(x.get()))
     }
 }
 
@@ -399,10 +515,6 @@ where
 {
     fn unwrap_recv(&self) -> &ReceiverContext {
         self.recv_ctx.as_ref().unwrap()
-    }
-
-    fn unwrap_send(&self) -> &SenderContext {
-        self.send_ctx.as_ref().unwrap()
     }
 }
 
@@ -421,7 +533,7 @@ async fn read_runner<Rd, RH, C, U>(
     handler: RH,
     tx_inbound: Option<mpsc::Sender<InboundDelivery>>,
     wctx: Weak<RpcContextImpl<U, C>>,
-) -> Result<ReadRunnerExitType, ReadRunnerError>
+) -> ReadRunnerResult
 where
     Rd: AsyncFrameRead,
     RH: ReceiveErrorHandler<U>,
@@ -557,11 +669,11 @@ where
     result
 }
 
-async fn write_runner<Wr>(
+async fn write_runner<Wr, U, C>(
     writer: Wr,
     rx_directive: mpsc::Receiver<DeferredDirective>,
-    reqs: Option<Arc<RequestContext>>,
-) -> Result<WriteRunnerExitType, WriteRunnerError>
+    w_ctx: Weak<RpcContextImpl<U, C>>,
+) -> WriteRunnerResult
 where
     Wr: AsyncFrameWrite,
 {
@@ -611,15 +723,30 @@ where
                         .map_err(WriteRunnerError::WriteFailed)?;
                 }
                 DeferredDirective::WriteReqMsg(mut payload, req_id) => {
-                    debug_assert!(reqs.is_some(), "Write only client cannot send requests");
-
                     let write_result =
                         poll_fn(|cx| writer.as_mut().poll_write_frame(cx, &mut payload))
                             .await
                             .map_err(WriteRunnerError::WriteFailed);
 
+                    let Some(context) = w_ctx.upgrade() else {
+                        // If all request handles were dropped, it means there's no awaiting
+                        // requests that were sent, which makes sending request and receiving
+                        // response pointless.
+
+                        continue;
+                    };
+
+                    // All path to send request on disabled client should be blocked:
+                    // - Notify Sender -> Request Sender upgrade will be blocked if `reqs` not
+                    //   present
+                    // - Once request sender present -> It'll always be valid
+                    let reqs = context
+                        .reqs
+                        .as_ref()
+                        .expect("disabled request feature; logic error!");
+
                     if let Err(e) = write_result {
-                        reqs.as_deref().unwrap().invalidate_request(req_id);
+                        reqs.invalidate_request(req_id);
                         return Err(e);
                     }
                 }
@@ -631,7 +758,7 @@ where
     .await;
 
     // When request feature is enabled ...
-    if let Some(reqs) = reqs {
+    if let Some(reqs) = w_ctx.upgrade().as_ref().and_then(|x| x.reqs.as_ref()) {
         // Assures that the writer channel is closed.
         rx_directive.close();
 

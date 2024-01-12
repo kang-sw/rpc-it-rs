@@ -125,6 +125,15 @@ impl<U: UserData> NotifySender<U> {
         self.context.clone().self_as_codec()
     }
 
+    /// Upgrade this handle to request handle. Fails if request feature was not enabled at first.
+    pub fn try_into_request_sender(self) -> Result<RequestSender<U>, Self> {
+        if self.context.request_context().is_some() {
+            Ok(RequestSender { inner: self })
+        } else {
+            Err(self)
+        }
+    }
+
     /// Que a close request to the background writer task. It will first flush all remaining data
     /// transfer request, then will close the writer. If background channel is already closed,
     /// returns `Err`.
@@ -256,12 +265,6 @@ impl<U: UserData> RequestSender<U> {
         ))?;
 
         Ok(resp)
-    }
-
-    /// Shutdown the background reader task. This will close the reader channel, and will wake up
-    /// all pending tasks, delivering [`ReceiveResponseError::Shutdown`] error.
-    pub fn shutdown_reader(&self) {
-        self.context.shutdown_rx_channel();
     }
 
     fn encode_request<T: serde::Serialize>(

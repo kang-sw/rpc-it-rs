@@ -1,7 +1,7 @@
 #![cfg(all(feature = "jsonrpc", feature = "in-memory-io"))]
 
 use futures::StreamExt;
-use rpc_it::ext_codec::jsonrpc;
+use rpc_it::{error::SendMsgError, ext_codec::jsonrpc};
 
 #[test]
 fn verify_notify() {
@@ -26,6 +26,13 @@ fn verify_notify() {
         tx_rpc.notify(b, "close", &()).await.unwrap();
 
         tx_rpc.shutdown_writer(false).await.unwrap();
+
+        let err = tx_rpc
+            .notify(b, "this-should-fail", &3141)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, SendMsgError::ChannelClosed));
     };
 
     let task_recv = async {

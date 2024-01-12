@@ -92,6 +92,12 @@ pub struct ErrorResponse {
     pub(super) payload: Bytes,
 }
 
+/// Result of the read runner
+pub type ReadRunnerResult = Result<ReadRunnerExitType, ReadRunnerError>;
+
+/// Result of the write runner
+pub type WriteRunnerResult = Result<WriteRunnerExitType, WriteRunnerError>;
+
 /// Describes why did the write runner stopped.
 #[derive(Debug)]
 pub enum WriteRunnerExitType {
