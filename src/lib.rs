@@ -85,6 +85,7 @@ pub mod defs {
         pub struct RequestId(NonZeroU32)
     }
 }
+pub mod service;
 
 pub mod ext_codec;
 mod inner {

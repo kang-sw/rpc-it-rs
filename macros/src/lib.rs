@@ -2,108 +2,134 @@
 //!
 //! ## Attributes
 //!
-//! - `notify`, `request`: Determines whether the API is a notification or a request.
-//! - `name`: Specifies the API name. If not specified, the name will be generated from the function
-//!   name.
-//! - `deserialize_args_as`: Overrides the deserialization type of the arguments.
-//! - `serialize_return_as`: Overrides the serialization type of the return value. Only valid for
-//!  request APIs.
-//!
-//! # Usage
-//!
 //! ```ignore
-//! service! {
-//!     /// This defines request API. Return type can be specified.
-//!     #[request]
-//!     #[api(name = "Rpc.Call.MyMethod")]
-//!     extern "serde" fn my_method<'a>(my_binary: &'a [u8]) -> bool;
+//! #[rpc_it::service]
+//! #[service(name_prefix = "Namespace/", rename_all = "PascalCase")]
+//! extern "module_name" {
+//!   // If return type is specified explicitly, it is treated as request.
+//!   fn method_req(arg: (i32, i32)) -> ();
 //!
-//!     /// This defines notification API. Return type must be `()`.
-//!     #[notify]
-//!     #[api(deserialize_args = (String, _))]
-//!     extern "serde" fn my_notification(my_key: &str, my_value: u32);
+//!   // This is request; you can specify which error type will be returned.
+//!   fn method_req_2<'a, 'borrow>() -> Result<MyParam<'borrow>, &'a str>;
 //!
-//!     /// With "rkyv" feature enabled and extern `"rkyv"`, you can use rkyv types as arguments.
-//!     /// This will encode the payload as rkyv binary.
-//!     #[request]
-//!     #[api(name = "Rpc.Call.MyMethod")]
-//!     #[api(rkyv)]
-//!     fn my_method<'a>(my_rkyv_derive_type: &str) -> bool;
+//!   // This is notification, which does not return anything.
+//!   fn method_noti(arg: (i32, i32));
+//!
+//!   #[name = "MethodName"] // Client will encode the method name as this. Server takes either.
+//!   #[route = "MyMethod/*"] // This will define additional route on server side
+//!   #[route = "OtherMethodName"]
+//!   fn method_example<'borrow>(arg: &'borrow str, arg2: &'borrow [u8])
+//!
+//!   // If serialization type and deserialization type is different, you can specify it by
+//!   // double underscore and angle brackets, like specifying two parameters on generic type `__`
+//!   fn from_to<'a>(s: __<i32, u64>, b: __<&'a str, String>) -> __<i32, String>;
+//! }
+//!
+//! pub struct MyParam<'a> {
+//!     name: &'a str,
+//!     age: &'a str,
 //! }
 //! ```
 //!
-//! Above code will generate following APIs:
-//!
-//! - client side
-//!
-//! ``` ignore
-//! let rpc: rpc_it::Sender = unimplemented!();
-//!
-//! async move {
-//!   my_api::async_api::my_notification(rpc, "hey", 141).await;
-//!
-//!   match my_api::async_api::my_method(rpc, b"hello").await {
-//!     Ok(x) => println!("my_method returned: {}", x),
-//!     Err(e) => println!("my_method failed: {}", e),
-//!   }
-//! };
-//! ```
-//!
-//! - Server side
-//!
-//! ``` ignore
-//! let rpc: rpc_it::Transceiver = unimplemented!();
-//! let mut service_builder: rpc_it::ServiceBuilder = unimplemented!();
-//! let (tx, rx) = flume::unbounded();
-//!
-//! //
-//! my_api::register_service(&mut service_builder, |inbound: my_api::Inbound| {
-//!   match inbound {
-//!     // Allows 'take' out owned deserialized data, as data movement is inherently prohibited.
-//!     my_api::Param::MyMethod(req) => {
-//!       // req: my_api::de::MyMethod
-//!     }
-//!     my_api::Param::MyNotification(noti) => {
-//!       // noti: my_api::de::MyNotification
-//!     }
-//!   }
-//! });
-//! ```
-//!
-//! - Generation example
-//!
-//! ```ignore
-//! mod my_api {
-//!   mod param {
-//!     struct MyMethod {
-//!       __h: rpc_it::Sender,
-//!       __id: rpc_it::ReqId,
-//!       __p: Bytes, // payload segment
-//!     }
-//!
-//!     impl rpc_it::ExtractUserData for MyMethod {
-//!        // ...
-//!     }
-//!
-//!     impl MyMethod {
-//!       pub fn parse<'this>(&'this self) -> Result<super::de::MyMethod<'this>, rpc_it::Error> {
-//!         // ...
-//!       }
-//!
-//!       pub fn respond(self) -> rpc_it::TypedRequest<bool> {
-//!         // ...
-//!       }
-//!     }
-//!   }
-//!   mod de {
-//!     #[derive(serde::Deserialize)]
-//!     struct MyMethod<'a> {
-//!       pub my_binary: &'a [u8],
-//!     }
-//!   }
-//! }
-//! ```
-//!
+
+/*
+    * TODO: Distinguish borrow and non-borrow types.
+
+    mod module_name {
+        #![allow(non_camel_case_types)]
+
+        pub enum Inbound<U> {
+            method_req(::rpc_it::macro::Request<U, self::method_req::Fn>),
+            method_req_2(::rpc_it::macro::Request<U, self::method_req_2::Fn>),
+            method_noti(::rpc_it::service::Notification<U, self::method_noti::Fn>),
+        }
+
+        impl<U> Inbound where U: UserData {
+            pub fn route<F: Fn(Self) + Send + Sync + 'static>(
+                router: &mut ::rpc_it::Router<U>,
+                handler: impl Into<Arc<F>>,
+            )
+            {
+                let handler = handler.into();
+
+                {
+                    let handler = handler.clone();
+
+                    router.add_route("method_req", |inbound| {
+                        unimplemented!("decode inbound and create 'Inbound' -> call handler");
+                        handler(Self::message_req(unimplemented!()))
+                    })
+                }
+            }
+        }
+
+        pub mod method_req {
+            pub struct Fn;
+
+            impl ::rpc_it::RequestMethod for method_req {
+                type ParamSend<'a> = (i32, i32);
+                type ParamRecv = (i32, i32);
+
+                type ResultSend<'a> = ();
+                type ResultRecv = ();
+            }
+        }
+
+        pub mod method_req_2 {
+            pub struct Fn;
+
+            impl ::rpc_it::RequestMethod for method_req_2 {
+                type ParamSend<'a> = ();
+                type ParamRecv = ();
+
+                type ResultSend<'a> = Result<MyParam<'a>, &'a str>;
+                type ResultRecv = Result<Okay, Error>;
+            }
+
+            // Generate self-containing deserialized caches for each type that contains borrowed
+            // lifetimes. Number of required lifetimes should be automatically counted from
+            // function signature.
+
+            pub struct Okay(::rpc_it::Bytes, MyParam<'static>);
+
+            impl Okay {
+                pub fn new(codec, payload) -> Self {
+                    todo!("Decode payload, and transmute to elevate into static lifetime")
+                }
+
+                pub fn get<'__this>(&'__this self) -> &'__this MyParam<'__this> {
+                    &self.1
+                }
+            }
+
+            pub struct Error(::rpc_it::Bytes, &'static str);
+
+            impl Error {
+                pub fn new(codec, payload) -> Self {
+                    todo!("Decode payload, and transmute to elevate into static lifetime")
+                }
+
+                pub fn get<'__this>(&'__this self) -> &'__this str {
+                    &self.1
+                }
+            }
+        }
+
+        pub mod method_noti {
+            pub struct Fn;
+
+            impl ::rpc_it::NotifyMethod for method_noti {
+                type ParamSend<'a> = (i32, i32);
+                type ParamRecv = (i32, i32);
+            }
+        }
+    }
+
+    sender.req(module_name::method_req::Fn, &(1, 2));
+    sender.try_req(module_name::method_req::Fn, &(1, 2));
+    sender.noti(module_name::method_noti::Fn, &(1, 2)).await;
+    sender.try_noti(module_name::method_noti::Fn, &(1, 2));
+*/
 
 use proc_macro_error::proc_macro_error;
 use quote::quote;

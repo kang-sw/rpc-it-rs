@@ -17,7 +17,7 @@ use crate::{
     },
     error::ReadRunnerError,
     rpc::DeferredDirective,
-    Codec, ParseMessage, ResponseError, UserData,
+    Codec, NotifySender, ParseMessage, ResponseError, UserData,
 };
 
 use super::{
@@ -230,6 +230,14 @@ where
 
     pub fn cloned_codec(&self) -> Arc<dyn Codec> {
         (*self.owner).clone().self_as_codec()
+    }
+
+    /// Creates a new notify channel from this inbound message. It is not guaranteed that the writer
+    /// channel exist or not(i.e. handle may not be valid).
+    pub fn create_sender_handle(&self) -> NotifySender<U> {
+        NotifySender {
+            context: Arc::clone(&self.owner),
+        }
     }
 
     /// Consumes this struct and returns an owned version of it.

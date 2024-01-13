@@ -23,7 +23,7 @@ pub use self::req_rep::Response;
 /// Generic trait for underlying RPC connection.
 ///
 /// It hides complicated generic types and provides a unified interface for RPC connection.
-trait RpcCore<U>: std::fmt::Debug + Send + Sync {
+pub(crate) trait RpcCore<U>: std::fmt::Debug + Send + Sync {
     fn self_as_codec(self: Arc<Self>) -> Arc<dyn Codec>;
     fn codec(&self) -> &dyn Codec;
     fn user_data(&self) -> &U;

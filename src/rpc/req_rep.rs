@@ -33,7 +33,7 @@ pub struct Response {
 
 /// A context for pending RPC requests.
 #[derive(Debug)]
-pub(super) struct RequestContext {
+pub(crate) struct RequestContext {
     /// Codec of owning RPC connection.
     codec: Weak<dyn Codec>,
 

@@ -628,7 +628,7 @@ where
                                 opt_tx_inbound = None;
                                 delivery.0
                             } else {
-                                // Request feature is now disabled,
+                                // Request feature is already disabled,
                                 break Ok(ReadRunnerExitType::AllHandleDropped);
                             }
                         } else {
