@@ -289,19 +289,24 @@ pub mod inbound {
 
     // ========================================================== Response Wait ===|
 
-    pub struct WaitResponse<'a, U: UserData, M: RequestMethod>(
+    pub struct CachedWaitResponse<'a, U: UserData, M: RequestMethod>(
         crate::ReceiveResponse<'a, U>,
         std::marker::PhantomData<M>,
     );
 
-    pub struct ErrorResponse<M>(crate::error::ErrorResponse, std::marker::PhantomData<M>);
+    pub struct CachedErrorResponse<M: RequestMethod>(
+        crate::error::ErrorResponse,
+        M::ErrRecv<'static>,
+    );
 
-    impl<'a, U, M> std::future::Future for WaitResponse<'a, U, M>
+    pub struct CachedOkayResponse<M: RequestMethod>(crate::Response, M::OkRecv<'static>);
+
+    impl<'a, U, M> std::future::Future for CachedWaitResponse<'a, U, M>
     where
         U: UserData,
         M: RequestMethod,
     {
-        type Output = Result<M::OkRecv<'static>, Option<ErrorResponse<M>>>;
+        type Output = Result<M::OkRecv<'static>, Option<CachedErrorResponse<M>>>;
 
         fn poll(
             self: std::pin::Pin<&mut Self>,
@@ -359,13 +364,13 @@ pub mod inbound {
             _: M,
             buf: &mut BytesMut,
             p: &M::ParamSend<'_>,
-        ) -> Result<WaitResponse<'_, U, M>, crate::error::SendMsgError>
+        ) -> Result<CachedWaitResponse<'_, U, M>, crate::error::SendMsgError>
         where
             M: NotifyMethod + RequestMethod,
         {
             self.request(buf, M::METHOD_NAME, p)
                 .await
-                .map(|x| WaitResponse(x, std::marker::PhantomData))
+                .map(|x| CachedWaitResponse(x, std::marker::PhantomData))
         }
 
         pub async fn try_call<M>(
@@ -373,12 +378,12 @@ pub mod inbound {
             _: M,
             buf: &mut BytesMut,
             p: &M::ParamSend<'_>,
-        ) -> Result<WaitResponse<'_, U, M>, crate::error::TrySendMsgError>
+        ) -> Result<CachedWaitResponse<'_, U, M>, crate::error::TrySendMsgError>
         where
             M: NotifyMethod + RequestMethod,
         {
             self.try_request(buf, M::METHOD_NAME, p)
-                .map(|x| WaitResponse(x, std::marker::PhantomData))
+                .map(|x| CachedWaitResponse(x, std::marker::PhantomData))
         }
     }
 }

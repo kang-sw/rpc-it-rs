@@ -85,7 +85,7 @@ pub mod defs {
         pub struct RequestId(NonZeroU32)
     }
 }
-pub mod service;
+pub mod macros;
 
 pub mod ext_codec;
 mod inner {
@@ -113,6 +113,18 @@ pub use rpc::{
     builder, error, Inbound, NotifySender, ReceiveErrorHandler, ReceiveResponse, Receiver,
     RequestSender, Response, UserData, WeakNotifySender, WeakRequestSender,
 };
+
+pub use macros::route::{
+    ExecError as RouteExecError, Router, RouterBuilder, RouterFunc, RouterFuncBuilder,
+};
+
+pub mod cached {
+    pub use crate::macros::inbound::{
+        CachedErrorResponse as ErrorResponse, CachedNotify as Notify,
+        CachedOkayResponse as OkayResponse, CachedRequest as Request,
+        CachedWaitResponse as WaitResponse,
+    };
+}
 
 pub use codec::{Codec, ParseMessage, ResponseError};
 pub use io::{AsyncFrameRead, AsyncFrameWrite};
