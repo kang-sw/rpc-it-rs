@@ -97,34 +97,11 @@ pub enum TryRecvError {
     Empty,
 }
 
-/// Error that occurs when receiving response
-#[derive(Debug, Error)]
-pub enum ReceiveResponseError {
-    #[error("RPC service was disposed.")]
-    Disconnected,
-
-    #[error("Server returned an error: {0:?}")]
-    ErrorResponse(ErrorResponse),
-}
-
 #[derive(Debug)]
 pub struct ErrorResponse {
     pub(super) errc: codec::ResponseError,
     pub(super) codec: Arc<dyn Codec>,
     pub(super) payload: Bytes,
-}
-
-impl ReceiveResponseError {
-    pub fn as_error_response(&self) -> Option<&ErrorResponse> {
-        match self {
-            Self::ErrorResponse(e) => Some(e),
-            _ => None,
-        }
-    }
-
-    pub fn is_disconnected_error(&self) -> bool {
-        matches!(self, Self::Disconnected)
-    }
 }
 
 // ========================================================== Runner Enums ===|

@@ -19,10 +19,7 @@ use crate::{
     UserData,
 };
 
-use super::{
-    error::{ErrorResponse, ReceiveResponseError},
-    ReceiveResponse,
-};
+use super::{error::ErrorResponse, ReceiveResponse};
 
 /// Response message from RPC server.
 #[derive(Debug)]
@@ -81,7 +78,7 @@ impl<'a, U> Future for ReceiveResponse<'a, U>
 where
     U: UserData,
 {
-    type Output = Result<Response, ReceiveResponseError>;
+    type Output = Result<Response, Option<ErrorResponse>>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -96,7 +93,7 @@ where
 
         let reqs = this.owner.reqs();
         if reqs.expired.load(Ordering::SeqCst) {
-            return Poll::Ready(Err(ReceiveResponseError::Disconnected));
+            return Poll::Ready(Err(None));
         }
 
         let lc_entry = reqs.pending_tasks.read();
@@ -108,7 +105,7 @@ where
         // Check if we're ready to retrieve response
         match &mut lc_slot.response {
             ResponseData::None => (),
-            ResponseData::Closed => return Poll::Ready(Err(ReceiveResponseError::Disconnected)),
+            ResponseData::Closed => return Poll::Ready(Err(None)),
             resp @ ResponseData::Ready(..) => {
                 let resp = replace(resp, ResponseData::Unreachable);
                 let ResponseData::Ready(payload, errc) = resp else {
@@ -127,13 +124,10 @@ where
                 //
                 // However, here, we explicitly check if the `Arc<dyn Codec>` is still alive or not
                 // to future change of internal implementation.
-                let codec = reqs
-                    .codec
-                    .upgrade()
-                    .ok_or(ReceiveResponseError::Disconnected)?;
+                let codec = reqs.codec.upgrade().ok_or(None)?;
 
                 return Poll::Ready(if let Some(errc) = errc {
-                    Err(ReceiveResponseError::ErrorResponse(ErrorResponse {
+                    Err(Some(ErrorResponse {
                         errc,
                         codec,
                         payload,

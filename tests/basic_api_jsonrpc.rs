@@ -8,11 +8,7 @@ use futures::{
     task::{Spawn, SpawnExt},
     StreamExt,
 };
-use rpc_it::{
-    error::{ReceiveResponseError, SendMsgError},
-    ext_codec::jsonrpc,
-    ParseMessage, ResponseError,
-};
+use rpc_it::{error::SendMsgError, ext_codec::jsonrpc, ParseMessage, ResponseError};
 
 #[test]
 fn verify_notify() {
@@ -184,9 +180,7 @@ fn verify_request() {
 
                 println!("I.client: receiving response 2");
                 let err = response.await.unwrap_err();
-                let ReceiveResponseError::ErrorResponse(err) = err else {
-                    panic!()
-                };
+                let Some(err) = err else { panic!() };
 
                 assert_eq!(err.errc(), ResponseError::Unhandled);
 
@@ -214,13 +208,7 @@ fn verify_request() {
                 let rep1 = req1.await.unwrap().parse::<i32>().unwrap();
                 let rep2 = req2.await.unwrap().parse::<i32>().unwrap();
                 let rep3 = req3.await.unwrap().parse::<i32>().unwrap();
-                let rep4 = req4
-                    .await
-                    .unwrap_err()
-                    .as_error_response()
-                    .unwrap()
-                    .parse::<i32>()
-                    .unwrap();
+                let rep4 = req4.await.unwrap_err().unwrap().parse::<i32>().unwrap();
 
                 assert_eq!(rep1, 3);
                 assert_eq!(rep2, 7);
