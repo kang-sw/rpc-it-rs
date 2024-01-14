@@ -50,6 +50,16 @@ pub trait ReceiveErrorHandler<U: UserData>: 'static + Send {
         Ok(())
     }
 
+    /// Called when the inbound message is not a valid UTF-8 string.
+    fn on_inbound_method_invalid_utf8(
+        &mut self,
+        user_data: &U,
+        method_bytes: &[u8],
+    ) -> Result<(), ReadRunnerError> {
+        let _ = (user_data, method_bytes);
+        Ok(())
+    }
+
     /// When all receiver channels are dropped but since there are still [`crate::RequestSender`]
     /// instances, the background receiver task is still able to handle inbound messages to deal
     /// with responses from remote peer.
@@ -444,6 +454,12 @@ where
     pub fn drop_request(&self) {
         // Simply take the request range, and drop it.
         let _ = self.atomic_take_req_range();
+    }
+}
+
+impl InboundDelivery {
+    pub(crate) fn method_bytes(&self) -> &[u8] {
+        &self.buffer[self.method.range()]
     }
 }
 

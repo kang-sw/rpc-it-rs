@@ -193,6 +193,7 @@ impl<Wr, Rd, U, C, RH> Builder<Wr, Rd, U, C, RH> {
 
         impl<Wr2> WriterAdapter<Wr2> {
             fn as_inner_pinned(self: Pin<&mut Self>) -> Pin<&mut Wr2> {
+                // SAFETY: We won't move the inner value anywhere. Its usage is limited.
                 unsafe { self.map_unchecked_mut(|x| &mut x.0) }
             }
         }
@@ -618,6 +619,17 @@ where
                             continue;
                         }
                     };
+
+                    if std::str::from_utf8(delivery.method_bytes()).is_err() {
+                        // Method name *MUST* be valid UTF-8 string.
+                        //
+                        // XXX: Should we remove this constraint, allowing arbitrary bytes?
+                        handler.on_inbound_method_invalid_utf8(
+                            &ctx.user_data,
+                            delivery.method_bytes(),
+                        )?;
+                        continue;
+                    }
 
                     let unhandled_delivery = if let Some(tx) = opt_tx_inbound.as_ref() {
                         if let Err(delivery) = tx.send(delivery).await {
