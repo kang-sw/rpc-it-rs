@@ -289,17 +289,20 @@ where
     /// Clones the notify part of the inbound message. Since response can be sent only once, this
     /// struct does not define generic method for completely cloning the internal state.
     ///
-    /// If you want to "retrieve" the request out of this struct, as long as you have a mutable
-    /// reference to self, you can use [`Inbound::take`] method to retrieve the request out of this
-    /// struct as this defines [`Default`] implementation.
-    pub fn clone_notify(&self) -> Inbound<'a, U> {
+    /// If `task_request` is true, it'll retrieve out the request ownership from the inbound
+    /// message.
+    pub fn clone_message(&self, take_request: bool) -> Inbound<'a, U> {
         Inbound {
             owner: self.owner.clone(),
             inner: InboundDelivery {
                 buffer: self.inner.buffer.clone(),
                 method: self.inner.method,
                 payload: self.inner.payload,
-                req_id: 0,
+                req_id: req_id_to_inner(if take_request {
+                    self.atomic_take_req_range()
+                } else {
+                    None
+                }),
             },
         }
     }

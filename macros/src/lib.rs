@@ -10,7 +10,7 @@
 //!   fn method_req(arg: (i32, i32)) -> ();
 //!
 //!   // This is request; you can specify which error type will be returned.
-//!   fn method_req_2<'a, 'borrow>() -> Result<MyParam<'borrow>, &'a str>;
+//!   fn method_req_2() -> Result<MyParam<'_>, &'_ str>;
 //!
 //!   // This is notification, which does not return anything.
 //!   fn method_noti(arg: (i32, i32));
@@ -18,11 +18,11 @@
 //!   #[name = "MethodName"] // Client will encode the method name as this. Server takes either.
 //!   #[route = "MyMethod/*"] // This will define additional route on server side
 //!   #[route = "OtherMethodName"]
-//!   fn method_example<'borrow>(arg: &'borrow str, arg2: &'borrow [u8])
+//!   fn method_example(arg: &'_ str, arg2: &'_ [u8])
 //!
 //!   // If serialization type and deserialization type is different, you can specify it by
 //!   // double underscore and angle brackets, like specifying two parameters on generic type `__`
-//!   fn from_to<'a>(s: __<i32, u64>, b: __<&'a str, String>) -> __<i32, String>;
+//!   fn from_to(s: __<i32, u64>, b: __<&'_ str, String>) -> __<i32, String>;
 //! }
 //!
 //! pub struct MyParam<'a> {
