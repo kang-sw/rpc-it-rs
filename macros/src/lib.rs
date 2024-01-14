@@ -1,10 +1,45 @@
 //! # Procedural macro for generating RPC signatures
 //!
+//! ## Concepts
+//!
+//! - **Method Name**: Name of the method. The sender uses this name when serializing the request.
+//!   The receiver uses this name to find the handler, using 'exact match' strategy. This is the
+//!   very default configuration to filter inbound requests/notifies.
+//! - **Method Route**: When creating server side's method router, you can specify additional route
+//!   configurations for each method. This is useful when you want to create a method that can be
+//!   called with multiple method names/patterns(if router supports it). This is not used for
+//!   outbound requests/notifies.
+//! - **Request Method**: A method that returns a value. The sender will wait for the response.
+//! - **Notification Method**: A method that does not return a value. This is work as
+//!   fire-and-forget method; which you even don't know if the receiver received the request.
+//!
 //! ## Attributes
 //!
+//! ### `#[rpc_it::service(<ATTRS>)]`
+//!
+//! - `flatten`
+//!     - If specified, the generated code will be flattened into the current module.
+//! - `name_prefix = "<PREFIX>"`
+//!     - Every method names will be prefixed with given string.
+//! - `route_prefix = "<PREFIX>"`
+//!     - Every method routes will be prefixed with given string.
+//! - `rename_all = "<CASE>"`
+//!     - Every method names will be renamed with given case.
+//!     - Supported case conventions are `snake_case`, `camelCase`, `PascalCase`,
+//!       `SCREAMING_SNAKE_CASE`, and `kebab-case`. Which follows similar rule with
+//!       `serde(rename_all = "<CASE>")`.
+//!
+//! ### Method Attributes
+//!
+//! - `[name = "<NAME>"]`
+//!     - The method name will be renamed with given string.
+//! - `[route = "<ROUTE>"]`
+//!     - Adds additional route to the method.
+//!
+//! ## Usage
+//!
 //! ```ignore
-//! #[rpc_it::service]
-//! #[service(name_prefix = "Namespace/", rename_all = "PascalCase")]
+//! #[rpc_it::service(name_prefix = "Namespace/", rename_all = "PascalCase")]
 //! extern "module_name" {
 //!   // If return type is specified explicitly, it is treated as request.
 //!   fn method_req(arg: (i32, i32)) -> ();
@@ -37,6 +72,7 @@
 
     mod module_name {
         #![allow(non_camel_case_types)]
+        #![allow(unused)]
 
         pub enum Inbound<U> {
             method_req(::rpc_it::macro::Request<U, self::method_req::Fn>),
@@ -132,7 +168,8 @@
 */
 
 use proc_macro_error::proc_macro_error;
-use quote::quote;
+
+use proc_macro2::TokenStream;
 
 #[proc_macro_error]
 #[proc_macro_attribute]
@@ -140,49 +177,49 @@ pub fn service(
     _attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    // Replace first 'mod' into 'trait'
-    let mut is_trait_now = false;
-    let tokens = item.into_iter().map(|token| {
-        use proc_macro::*;
+    let item = syn::parse_macro_input!(item as syn::ItemForeignMod);
+    let mut model = DataModel::default();
+    let mut out_stream = TokenStream::new();
 
-        if is_trait_now {
-            token
-        } else {
-            if let TokenTree::Ident(ident) = &token {
-                match ident.to_string().as_str() {
-                    "mod" => {
-                        is_trait_now = true;
-                        return TokenTree::Ident(Ident::new("trait", ident.span()));
-                    }
-                    "trait" => {
-                        is_trait_now = true;
-                        return token;
-                    }
-                    _ => {}
-                }
-            }
+    model.parse_attr(_attr);
+    model.main(item, &mut out_stream);
 
-            token
-        }
-    });
-    let mut item = proc_macro::TokenStream::new();
-    item.extend(tokens);
-
-    // Parse module definition as trait definition, to parse function declarations as valid rust
-    // syntax.
-    let parsed = syn::parse::<syn::Item>(item).unwrap();
-    // dbg!(parsed);
-
-    quote! {
-        fn fewfew() {}
-    }
-    .into()
+    out_stream.into()
 }
 
-struct SharedConfig {}
+/// A model which describes parsed declarations
+#[derive(Default)]
+struct DataModel {
+    /// If the descriptions are being generated within current module. All visibility specifications
+    /// will be reduced by one level.
+    is_flattened_module: bool,
 
-struct MethodDefinition {}
+    /// Prefix for all method names.
+    name_prefix: Option<syn::LitStr>,
 
-enum MethodDetail {
-    Request { name: String },
+    /// Prefix for all method routes.
+    route_prefix: Option<syn::LitStr>,
+
+    /// Notify method definitions. Used for generating inbound router.
+    notifies: Vec<MethodDef>,
+
+    /// Request method definitions. Used for generating inbound router.
+    requests: Vec<MethodDef>,
+}
+
+struct MethodDef {
+    vis: syn::Visibility,
+    ident: syn::Ident,
+    name: Option<syn::LitStr>,
+    routes: Vec<syn::LitStr>,
+}
+
+impl DataModel {
+    fn parse_attr(&mut self, attrs: proc_macro::TokenStream) {
+        // TODO:
+    }
+
+    fn main(&mut self, item: syn::ItemForeignMod, out: &mut TokenStream) {
+        // TODO:
+    }
 }
