@@ -295,6 +295,7 @@ impl DataModel {
         }
 
         // TODO: Generate router for inbound requests/notifies
+        // * Router: May response 'ErrorRequestOnNotifyHandler' if notify router receives request
 
         if self.is_flattened_module {
             // Just expand the body as-is.

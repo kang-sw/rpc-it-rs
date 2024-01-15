@@ -126,8 +126,9 @@ pub use macros::route::{
 #[cfg(feature = "proc-macro")]
 pub mod cached {
     pub use crate::macros::inbound::{
-        CachedNotify as Notify, CachedRequest as Request, CachedWaitResponse as WaitResponse,
-        TypedErrorResponse as ErrorResponse, TypedOkayResponse as OkayResponse,
+        CachedErrorResponse as ErrorResponse, CachedNotify as Notify,
+        CachedOkayResponse as OkayResponse, CachedRequest as Request,
+        CachedWaitResponse as WaitResponse,
     };
 }
 

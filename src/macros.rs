@@ -1,13 +1,16 @@
 use serde::{Deserialize, Serialize};
 
 pub mod route {
+    use bytes::Bytes;
     use thiserror::Error;
 
     use crate::{Inbound, UserData};
 
     /// A function which actually deals with inbound message.
-    pub type ExecFunc<U> =
-        dyn for<'a> Fn(Inbound<'a, U>) -> Result<(), ExecError> + Send + Sync + 'static;
+    pub type ExecFunc<U> = dyn for<'a> Fn(&mut Option<Inbound<'a, U>>) -> Result<(), ExecError>
+        + Send
+        + Sync
+        + 'static;
 
     /// Error from execution function
     #[derive(Error, Debug)]
@@ -112,12 +115,32 @@ pub mod route {
         R: RouterFunc,
     {
         /// Route received inbound to predefined handler function.
-        pub fn route(&self, inbound: Inbound<'_, U>) -> Result<(), ExecError> {
+        ///
+        /// # Panics
+        ///
+        /// This function panics if the inbound message is [`None`].
+        pub fn route(
+            &self,
+            inbound_revoked_on_error: &mut Option<Inbound<'_, U>>,
+        ) -> Result<(), ExecError> {
+            let opt_inbound = inbound_revoked_on_error;
+
+            let Some(inbound) = opt_inbound else {
+                panic!(
+                    "Inbound message is None.\
+                     The inbound message is 'Option' to avoid unnecessary cloning, not for \
+                     indicating the message is optional!"
+                );
+            };
+
             let Some(index) = self.route_func.route(inbound.method()) else {
                 return Err(ExecError::RouteFailed);
             };
 
-            self.funcs[index](inbound)?;
+            self.funcs[index](opt_inbound)?;
+
+            // On successful invocation, the inbound message should be taken out.
+            opt_inbound.take();
 
             Ok(())
         }
@@ -222,8 +245,21 @@ pub mod inbound {
     }
 
     pub struct CachedNotify<U: UserData, M: NotifyMethod> {
-        ib: Inbound<'static, U>,
+        /// NOTE: Paramter order is important; `ib` must be dropped after `v` disposed, as it
+        /// borrows the underlying buffer of inbound `ib`
         v: M::ParamRecv<'static>,
+
+        ///
+        ///
+        /// **_WARNING_**
+        ///
+        /// !!! KEEP `ib` AS THE LAST FIELD !!!
+        ///
+        /// **_WARNING_**
+        ///
+        ///
+        /// This field should never be exposed as mutable reference.
+        ib: Inbound<'static, U>,
     }
 
     struct F;
@@ -250,11 +286,10 @@ pub mod inbound {
         #[doc(hidden)]
         pub unsafe fn __internal_create(
             msg: Inbound<'static, U>,
-            parsed: M::ParamRecv<'_>,
-        ) -> Self {
-            Self {
-                inner: CachedNotify::__internal_create(msg, parsed),
-            }
+        ) -> Result<Self, erased_serde::Error> {
+            Ok(Self {
+                inner: CachedNotify::__internal_create(msg)?,
+            })
         }
 
         pub async fn response<'a>(
@@ -302,12 +337,21 @@ pub mod inbound {
         #[doc(hidden)]
         pub unsafe fn __internal_create(
             msg: Inbound<'static, U>,
-            parsed: M::ParamRecv<'_>,
-        ) -> Self {
-            Self {
+        ) -> Result<Self, erased_serde::Error> {
+            Ok(Self {
+                // SAFETY:
+                // * The borrowed lifetime `'de` is bound to the payload of the inbound message, not
+                //   the object itself. Since `CachedNotify` holds the inbound message as long as
+                //   the object lives, the lifetime of the payload is also valid.
+                // * During the entire lifetime of the parsed object, to ensure that the borrowed
+                //   reference is valid, the buffer of the inbound message won't be dropped during
+                //   `v`'s lifetime.
+                v: unsafe {
+                    let msg_ptr = &msg as *const Inbound<'static, U>;
+                    transmute((*msg_ptr).parse::<M::ParamRecv<'_>>()?)
+                },
                 ib: msg,
-                v: transmute(parsed),
-            }
+            })
         }
 
         pub fn args(&self) -> &M::ParamRecv<'_> {
@@ -335,17 +379,23 @@ pub mod inbound {
     );
 
     // TODO: Parse API, Deref Inner API
-    pub struct TypedErrorResponse<M: RequestMethod>(ErrorResponse, PhantomData<M>);
+    pub struct CachedErrorResponse<M: RequestMethod>(
+        ErrorResponse,
+        Result<M::ErrRecv<'static>, erased_serde::Error>,
+    );
 
     // TODO: Parse API, Deref Inner API
-    pub struct TypedOkayResponse<M: RequestMethod>(crate::Response, PhantomData<M>);
+    pub struct CachedOkayResponse<M: RequestMethod>(
+        crate::Response,
+        Result<M::OkRecv<'static>, erased_serde::Error>,
+    );
 
     impl<'a, U, M> std::future::Future for CachedWaitResponse<'a, U, M>
     where
         U: UserData,
         M: RequestMethod,
     {
-        type Output = Result<TypedOkayResponse<M>, Option<TypedErrorResponse<M>>>;
+        type Output = Result<CachedOkayResponse<M>, Option<CachedErrorResponse<M>>>;
 
         fn poll(
             self: std::pin::Pin<&mut Self>,
@@ -359,7 +409,7 @@ pub mod inbound {
                     let parsed = x.parse::<M::OkRecv<'_>>();
                     todo!()
                 })
-                .map_err(|x| x.map(|x| TypedErrorResponse(x, PhantomData)))
+                .map_err(|x| x.map(|x| todo!()))
                 .into()
         }
     }
