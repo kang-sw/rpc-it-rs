@@ -328,9 +328,15 @@ impl DataModel {
                 }
             }
 
-            const <method_name>: <method_name>::Method = <method_name>::Method;
-
-
+            <elevated_vis> fn <method_name>(<ser_params>...) -> (
+                <method_name>::Method,
+                <method_name>::ParamSend<'_>,
+            ) {
+                (
+                    <method_name>::Method,
+                    <ser_params>...,
+                )
+            }
         */
 
         // 1. Analyze visibility and name
@@ -353,6 +359,7 @@ impl DataModel {
             // * Collect documentation
         }
 
+        let serializer_method;
         let tok_input = {
             // TODO: Generate Input Type impl Trait
             let args = item
@@ -391,13 +398,56 @@ impl DataModel {
                 }
             };
 
-            let types_ser = make_into_tuple(&types_ser);
-            let types_de = make_into_tuple(&types_de);
+            let types_ser_tup = make_into_tuple(&types_ser);
+            let types_de_tup = make_into_tuple(&types_de);
+
+            serializer_method = {
+                let idents = args
+                    .iter()
+                    .enumerate()
+                    .map(|(index, arg)| {
+                        if let syn::Pat::Ident(ident) = &*arg.pat {
+                            ident.ident.clone()
+                        } else {
+                            syn::Ident::new(&format!("___{index}"), arg.pat.span())
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                assert!(idents.len() == types_ser.len());
+
+                let tok_return = if idents.is_empty() {
+                    quote!(())
+                } else {
+                    quote!((#(#idents),*))
+                };
+
+                let tok_input = if idents.is_empty() {
+                    quote!()
+                } else {
+                    let zipped_tokens = idents
+                        .iter()
+                        .zip(types_ser.iter())
+                        .map(|(ident, ty)| quote!(#ident: #ty));
+                    quote!(#(#zipped_tokens),*)
+                };
+
+                quote!(
+                    #vis_outer fn #method_ident<'___ser>(#tok_input)
+                      -> (#method_ident::Method, <#method_ident::Method as ::rpc_it::macros::NotifyMethod>::ParamSend<'___ser>)
+                    {
+                        (
+                            #method_ident::Method,
+                            #tok_return
+                        )
+                    }
+                )
+            };
 
             quote!(
                 impl ___crate::NotifyMethod for Method {
-                    type ParamSend<'___ser> = #types_ser;
-                    type ParamRecv<'___de> = #types_de;
+                    type ParamSend<'___ser> = #types_ser_tup;
+                    type ParamRecv<'___de> = #types_de_tup;
 
                     const METHOD_NAME: &'static str = #method_name;
                 }
@@ -423,7 +473,8 @@ impl DataModel {
                 #tok_output
             }
 
-            #vis_outer fn #method_ident(_: #method_ident::Method) {}
+            // #vis_outer fn #method_ident(_: #method_ident::Method) {}
+            #serializer_method
         ));
     }
 }

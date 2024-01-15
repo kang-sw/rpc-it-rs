@@ -368,28 +368,26 @@ pub mod inbound {
     where
         U: UserData,
     {
-        pub async fn noti<N>(
+        pub async fn noti<M>(
             &self,
-            _: fn(N),
             buf: &mut BytesMut,
-            p: &N::ParamSend<'_>,
+            (_, p): (M, M::ParamSend<'_>),
         ) -> Result<(), crate::error::SendMsgError>
         where
-            N: NotifyMethod,
+            M: NotifyMethod,
         {
-            self.notify(buf, N::METHOD_NAME, &p).await
+            self.notify(buf, M::METHOD_NAME, &p).await
         }
 
-        pub fn try_noti<N>(
+        pub fn try_noti<M>(
             &self,
-            _: fn(N),
             buf: &mut BytesMut,
-            p: N::ParamSend<'_>,
+            (_, p): (M, M::ParamSend<'_>),
         ) -> Result<(), crate::error::TrySendMsgError>
         where
-            N: NotifyMethod,
+            M: NotifyMethod,
         {
-            self.try_notify(buf, N::METHOD_NAME, &p)
+            self.try_notify(buf, M::METHOD_NAME, &p)
         }
     }
 
@@ -399,9 +397,8 @@ pub mod inbound {
     {
         pub async fn call<M>(
             &self,
-            _: fn(M),
             buf: &mut BytesMut,
-            p: M::ParamSend<'_>,
+            (_, p): (M, M::ParamSend<'_>),
         ) -> Result<CachedWaitResponse<'_, U, M>, crate::error::SendMsgError>
         where
             M: NotifyMethod + RequestMethod,
@@ -413,9 +410,8 @@ pub mod inbound {
 
         pub fn try_call<M>(
             &self,
-            _: fn(M),
             buf: &mut BytesMut,
-            p: M::ParamSend<'_>,
+            (_, p): (M, M::ParamSend<'_>),
         ) -> Result<CachedWaitResponse<'_, U, M>, crate::error::TrySendMsgError>
         where
             M: NotifyMethod + RequestMethod,

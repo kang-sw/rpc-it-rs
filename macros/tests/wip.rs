@@ -21,7 +21,6 @@ fn __compile_test() {
     #[allow(invalid_value)]
     let handle: rpc_it::RequestSender<()> = unsafe { std::mem::zeroed() };
 
-    handle
-        .try_noti(prods::eoo, &mut Default::default(), (&3, &4.))
-        .ok();
+    let b = &mut Default::default();
+    handle.try_noti(b, prods::eoo(&32, &4.1)).ok();
 }
