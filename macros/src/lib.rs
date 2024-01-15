@@ -496,7 +496,13 @@ fn retr_ser_de_params(ty: &Type) -> Option<(Type, Type)> {
 
 // Replace 'EVERY' lifetime occurrences into given lifetime.
 fn replace_lifetime_occurence(a: &mut Type, life: &syn::Lifetime, skip_static: bool) {
-    fn replace_inner(a: &mut syn::Lifetime, life: &syn::Lifetime, skip_static: bool) {}
+    fn replace_inner(a: &mut syn::Lifetime, life: &syn::Lifetime, skip_static: bool) {
+        if skip_static && a.ident == "static" {
+            return;
+        }
+
+        a.ident = life.ident.clone();
+    }
 
     match a {
         Type::Array(x) => replace_lifetime_occurence(&mut x.elem, life, skip_static),
@@ -531,8 +537,45 @@ fn replace_lifetime_occurence(a: &mut Type, life: &syn::Lifetime, skip_static: b
             _ => (),
         }),
 
-        Type::Reference(_) => (),
-        Type::Path(_) => (),
+        Type::Reference(x) => {
+            if let Some(lf) = &mut x.lifetime {
+                replace_inner(lf, life, skip_static)
+            }
+
+            replace_lifetime_occurence(&mut x.elem, life, skip_static)
+        }
+
+        Type::Path(pat) => {
+            if let Some(qs) = &mut pat.qself {
+                replace_lifetime_occurence(&mut qs.ty, life, skip_static);
+            }
+
+            pat.path.segments.iter_mut().for_each(
+                |syn::PathSegment {
+                     ident: _,
+                     arguments,
+                 }| match arguments {
+                    syn::PathArguments::None => (),
+                    syn::PathArguments::AngleBracketed(items) => {
+                        items.args.iter_mut().for_each(|x| {
+                            if let syn::GenericArgument::Lifetime(lf) = x {
+                                replace_inner(lf, life, skip_static)
+                            }
+                        });
+                    }
+                    syn::PathArguments::Parenthesized(items) => {
+                        items
+                            .inputs
+                            .iter_mut()
+                            .for_each(|x| replace_lifetime_occurence(x, life, skip_static));
+
+                        if let syn::ReturnType::Type(_, ty) = &mut items.output {
+                            replace_lifetime_occurence(ty, life, skip_static);
+                        }
+                    }
+                },
+            );
+        }
 
         _ => (),
     }
