@@ -184,7 +184,31 @@ pub trait NotifyMethod {
     const METHOD_NAME: &'static str;
 }
 
+/// Tries to verify if we can generate following code
+#[test]
+#[ignore]
+fn xx() {
+    #[derive(Serialize, Deserialize)]
+    struct Foo<'a> {
+        x: &'a str,
+    }
+
+    struct MyMethod;
+
+    impl NotifyMethod for MyMethod {
+        type ParamSend<'a> = Foo<'a>;
+        type ParamRecv<'de> = Foo<'de>;
+
+        const METHOD_NAME: &'static str = "my_method";
+    }
+
+    let payload = "{}";
+    let _ = serde_json::from_str::<<MyMethod as NotifyMethod>::ParamRecv<'_>>(payload);
+}
+
 pub mod inbound {
+    use std::mem::transmute;
+
     use bytes::BytesMut;
 
     use crate::{Inbound, NotifySender, RequestSender, UserData};
@@ -216,8 +240,16 @@ pub mod inbound {
         U: UserData,
         M: RequestMethod + NotifyMethod,
     {
+        /// # Safety
+        ///
+        /// This function is unsafe because it transmutes received parsed value to static lifetime.
+        /// To ensure safety, any borrowed reference in the parsed value must be originated from the
+        /// buffer of the inbound message.
         #[doc(hidden)]
-        pub fn __internal_create(msg: Inbound<'static, U>, parsed: M::ParamRecv<'static>) -> Self {
+        pub unsafe fn __internal_create(
+            msg: Inbound<'static, U>,
+            parsed: M::ParamRecv<'_>,
+        ) -> Self {
             Self {
                 inner: CachedNotify::__internal_create(msg, parsed),
             }
@@ -266,12 +298,18 @@ pub mod inbound {
         M: NotifyMethod,
     {
         #[doc(hidden)]
-        pub fn __internal_create(msg: Inbound<'static, U>, parsed: M::ParamRecv<'static>) -> Self {
-            Self { ib: msg, v: parsed }
+        pub unsafe fn __internal_create(
+            msg: Inbound<'static, U>,
+            parsed: M::ParamRecv<'_>,
+        ) -> Self {
+            Self {
+                ib: msg,
+                v: transmute(parsed),
+            }
         }
 
         pub fn param(&self) -> &M::ParamRecv<'_> {
-            unsafe { std::mem::transmute(&self.v) }
+            unsafe { transmute(&self.v) }
         }
     }
 

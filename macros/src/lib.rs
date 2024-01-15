@@ -28,6 +28,8 @@
 //!     - Supported case conventions are `snake_case`, `camelCase`, `PascalCase`,
 //!       `SCREAMING_SNAKE_CASE`, and `kebab-case`. Which follows similar rule with
 //!       `serde(rename_all = "<CASE>")`.
+//! - `vis= "<VIS>"`
+//!     - Visibility of generated methods. If not specified, it will be none.
 //!
 //! ### Method Attributes
 //!
@@ -42,22 +44,22 @@
 //! #[rpc_it::service(name_prefix = "Namespace/", rename_all = "PascalCase")]
 //! extern "module_name" {
 //!   // If return type is specified explicitly, it is treated as request.
-//!   fn method_req(arg: (i32, i32)) -> ();
+//!   fn MethodReq(arg: (i32, i32)) -> ();
 //!
 //!   // This is request; you can specify which error type will be returned.
-//!   fn method_req_2() -> Result<MyParam<'_>, &'_ str>;
+//!   fn MethodReq2() -> Result<MyParam<'_>, &'_ str>;
 //!
 //!   // This is notification, which does not return anything.
-//!   fn method_noti(arg: (i32, i32));
+//!   fn MethodNotify(arg: (i32, i32));
 //!
 //!   #[name = "MethodName"] // Client will encode the method name as this. Server takes either.
 //!   #[route = "MyMethod/*"] // This will define additional route on server side
 //!   #[route = "OtherMethodName"]
-//!   fn method_example(arg: &'_ str, arg2: &'_ [u8])
+//!   fn MethodExample(arg: &'_ str, arg2: &'_ [u8])
 //!
 //!   // If serialization type and deserialization type is different, you can specify it by
 //!   // double underscore and angle brackets, like specifying two parameters on generic type `__`
-//!   fn from_to(s: __<i32, u64>, b: __<&'_ str, String>) -> __<i32, String>;
+//!   fn FromTo(s: __<i32, u64>, b: __<&'_ str, String>) -> __<i32, String>;
 //! }
 //!
 //! pub struct MyParam<'a> {
@@ -66,125 +68,45 @@
 //! }
 //! ```
 //!
+//! ## Client side
+//!
+//! ```ignore
+//!
+//! let client: RequestSender = unimplemented!();
+//!
+//! client.try_call(module_name::method_req, )
+//! ```
+//!
 
-/*
-    * TODO: Distinguish borrow and non-borrow types.
-
-    mod module_name {
-        #![allow(non_camel_case_types)]
-        #![allow(unused)]
-
-        pub enum Inbound<U> {
-            method_req(::rpc_it::macro::Request<U, self::method_req::Fn>),
-            method_req_2(::rpc_it::macro::Request<U, self::method_req_2::Fn>),
-            method_noti(::rpc_it::service::Notification<U, self::method_noti::Fn>),
-        }
-
-        impl<U> Inbound where U: UserData {
-            pub fn route<F: Fn(Self) + Send + Sync + 'static>(
-                router: &mut ::rpc_it::Router<U>,
-                handler: impl Into<Arc<F>>,
-            )
-            {
-                let handler = handler.into();
-
-                {
-                    let handler = handler.clone();
-
-                    router.add_route("method_req", |inbound| {
-                        unimplemented!("decode inbound and create 'Inbound' -> call handler");
-                        handler(Self::message_req(unimplemented!()))
-                    })
-                }
-            }
-        }
-
-        pub mod method_req {
-            pub struct Fn;
-
-            impl ::rpc_it::RequestMethod for method_req {
-                type ParamSend<'a> = (i32, i32);
-                type ParamRecv = (i32, i32);
-
-                type ResultSend<'a> = ();
-                type ResultRecv = ();
-            }
-        }
-
-        pub mod method_req_2 {
-            pub struct Fn;
-
-            impl ::rpc_it::RequestMethod for method_req_2 {
-                type ParamSend<'a> = ();
-                type ParamRecv = ();
-
-                type ResultSend<'a> = Result<MyParam<'a>, &'a str>;
-                type ResultRecv = Result<Okay, Error>;
-            }
-
-            // Generate self-containing deserialized caches for each type that contains borrowed
-            // lifetimes. Number of required lifetimes should be automatically counted from
-            // function signature.
-
-            pub struct Okay(::rpc_it::Bytes, MyParam<'static>);
-
-            impl Okay {
-                pub fn new(codec, payload) -> Self {
-                    todo!("Decode payload, and transmute to elevate into static lifetime")
-                }
-
-                pub fn get<'__this>(&'__this self) -> &'__this MyParam<'__this> {
-                    &self.1
-                }
-            }
-
-            pub struct Error(::rpc_it::Bytes, &'static str);
-
-            impl Error {
-                pub fn new(codec, payload) -> Self {
-                    todo!("Decode payload, and transmute to elevate into static lifetime")
-                }
-
-                pub fn get<'__this>(&'__this self) -> &'__this str {
-                    &self.1
-                }
-            }
-        }
-
-        pub mod method_noti {
-            pub struct Fn;
-
-            impl ::rpc_it::NotifyMethod for method_noti {
-                type ParamSend<'a> = (i32, i32);
-                type ParamRecv = (i32, i32);
-            }
-        }
-    }
-
-    sender.req(module_name::method_req::Fn, &(1, 2));
-    sender.try_req(module_name::method_req::Fn, &(1, 2));
-    sender.noti(module_name::method_noti::Fn, &(1, 2)).await;
-    sender.try_noti(module_name::method_noti::Fn, &(1, 2));
-*/
+use std::{borrow::Borrow, mem::take, sync::OnceLock};
 
 use convert_case::Case;
-use proc_macro_error::proc_macro_error;
+use proc_macro_error::{abort, emit_error, proc_macro_error};
 
 use proc_macro2::TokenStream;
-use syn::{punctuated::Punctuated, spanned::Spanned, Meta, Token};
+use quote::{quote, quote_spanned, ToTokens};
+use syn::{
+    punctuated::Punctuated, spanned::Spanned, ForeignItem, LitStr, Meta, PathSegment, Token,
+};
 
-macro_rules! unwrap_result {
+macro_rules! ok_or {
     ($expr:expr) => {
         match $expr {
-            Ok(expr) => expr,
-            Err(err) => proc_macro_error::abort_call_site!("{}", err),
+            Ok(expr) => Some(expr),
+            Err(err) => {
+                proc_macro_error::emit_call_site_error!("{}", err);
+                None
+            }
         }
     };
 
     ($span:expr, $expr:expr) => {
         match $expr {
-            Ok(expr) => expr,
-            Err(err) => proc_macro_error::abort!($span, "{}", err),
+            Ok(expr) => Some(expr),
+            Err(err) => {
+                proc_macro_error::emit_error!($span, "{}", err);
+                None
+            }
         }
     };
 }
@@ -226,6 +148,9 @@ struct DataModel {
     /// Rename all method names with given case.
     rename_all: Option<Case>,
 
+    /// Visibility of generated methods.
+    vis: Option<syn::Visibility>,
+
     /// Notify method definitions. Used for generating inbound router.
     notifies: Vec<MethodDef>,
 
@@ -242,7 +167,6 @@ struct MethodDef {
 
 impl DataModel {
     fn parse_attr(&mut self, attrs: proc_macro2::TokenStream) {
-        // TODO:
         let attrs: syn::Meta = syn::parse_quote_spanned! { attrs.span() => service(#attrs) };
         let syn::Meta::List(attrs) = attrs else {
             return;
@@ -269,11 +193,22 @@ impl DataModel {
                 }
                 Meta::NameValue(meta) => {
                     if meta.path.is_ident("name_prefix") {
-                        self.name_prefix = expr_unwrap_lit_str(meta.value);
+                        self.name_prefix = expr_into_lit_str(meta.value);
                     } else if meta.path.is_ident("route_prefix") {
-                        self.route_prefix = expr_unwrap_lit_str(meta.value);
+                        self.route_prefix = expr_into_lit_str(meta.value);
+                    } else if meta.path.is_ident("vis") {
+                        let Some(str) = expr_into_lit_str(meta.value) else {
+                            continue;
+                        };
+
+                        let Some(vis) = ok_or!(str.parse::<syn::Visibility>()) else {
+                            emit_error!(str, "Failed to parse visibility");
+                            continue;
+                        };
+
+                        self.vis = Some(vis);
                     } else if meta.path.is_ident("rename_all") {
-                        let Some(str) = expr_unwrap_lit_str(meta.value) else {
+                        let Some(str) = expr_into_lit_str(meta.value) else {
                             continue;
                         };
 
@@ -316,11 +251,154 @@ impl DataModel {
     }
 
     fn main(&mut self, item: syn::ItemForeignMod, out: &mut TokenStream) {
-        // TODO:
+        let mut vis_level = 0;
+
+        if !self.is_flattened_module {
+            vis_level += 1;
+
+            let name_parse_result = item.abi.name.as_ref().unwrap().parse::<syn::Ident>();
+            let Some(ident) = ok_or!(item.abi.name.span(), name_parse_result) else {
+                abort!(
+                    item.abi.name.span(),
+                    "'{}' can't be made into valid identifier",
+                    item.abi.name.as_ref().unwrap().value()
+                );
+            };
+
+            let module_vis = self.vis.as_ref().unwrap_or(&syn::Visibility::Inherited);
+            out.extend(quote!(#module_vis mod #ident))
+        }
+
+        let mut out_body = TokenStream::new();
+
+        for item in item.items.into_iter() {
+            match item {
+                ForeignItem::Fn(x) => self.generate_item_fn(x, vis_level, &mut out_body),
+                other => emit_error!(other, "Expected function declaration"),
+            }
+        }
+
+        // TODO: Generate router for inbound requests/notifies
+
+        if self.is_flattened_module {
+            // Just expand the body as-is.
+            out.extend(out_body);
+        } else {
+            // Wrap the result in block
+            out.extend(quote!({ #out_body }))
+        }
+    }
+
+    fn generate_item_fn(
+        &mut self,
+        item: syn::ForeignItemFn,
+        vis_offset: usize,
+        out: &mut TokenStream,
+    ) {
+        macro_rules! static_tok {
+            ($($tok:tt)*) => {
+                {
+                    thread_local! {
+                        static TOK: ::std::rc::Rc<TokenStream> = ::std::rc::Rc::new(quote!($($tok)*));
+                    }
+
+                    TOK.with(|tok| tok.clone())
+                }
+            };
+        }
+
+        let mod_macros = static_tok!(::rpc_it::macros);
+
+        /*
+            <elevated_vis> mod <method_name> {
+                #![allow(non_camel_case_types)]
+
+                struct Method;
+
+                impl NotifyMethod for Method {
+                    type ParamSend<'a> = ..;
+                    type ParamRecv<'a> = ..;
+                }
+
+                impl RequestMethod for Method {
+                    ..
+                }
+            }
+
+            const <method_name>: <method_name>::Method = <method_name>::Method;
+        */
+
+        // 1. Analyze visibility and name
+
+        // 2. Generate method definition
+
+        // 3. Analyze input types; generate `impl NotifyMethod`
+
+        // 4. Analyze output types; generate `impl RequestMethod`
     }
 }
 
-fn expr_unwrap_lit_str(expr: syn::Expr) -> Option<syn::LitStr> {
+fn elevate_vis_level(mut in_vis: syn::Visibility, amount: usize) -> syn::Visibility {
+    // - TODO: pub(super) -> pub(super::super)
+    // - TODO: None -> pub(super)
+    // - TODO: pub(in crate::...) -> absolute; as is
+    // - TODO: pub(in super::...) -> pub(in super::super::...)
+
+    if amount == 0 {
+        return in_vis;
+    }
+
+    match in_vis {
+        syn::Visibility::Public(_) => in_vis,
+        syn::Visibility::Restricted(ref mut vis) => {
+            let first_ident = &vis.path.segments.first().unwrap().ident;
+
+            if first_ident == "crate" {
+                // pub(in crate::...) -> Don't need to elevate
+                return in_vis;
+            }
+
+            if vis.in_token.is_some() && vis.path.leading_colon.is_some() {
+                // Absolute path
+                return in_vis;
+            }
+
+            let is_first_token_self = first_ident == "self";
+            let source = take(&mut vis.path.segments);
+            vis.path.segments.extend(
+                std::iter::repeat(PathSegment {
+                    arguments: syn::PathArguments::None,
+                    ident: syn::Ident::new("super", vis.span()),
+                })
+                .take(amount),
+            );
+            vis.path
+                .segments
+                .extend(source.into_iter().skip(is_first_token_self as usize));
+
+            in_vis
+        }
+        syn::Visibility::Inherited => {
+            let span = || in_vis.span();
+            syn::Visibility::Restricted(syn::VisRestricted {
+                pub_token: Token![pub](span()),
+                paren_token: syn::token::Paren(span()),
+                in_token: Some(Token![in](span())),
+                path: Box::new(syn::Path {
+                    leading_colon: None,
+                    segments: std::iter::repeat(syn::PathSegment {
+                        arguments: syn::PathArguments::None,
+                        ident: syn::Ident::new("super", span()),
+                    })
+                    .take(amount)
+                    .collect(),
+                }),
+            })
+        }
+    }
+}
+
+fn expr_into_lit_str(expr: syn::Expr) -> Option<syn::LitStr> {
     match expr {
         syn::Expr::Lit(expr) => match expr.lit {
             syn::Lit::Str(lit) => return Some(lit),

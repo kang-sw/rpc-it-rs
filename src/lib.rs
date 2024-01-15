@@ -85,7 +85,12 @@ pub mod defs {
         pub struct RequestId(NonZeroU32)
     }
 }
+
+#[cfg(feature = "proc-macro")]
 pub mod macros;
+
+#[cfg(feature = "proc-macro")]
+pub use rpc_it_macros::service;
 
 pub mod ext_codec;
 mod inner {
