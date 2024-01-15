@@ -1,19 +1,14 @@
-#![cfg(all(feature = "jsonrpc", feature = "in-memory-io"))]
-
 use std::sync::Arc;
 
 use bytes::BytesMut;
-use futures::{
-    executor::LocalPool,
-    task::{Spawn, SpawnExt},
-    StreamExt,
-};
-use rpc_it::{error::SendMsgError, ext_codec::jsonrpc, ParseMessage, ResponseError};
+use futures::{executor::LocalPool, task::SpawnExt, StreamExt};
+use rpc_it::{error::SendMsgError, ext_codec::jsonrpc, Codec, ParseMessage, ResponseError};
 
 use crate::shared::create_default_rpc_pair;
 
 mod shared;
 
+#[cfg(feature = "jsonrpc")]
 #[test]
 fn verify_notify() {
     let (tx, rx) = rpc_it::io::in_memory(1);
@@ -73,10 +68,16 @@ fn verify_notify() {
 }
 
 #[test]
-fn verify_request() {
+#[cfg(feature = "jsonrpc")]
+fn verify_request_jsonrpc() {
+    verify_request(|| jsonrpc::Codec);
+}
+
+fn verify_request<C: Codec>(codec: impl Fn() -> C) {
     let mut executor = LocalPool::new();
+
     let spawner = executor.spawner();
-    let (client, server) = create_default_rpc_pair(&spawner, (), ());
+    let (client, server) = create_default_rpc_pair(&spawner, (), (), codec);
 
     let test_counter = Arc::new(());
 

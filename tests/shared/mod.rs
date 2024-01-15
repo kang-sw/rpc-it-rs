@@ -1,5 +1,7 @@
+#![cfg(feature = "in-memory-io")]
+
 use futures::task::{Spawn, SpawnExt};
-use rpc_it::{ext_codec::jsonrpc, Codec, ReceiveErrorHandler};
+use rpc_it::{Codec, ReceiveErrorHandler};
 
 #[derive(Clone, Debug)]
 pub struct ConnectionConfig {
@@ -20,14 +22,16 @@ impl Default for ConnectionConfig {
     }
 }
 
-pub fn create_default_rpc_pair<US, UC>(
+pub fn create_default_rpc_pair<US, UC, C>(
     spawner: &impl Spawn,
     server_user_data: US,
     client_user_data: UC,
+    codec: impl Fn() -> C,
 ) -> (rpc_it::RequestSender<UC>, rpc_it::Receiver<US>)
 where
     US: rpc_it::UserData,
     UC: rpc_it::UserData,
+    C: Codec,
 {
     create_rpc_pair(
         spawner,
@@ -35,7 +39,7 @@ where
         client_user_data,
         (),
         (),
-        || jsonrpc::Codec,
+        codec,
         Default::default(),
     )
 }
