@@ -1,50 +1,59 @@
-//! # Procedural macro for generating RPC signatures
+//! # Procedural Macro for Generating RPC Signatures
 //!
-//! ## Concepts
+//! This documentation explains the procedural macro used for generating RPC signatures, focusing on
+//! key concepts and attributes.
 //!
-//! - **Method Name**: Name of the method. The sender uses this name when serializing the request.
-//!   The receiver uses this name to find the handler, using 'exact match' strategy. This is the
-//!   very default configuration to filter inbound requests/notifies.
-//! - **Method Route**: When creating server side's method router, you can specify additional route
-//!   configurations for each method. This is useful when you want to create a method that can be
-//!   called with multiple method names/patterns(if router supports it). This is not used for
-//!   outbound requests/notifies.
-//! - **Request Method**: A method that returns a value. The sender will wait for the response.
-//! - **Notification Method**: A method that does not return a value. This is work as
-//!   fire-and-forget method; which you even don't know if the receiver received the request.
+//! ## Key Concepts
+//!
+//! - **Method Name**: The identifier for a method. Senders use this name to serialize requests,
+//!   while receivers use it to locate the appropriate handler through an 'exact match' strategy.
+//!   This is the default approach for filtering inbound requests and notifications.
+//!
+//! - **Method Route**: In server-side method routing, you can specify additional routing
+//!   configurations for each method. This is useful for creating methods that respond to multiple
+//!   names or patterns (if supported by the router). Method routes are not applicable to outbound
+//!   requests or notifications.
+//!
+//! - **Request Method**: A method that returns a value. The sender waits for a response from this
+//!   type of method.
+//!
+//! - **Notification Method**: A method that does not return a value. It operates on a
+//!   'fire-and-forget' basis, meaning the sender has no confirmation of the receiver having
+//!   received the request.
 //!
 //! ## Attributes
 //!
-//! ### `#[rpc_it::service(<ATTRS>)]`
+//! ### Service Attribute: `#[rpc_it::service(<ATTRS>)]`
 //!
 //! - `flatten`
-//!     - If specified, the generated code will be flattened into the current module.
+//!     - When specified, the generated code is integrated into the current module.
 //! - `name_prefix = "<PREFIX>"`
-//!     - Every method names will be prefixed with given string.
+//!     - Appends a specified prefix to every method name.
 //! - `route_prefix = "<PREFIX>"`
-//!     - Every method routes will be prefixed with given string.
+//!     - Appends a specified prefix to every method route.
 //! - `rename_all = "<CASE>"`
-//!     - Every method names will be renamed with given case.
-//!     - Supported case conventions are `snake_case`, `camelCase`, `PascalCase`,
-//!       `SCREAMING_SNAKE_CASE`, and `kebab-case`. Which follows similar rule with
+//!     - Renames all default method names according to the specified case convention.
+//!         - Explicit renamings using `#[name = "<NAME>"]` are exempt from this rule.
+//!     - Supported case conventions: `snake_case`, `camelCase`, `PascalCase`,
+//!       `SCREAMING_SNAKE_CASE`, `kebab-case`. The convention follows rules similar to
 //!       `serde(rename_all = "<CASE>")`.
 //! - `vis= "<VIS>"`
-//!     - Visibility of generated methods. If not specified, it will be none.
+//!     - Sets the visibility of generated methods. Defaults to private if unspecified.
 //!
 //! ### Method Attributes
 //!
 //! - `[name = "<NAME>"]`
-//!     - The method name will be renamed with given string.
+//!     - Renames the method to the specified string.
 //! - `[route = "<ROUTE>"]`
-//!     - Adds additional route to the method.
+//!     - Adds an additional route to the method.
 //!
 //! ## Serialization / Deserialization Rules
 //!
-//! - For single argument method, the argument will be serialized as-is.
-//! - For multiple argument method, the arguments will be serialized as tuple(array in most
-//!   serialization formats).
-//!     - If you want the single argument to be serialized as tuple, you can wrap it with
-//!       additional tuple. (e.g. T -> (T,))
+//! - Single-argument methods: The argument is serialized as-is.
+//! - Multi-argument methods: Arguments are serialized as a tuple (array in most serialization
+//!   formats).
+//!     - To serialize a single argument as a tuple, wrap it in an additional tuple (e.g., `T`
+//!       becomes `(T,)`).
 //!
 //! ## Usage
 //!
@@ -94,8 +103,8 @@ use proc_macro_error::{abort, emit_error, proc_macro_error};
 use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned, ToTokens};
 use syn::{
-    parse_quote_spanned, punctuated::Punctuated, spanned::Spanned, ForeignItem, LitStr, Meta,
-    PathSegment, Token, Type,
+    parse_quote_spanned, punctuated::Punctuated, spanned::Spanned, ForeignItem, GenericArgument,
+    LitStr, Meta, PathSegment, Token, Type,
 };
 use tap::Pipe;
 
@@ -167,7 +176,9 @@ struct DataModel {
 
 struct MethodDef {
     is_req: bool,
-    method_name: syn::Ident,
+    method_ident: syn::Ident,
+    name: String,
+    routes: Vec<String>,
 }
 
 impl DataModel {
@@ -290,7 +301,10 @@ impl DataModel {
             out.extend(out_body);
         } else {
             // Wrap the result in block
-            out.extend(quote!({ #out_body }))
+            out.extend(quote!({
+                use super::*; // Make transparent to parent module
+                #out_body
+            }))
         }
     }
 
@@ -316,24 +330,24 @@ impl DataModel {
             <elevated_vis> mod <method_name> {
                 #![allow(non_camel_case_types)]
 
-                struct Method;
+                struct Spec;
 
-                impl NotifyMethod for Method {
+                impl NotifyMethod for Spec {
                     type ParamSend<'a> = ..;
                     type ParamRecv<'a> = ..;
                 }
 
-                impl RequestMethod for Method {
+                impl RequestMethod for Spec {
                     ..
                 }
             }
 
             <elevated_vis> fn <method_name>(<ser_params>...) -> (
-                <method_name>::Method,
+                <method_name>::Spec,
                 <method_name>::ParamSend<'_>,
             ) {
                 (
-                    <method_name>::Method,
+                    <method_name>::Spec,
                     <ser_params>...,
                 )
             }
@@ -347,19 +361,63 @@ impl DataModel {
 
         // 4. Analyze output types; generate `impl RequestMethod`
 
-        let method_ident = item.sig.ident;
-        let mut method_name = method_ident.to_string();
         let vis_outer = elevate_vis_level(item.vis, vis_offset);
         let vis_inner = elevate_vis_level(vis_outer.clone(), 1);
+        let mut docs = TokenStream::new();
+
+        let mut def = MethodDef {
+            is_req: false,
+            name: Default::default(),
+            method_ident: item.sig.ident,
+            routes: Vec::new(),
+        };
+
+        if let Some(case) = &self.rename_all {
+            def.name = convert_case::Casing::to_case(&def.name, *case);
+        }
 
         for attr in item.attrs {
-            // TODO:
-            // * Additional route
-            // * Name override
-            // * Collect documentation
+            match attr.meta {
+                Meta::Path(_) => (),
+                Meta::List(_) => (),
+                Meta::NameValue(ref meta) if meta.path.is_ident("doc") => {
+                    docs.extend(attr.into_token_stream());
+                }
+                Meta::NameValue(meta) => {
+                    if meta.path.is_ident("name") {
+                        if !def.name.is_empty() {
+                            emit_error!(meta, "Duplicated name attribute");
+                            continue;
+                        }
+
+                        let Some(lit) = expr_into_lit_str(meta.value) else {
+                            emit_error!(meta.path, "'name' must be string literal");
+                            continue;
+                        };
+
+                        def.name = lit.value();
+                    } else if meta.path.is_ident("route") {
+                        let Some(lit) = expr_into_lit_str(meta.value) else {
+                            emit_error!(meta.path, "'route' must be string literal");
+                            continue;
+                        };
+
+                        def.routes.push(lit.value());
+                    }
+                }
+            }
+        }
+
+        if def.name.is_empty() {
+            // Fallback to method identifier
+            def.name = def.method_ident.to_string();
         }
 
         let serializer_method;
+
+        let method_ident = &def.method_ident;
+        let method_name = &def.name;
+
         let tok_input = {
             // TODO: Generate Input Type impl Trait
             let args = item
@@ -433,11 +491,12 @@ impl DataModel {
                 };
 
                 quote!(
-                    #vis_outer fn #method_ident<'___ser>(#tok_input)
-                      -> (#method_ident::Method, <#method_ident::Method as ::rpc_it::macros::NotifyMethod>::ParamSend<'___ser>)
-                    {
+                    #vis_outer fn #method_ident<'___ser>(#tok_input) -> (
+                        #method_ident::Spec,
+                        <#method_ident::Spec as ::rpc_it::macros::NotifyMethod>::ParamSend<'___ser>
+                    ) {
                         (
-                            #method_ident::Method,
+                            #method_ident::Spec,
                             #tok_return
                         )
                     }
@@ -445,7 +504,7 @@ impl DataModel {
             };
 
             quote!(
-                impl ___crate::NotifyMethod for Method {
+                impl ___crate::NotifyMethod for Spec {
                     type ParamSend<'___ser> = #types_ser_tup;
                     type ParamRecv<'___de> = #types_de_tup;
 
@@ -455,9 +514,84 @@ impl DataModel {
         };
 
         let tok_output = if let syn::ReturnType::Type(_, ty) = item.sig.output {
+            def.is_req = true;
+
             // TODO: Generate Output Type impl Trait
 
-            quote!()
+            // Check if it defines result type
+            let opt_ok_err = 'find_result_t: {
+                let Type::Path(syn::TypePath {
+                    path:
+                        syn::Path {
+                            leading_colon: None,
+                            segments,
+                            ..
+                        },
+                    ..
+                }) = &*ty
+                else {
+                    break 'find_result_t None;
+                };
+
+                let last = segments.last().unwrap();
+                if last.ident != "Result" {
+                    break 'find_result_t None;
+                }
+
+                let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+                    break 'find_result_t None;
+                };
+
+                if args.args.len() != 2 {
+                    break 'find_result_t None;
+                }
+
+                let (GenericArgument::Type(ok), GenericArgument::Type(err)) =
+                    (&args.args[0], &args.args[1])
+                else {
+                    break 'find_result_t None;
+                };
+
+                Some((ok, err))
+            };
+
+            if let Some((ok, err)) = opt_ok_err {
+                let (Some((ok_ser, ok_de)), Some((err_ser, err_de))) =
+                    (retr_ser_de_params(ok), retr_ser_de_params(err))
+                else {
+                    emit_error!(
+                        ty,
+                        "Failed to retrieve serialization/deserialization types for result type"
+                    );
+                    return;
+                };
+
+                quote!(
+                    impl ___crate::RequestMethod for Spec {
+                        type OkSend<'___ser> = #ok_ser;
+                        type OkRecv<'___de> = #ok_de;
+                        type ErrSend<'___ser> = #err_ser;
+                        type ErrRecv<'___de> = #err_de;
+                    }
+                )
+            } else {
+                let Some((ok_ser, ok_de)) = retr_ser_de_params(&ty) else {
+                    emit_error!(
+                        ty,
+                        "Failed to retrieve serialization/deserialization types for return type"
+                    );
+                    return;
+                };
+
+                quote!(
+                    impl ___crate::RequestMethod for Spec {
+                        type OkSend<'___ser> = #ok_ser;
+                        type OkRecv<'___de> = #ok_de;
+                        type ErrSend<'___ser> = ();
+                        type ErrRecv<'___de> = ();
+                    }
+                )
+            }
         } else {
             Default::default()
         };
@@ -465,17 +599,21 @@ impl DataModel {
         out.extend(quote!(
             #vis_outer mod #method_ident {
                 use ::rpc_it::macros as ___crate;
+                use super::*; // Make transparent to parent module
 
-                #vis_inner struct Method;
+                #vis_inner struct Spec;
 
                 #tok_input
 
                 #tok_output
             }
 
-            // #vis_outer fn #method_ident(_: #method_ident::Method) {}
+            // #vis_outer fn #method_ident(_: #method_ident::Spec) {}
+            #docs
             #serializer_method
         ));
+
+        self.methods.push(def);
     }
 }
 
@@ -507,8 +645,8 @@ fn retr_ser_de_params(ty: &Type) -> Option<(Type, Type)> {
                     return None;
                 }
 
-                fn retr_type(x: &syn::GenericArgument) -> Option<&Type> {
-                    if let syn::GenericArgument::Type(ty) = x {
+                fn retr_type(x: &GenericArgument) -> Option<&Type> {
+                    if let GenericArgument::Type(ty) = x {
                         Some(ty)
                     } else {
                         emit_error!(x, "Non-type generic is not allowed");
@@ -609,7 +747,7 @@ fn replace_lifetime_occurence(a: &mut Type, life: &syn::Lifetime, skip_static: b
                     syn::PathArguments::None => (),
                     syn::PathArguments::AngleBracketed(items) => {
                         items.args.iter_mut().for_each(|x| {
-                            if let syn::GenericArgument::Lifetime(lf) = x {
+                            if let GenericArgument::Lifetime(lf) = x {
                                 replace_inner(lf, life, skip_static)
                             }
                         });
