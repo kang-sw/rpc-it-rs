@@ -160,10 +160,10 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
     }
 
     /// Create deserializer from the payload part of the original message.
-    fn deserialize_payload(
+    fn deserialize_payload<'de>(
         &self,
-        payload: &[u8],
-        visitor: &mut dyn FnMut(&mut dyn DynDeserializer) -> Result<(), erased_serde::Error>,
+        payload: &'de [u8],
+        visitor: &mut dyn FnMut(&mut dyn DynDeserializer<'de>) -> Result<(), erased_serde::Error>,
     ) -> Result<(), erased_serde::Error> {
         let _ = (payload, visitor);
         let type_name = std::any::type_name::<Self>();
@@ -260,10 +260,10 @@ where
         (**self).encode_response(request_id_raw, result, buf)
     }
 
-    fn deserialize_payload(
+    fn deserialize_payload<'de>(
         &self,
-        payload: &[u8],
-        visitor: &mut dyn FnMut(&mut dyn DynDeserializer) -> Result<(), erased_serde::Error>,
+        payload: &'de [u8],
+        visitor: &mut dyn FnMut(&mut dyn DynDeserializer<'de>) -> Result<(), erased_serde::Error>,
     ) -> Result<(), erased_serde::Error> {
         (**self).deserialize_payload(payload, visitor)
     }
@@ -323,9 +323,9 @@ pub trait ParseMessage {
     /// Note: This function is not exposed in the public API, mirroring the context of
     /// [`Deserialize::deserialize_in_place`].
     #[doc(hidden)]
-    fn parse_in_place<R>(&self, dst: &mut R) -> Result<(), erased_serde::Error>
+    fn parse_in_place<'de, R>(&'de self, dst: &mut R) -> Result<(), erased_serde::Error>
     where
-        R: for<'de> Deserialize<'de>,
+        R: Deserialize<'de>,
     {
         let (codec, buf) = self.codec_payload_pair();
         codec.deserialize_payload(buf.as_ref(), &mut |de| {
@@ -334,9 +334,9 @@ pub trait ParseMessage {
         })
     }
 
-    fn parse<R>(&self) -> Result<R, erased_serde::Error>
+    fn parse<'de, R>(&'de self) -> Result<R, erased_serde::Error>
     where
-        R: for<'de> Deserialize<'de>,
+        R: Deserialize<'de>,
     {
         let (codec, buf) = self.codec_payload_pair();
         let mut mem = None;

@@ -197,11 +197,11 @@ impl crate::Codec for Codec {
         Ok(())
     }
 
-    fn deserialize_payload(
+    fn deserialize_payload<'de>(
         &self,
-        payload: &[u8],
+        payload: &'de [u8],
         visitor: &mut dyn FnMut(
-            &mut dyn erased_serde::Deserializer,
+            &mut dyn erased_serde::Deserializer<'de>,
         ) -> Result<(), erased_serde::Error>,
     ) -> Result<(), erased_serde::Error> {
         let mut de = serde_json::Deserializer::from_slice(payload);

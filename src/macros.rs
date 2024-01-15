@@ -211,7 +211,9 @@ pub mod inbound {
 
     use bytes::BytesMut;
 
-    use crate::{error::ErrorResponse, Inbound, NotifySender, RequestSender, UserData};
+    use crate::{
+        error::ErrorResponse, Inbound, NotifySender, ParseMessage, RequestSender, UserData,
+    };
 
     use super::{NotifyMethod, RequestMethod};
 
@@ -353,7 +355,10 @@ pub mod inbound {
             let inner = unsafe { self.map_unchecked_mut(|x| &mut x.0) };
 
             futures::ready!(inner.poll(cx))
-                .map(|x| TypedOkayResponse(x, PhantomData))
+                .map(|x| {
+                    let parsed = x.parse::<M::OkRecv<'_>>();
+                    todo!()
+                })
                 .map_err(|x| x.map(|x| TypedErrorResponse(x, PhantomData)))
                 .into()
         }

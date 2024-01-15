@@ -126,11 +126,11 @@ where
         self.codec.encode_response(request_id_raw, result, buf)
     }
 
-    fn deserialize_payload(
+    fn deserialize_payload<'de>(
         &self,
-        payload: &[u8],
+        payload: &'de [u8],
         visitor: &mut dyn FnMut(
-            &mut dyn erased_serde::Deserializer,
+            &mut dyn erased_serde::Deserializer<'de>,
         ) -> Result<(), erased_serde::Error>,
     ) -> Result<(), erased_serde::Error> {
         self.codec.deserialize_payload(payload, visitor)
