@@ -95,16 +95,16 @@
 //! ```
 //!
 
-use std::{borrow::Borrow, mem::take, rc::Rc, sync::OnceLock};
+use std::mem::take;
 
 use convert_case::Case;
 use proc_macro_error::{abort, emit_error, proc_macro_error};
 
 use proc_macro2::TokenStream;
-use quote::{quote, quote_spanned, ToTokens};
+use quote::{quote, ToTokens};
 use syn::{
     parse_quote_spanned, punctuated::Punctuated, spanned::Spanned, ForeignItem, GenericArgument,
-    LitStr, Meta, PathSegment, Token, Type,
+    Meta, PathSegment, Token, Type,
 };
 use tap::Pipe;
 
@@ -314,40 +314,28 @@ impl DataModel {
         vis_offset: usize,
         out: &mut TokenStream,
     ) {
-        macro_rules! static_tok {
-            ($($tok:tt)*) => {
-                {
-                    thread_local! {
-                        static TOK: ::std::rc::Rc<TokenStream> = ::std::rc::Rc::new(quote!($($tok)*));
-                    }
-
-                    TOK.with(|tok| tok.clone())
-                }
-            };
-        }
-
         /*
             <elevated_vis> mod <method_name> {
                 #![allow(non_camel_case_types)]
 
-                struct Spec;
+                struct Fn;
 
-                impl NotifyMethod for Spec {
+                impl NotifyMethod for Fn {
                     type ParamSend<'a> = ..;
                     type ParamRecv<'a> = ..;
                 }
 
-                impl RequestMethod for Spec {
+                impl RequestMethod for Fn {
                     ..
                 }
             }
 
             <elevated_vis> fn <method_name>(<ser_params>...) -> (
-                <method_name>::Spec,
+                <method_name>::Fn,
                 <method_name>::ParamSend<'_>,
             ) {
                 (
-                    <method_name>::Spec,
+                    <method_name>::Fn,
                     <ser_params>...,
                 )
             }
@@ -492,11 +480,11 @@ impl DataModel {
 
                 quote!(
                     #vis_outer fn #method_ident<'___ser>(#tok_input) -> (
-                        #method_ident::Spec,
-                        <#method_ident::Spec as ::rpc_it::macros::NotifyMethod>::ParamSend<'___ser>
+                        #method_ident::Fn,
+                        <#method_ident::Fn as ::rpc_it::macros::NotifyMethod>::ParamSend<'___ser>
                     ) {
                         (
-                            #method_ident::Spec,
+                            #method_ident::Fn,
                             #tok_return
                         )
                     }
@@ -504,7 +492,7 @@ impl DataModel {
             };
 
             quote!(
-                impl ___crate::NotifyMethod for Spec {
+                impl ___crate::NotifyMethod for Fn {
                     type ParamSend<'___ser> = #types_ser_tup;
                     type ParamRecv<'___de> = #types_de_tup;
 
@@ -567,7 +555,7 @@ impl DataModel {
                 };
 
                 quote!(
-                    impl ___crate::RequestMethod for Spec {
+                    impl ___crate::RequestMethod for Fn {
                         type OkSend<'___ser> = #ok_ser;
                         type OkRecv<'___de> = #ok_de;
                         type ErrSend<'___ser> = #err_ser;
@@ -584,7 +572,7 @@ impl DataModel {
                 };
 
                 quote!(
-                    impl ___crate::RequestMethod for Spec {
+                    impl ___crate::RequestMethod for Fn {
                         type OkSend<'___ser> = #ok_ser;
                         type OkRecv<'___de> = #ok_de;
                         type ErrSend<'___ser> = ();
@@ -601,14 +589,14 @@ impl DataModel {
                 use ::rpc_it::macros as ___crate;
                 use super::*; // Make transparent to parent module
 
-                #vis_inner struct Spec;
+                #vis_inner struct Fn;
 
                 #tok_input
 
                 #tok_output
             }
 
-            // #vis_outer fn #method_ident(_: #method_ident::Spec) {}
+            // #vis_outer fn #method_ident(_: #method_ident::Fn) {}
             #docs
             #serializer_method
         ));

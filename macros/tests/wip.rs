@@ -37,9 +37,13 @@ struct MyArg<'a> {
 }
 
 fn __compile_test() {
-    #[allow(invalid_value)]
+    #![allow(invalid_value)]
+
     let handle: rpc_it::RequestSender<()> = unsafe { std::mem::zeroed() };
 
     let b = &mut Default::default();
     handle.try_noti(b, eoo(&32, &4.1)).ok();
+
+    let req: rpc_it::cached::Request<(), prods::qux::Fn> = unsafe { std::mem::zeroed() };
+    req.try_response(b, Ok("hello!")).ok();
 }

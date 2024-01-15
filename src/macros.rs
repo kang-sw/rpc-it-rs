@@ -187,6 +187,7 @@ pub trait NotifyMethod {
 /// Tries to verify if we can generate following code
 #[test]
 #[ignore]
+#[cfg(feature = "jsonrpc")]
 fn xx() {
     #[derive(Serialize, Deserialize)]
     struct Foo<'a> {
