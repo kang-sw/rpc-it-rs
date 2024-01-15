@@ -13,11 +13,11 @@ extern "prods" {
 
     fn baz(john: String, doe: Cow<'_, [i32]>) -> i32;
 
-    fn qux(las: i32, ggg: i32) -> Result<&'_ str, i32>;
+    fn qux(las: i32, ggg: i32) -> Result<__<&'_ str, String>, i32>;
 }
 
 #[rpc_it_macros::service(flatten, rename_all = "kebab-case")]
-extern "prods" {
+extern "" {
     fn foo_my_dlfofl();
 
     /// dasf
@@ -27,7 +27,9 @@ extern "prods" {
 
     // fn bar(my_name: &str, is: MyArg<'_>);
 
-    // fn baz(john: String, doe: Cow<'_, [i32]>) -> i32;
+    fn baz(john: String, doe: Cow<'_, [i32]>) -> i32;
+
+    fn qux(las: i32, ggg: i32) -> Result<&'_ str, i32>;
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

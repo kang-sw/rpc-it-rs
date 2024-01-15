@@ -605,8 +605,9 @@ impl DataModel {
     }
 }
 
+/// Retrieve serialization/deserialization types for given type.
 fn retr_ser_de_params(ty: &Type) -> Option<(Type, Type)> {
-    // TODO:
+    //
     // - Lifetime parameter handling; for non-static lifetimes.
     // - '__' type handling
 
@@ -717,6 +718,8 @@ fn replace_lifetime_occurence(a: &mut Type, life: &syn::Lifetime, skip_static: b
         Type::Reference(x) => {
             if let Some(lf) = &mut x.lifetime {
                 replace_inner(lf, life, skip_static)
+            } else {
+                x.lifetime = Some(life.clone());
             }
 
             replace_lifetime_occurence(&mut x.elem, life, skip_static)

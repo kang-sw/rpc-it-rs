@@ -34,7 +34,6 @@ rpc-it-macros = { path = "./macros", version = "0.10", optional = true, default-
 [dev-dependencies]
 serde = { version = "1.0", features = ["derive"] }
 
-
 [features]
 default = ["proc-macro"]
 

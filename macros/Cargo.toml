@@ -22,7 +22,3 @@ proc-macro = true
 [features]
 default = ["extra-traits"]
 extra-traits = ["syn/extra-traits"]
-
-[dev-dependencies]
-rpc-it = { path = ".." }
-serde = { version = "1", features = ["derive"] }
