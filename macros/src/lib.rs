@@ -38,28 +38,36 @@
 //! - `[route = "<ROUTE>"]`
 //!     - Adds additional route to the method.
 //!
+//! ## Serialization / Deserialization Rules
+//!
+//! - For single argument method, the argument will be serialized as-is.
+//! - For multiple argument method, the arguments will be serialized as tuple(array in most
+//!   serialization formats).
+//!     - If you want the single argument to be serialized as tuple, you can wrap it with
+//!       additional tuple. (e.g. T -> (T,))
+//!
 //! ## Usage
 //!
 //! ```ignore
 //! #[rpc_it::service(name_prefix = "Namespace/", rename_all = "PascalCase")]
 //! extern "module_name" {
 //!   // If return type is specified explicitly, it is treated as request.
-//!   fn MethodReq(arg: (i32, i32)) -> ();
+//!   fn method_req(arg: (i32, i32)) -> ();
 //!
 //!   // This is request; you can specify which error type will be returned.
-//!   fn MethodReq2() -> Result<MyParam<'_>, &'_ str>;
+//!   fn method_req_2() -> Result<MyParam<'_>, &'_ str>;
 //!
 //!   // This is notification, which does not return anything.
-//!   fn MethodNotify(arg: (i32, i32));
+//!   fn method_notify(arg: (i32, i32));
 //!
 //!   #[name = "MethodName"] // Client will encode the method name as this. Server takes either.
 //!   #[route = "MyMethod/*"] // This will define additional route on server side
 //!   #[route = "OtherMethodName"]
-//!   fn MethodExample(arg: &'_ str, arg2: &'_ [u8])
+//!   fn method_example(arg: &'_ str, arg2: &'_ [u8])
 //!
 //!   // If serialization type and deserialization type is different, you can specify it by
 //!   // double underscore and angle brackets, like specifying two parameters on generic type `__`
-//!   fn FromTo(s: __<i32, u64>, b: __<&'_ str, String>) -> __<i32, String>;
+//!   fn from_to(s: __<i32, u64>, b: __<&'_ str, String>) -> __<i32, String>;
 //! }
 //!
 //! pub struct MyParam<'a> {
@@ -78,7 +86,7 @@
 //! ```
 //!
 
-use std::{borrow::Borrow, mem::take, sync::OnceLock};
+use std::{borrow::Borrow, mem::take, rc::Rc, sync::OnceLock};
 
 use convert_case::Case;
 use proc_macro_error::{abort, emit_error, proc_macro_error};
@@ -86,8 +94,10 @@ use proc_macro_error::{abort, emit_error, proc_macro_error};
 use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned, ToTokens};
 use syn::{
-    punctuated::Punctuated, spanned::Spanned, ForeignItem, LitStr, Meta, PathSegment, Token,
+    parse_quote_spanned, punctuated::Punctuated, spanned::Spanned, ForeignItem, LitStr, Meta,
+    PathSegment, Token, Type,
 };
+use tap::Pipe;
 
 macro_rules! ok_or {
     ($expr:expr) => {
@@ -152,17 +162,12 @@ struct DataModel {
     vis: Option<syn::Visibility>,
 
     /// Notify method definitions. Used for generating inbound router.
-    notifies: Vec<MethodDef>,
-
-    /// Request method definitions. Used for generating inbound router.
-    requests: Vec<MethodDef>,
+    methods: Vec<MethodDef>,
 }
 
 struct MethodDef {
-    vis: syn::Visibility,
-    ident: syn::Ident,
-    name: Option<syn::LitStr>,
-    routes: Vec<syn::LitStr>,
+    is_req: bool,
+    method_name: syn::Ident,
 }
 
 impl DataModel {
@@ -307,8 +312,6 @@ impl DataModel {
             };
         }
 
-        let mod_macros = static_tok!(::rpc_it::macros);
-
         /*
             <elevated_vis> mod <method_name> {
                 #![allow(non_camel_case_types)]
@@ -326,23 +329,220 @@ impl DataModel {
             }
 
             const <method_name>: <method_name>::Method = <method_name>::Method;
+
+
         */
 
         // 1. Analyze visibility and name
 
-        // 2. Generate method definition
+        // 2. TODO: Generate method router (what kind of data required?)
 
         // 3. Analyze input types; generate `impl NotifyMethod`
 
         // 4. Analyze output types; generate `impl RequestMethod`
+
+        let method_ident = item.sig.ident;
+        let mut method_name = method_ident.to_string();
+        let vis_outer = elevate_vis_level(item.vis, vis_offset);
+        let vis_inner = elevate_vis_level(vis_outer.clone(), 1);
+
+        for attr in item.attrs {
+            // TODO:
+            // * Additional route
+            // * Name override
+            // * Collect documentation
+        }
+
+        let tok_input = {
+            // TODO: Generate Input Type impl Trait
+            let args = item
+                .sig
+                .inputs
+                .into_iter()
+                .map(|arg| {
+                    if let syn::FnArg::Typed(arg) = arg {
+                        arg
+                    } else {
+                        abort!(arg, "Can't set receiver token here")
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            let mut types_ser = Vec::with_capacity(args.len());
+            let mut types_de = Vec::with_capacity(args.len());
+
+            for arg in &args {
+                let Some((ser, de)) = retr_ser_de_params(&arg.ty) else {
+                    // Do nothing; this is error case.
+                    emit_error!(arg, "Serde parameter retrieval failed");
+                    return;
+                };
+
+                types_ser.push(ser);
+                types_de.push(de);
+            }
+
+            let make_into_tuple = |x: &[Type]| {
+                if x.len() == 1 {
+                    let x = &x[0];
+                    quote!(#x)
+                } else {
+                    quote!((#(#x),*))
+                }
+            };
+
+            let types_ser = make_into_tuple(&types_ser);
+            let types_de = make_into_tuple(&types_de);
+
+            quote!(
+                impl ___crate::NotifyMethod for Method {
+                    type ParamSend<'___ser> = #types_ser;
+                    type ParamRecv<'___de> = #types_de;
+
+                    const METHOD_NAME: &'static str = #method_name;
+                }
+            )
+        };
+
+        let tok_output = if let syn::ReturnType::Type(_, ty) = item.sig.output {
+            // TODO: Generate Output Type impl Trait
+
+            quote!()
+        } else {
+            Default::default()
+        };
+
+        out.extend(quote!(
+            #vis_outer mod #method_ident {
+                use ::rpc_it::macros as ___crate;
+
+                #vis_inner struct Method;
+
+                #tok_input
+
+                #tok_output
+            }
+
+            #vis_outer fn #method_ident(_: #method_ident::Method) {}
+        ));
+    }
+}
+
+fn retr_ser_de_params(ty: &Type) -> Option<(Type, Type)> {
+    // TODO:
+    // - Lifetime parameter handling; for non-static lifetimes.
+    // - '__' type handling
+
+    // 1. Elide lifetime for serialization
+    // 2. Append reference for serialization
+
+    // ---
+
+    // Detect if type starts with `__<>`, which means separate serialization/deserialization types.
+    let split_ser_de_type = ty
+        .pipe(|x| {
+            if let Type::Path(syn::TypePath { path, .. }) = x {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .and_then(|x| x.segments.first().filter(|_| x.segments.len() == 1))
+        .filter(|x| x.ident == "__")
+        .and_then(|x| {
+            if let syn::PathArguments::AngleBracketed(generics) = &x.arguments {
+                if generics.args.len() != 2 {
+                    emit_error!(generics, "For '__' generic type ... Expected 2 arguments");
+                    return None;
+                }
+
+                fn retr_type(x: &syn::GenericArgument) -> Option<&Type> {
+                    if let syn::GenericArgument::Type(ty) = x {
+                        Some(ty)
+                    } else {
+                        emit_error!(x, "Non-type generic is not allowed");
+                        None
+                    }
+                }
+
+                Some((retr_type(&generics.args[0])?, retr_type(&generics.args[1])?))
+            } else {
+                None
+            }
+        });
+
+    let (ty_ser, ty_de) = split_ser_de_type.unwrap_or((ty, ty));
+    let [mut ty_ser, mut ty_de] = [ty_ser, ty_de].map(Clone::clone);
+
+    let life_ser: syn::Lifetime = parse_quote_spanned! { ty_ser.span() => '___ser };
+    let life_de: syn::Lifetime = parse_quote_spanned! { ty_de.span() => '___de };
+
+    if let syn::Type::Reference(ty) = &mut ty_ser {
+        ty.lifetime = Some(life_ser.clone());
+    } else {
+        ty_ser = Type::Reference(syn::TypeReference {
+            and_token: Token![&](ty_ser.span()),
+            lifetime: Some(life_ser.clone()),
+            mutability: None,
+            elem: Box::new(ty_ser),
+        })
+    }
+
+    replace_lifetime_occurence(&mut ty_ser, &life_ser, true);
+    replace_lifetime_occurence(&mut ty_de, &life_de, false);
+
+    Some((ty_ser, ty_de))
+}
+
+// Replace 'EVERY' lifetime occurrences into given lifetime.
+fn replace_lifetime_occurence(a: &mut Type, life: &syn::Lifetime, skip_static: bool) {
+    fn replace_inner(a: &mut syn::Lifetime, life: &syn::Lifetime, skip_static: bool) {}
+
+    match a {
+        Type::Array(x) => replace_lifetime_occurence(&mut x.elem, life, skip_static),
+        Type::BareFn(_) => emit_error!(a, "You can't use function type here"),
+        Type::Group(x) => replace_lifetime_occurence(&mut x.elem, life, skip_static),
+        Type::ImplTrait(_) => emit_error!(a, "You can't use impl trait here"),
+        Type::Infer(_) => emit_error!(a, "You can't use infer type here"),
+        Type::Macro(_) => emit_error!(a, "You can't use macro type here"),
+        Type::Never(_) => emit_error!(a, "You can't use never type here"),
+        Type::Paren(x) => replace_lifetime_occurence(&mut x.elem, life, skip_static),
+        Type::Ptr(x) => emit_error!(x, "You can't use pointer type here"),
+        Type::Slice(x) => replace_lifetime_occurence(&mut x.elem, life, skip_static),
+        Type::Verbatim(_) => emit_error!(a, "Failed to parse type"),
+
+        Type::Tuple(tup) => tup
+            .elems
+            .iter_mut()
+            .for_each(|x| replace_lifetime_occurence(x, life, skip_static)),
+
+        Type::TraitObject(x) => x.bounds.iter_mut().for_each(|x| match x {
+            syn::TypeParamBound::Trait(tr) => {
+                if let Some(lf) = &mut tr.lifetimes {
+                    lf.lifetimes.iter_mut().for_each(|x| {
+                        if let syn::GenericParam::Lifetime(lf) = x {
+                            replace_inner(&mut lf.lifetime, life, skip_static)
+                        }
+                    })
+                }
+            }
+            syn::TypeParamBound::Lifetime(x) => replace_inner(x, life, skip_static),
+            syn::TypeParamBound::Verbatim(_) => emit_error!(x, "Failed to parse type"),
+            _ => (),
+        }),
+
+        Type::Reference(_) => (),
+        Type::Path(_) => (),
+
+        _ => (),
     }
 }
 
 fn elevate_vis_level(mut in_vis: syn::Visibility, amount: usize) -> syn::Visibility {
-    // - TODO: pub(super) -> pub(super::super)
-    // - TODO: None -> pub(super)
-    // - TODO: pub(in crate::...) -> absolute; as is
-    // - TODO: pub(in super::...) -> pub(in super::super::...)
+    // - pub(super) -> pub(super::super)
+    // - None -> pub(super)
+    // - pub(in crate::...) -> absolute; as is
+    // - pub(in super::...) -> pub(in super::super::...)
 
     if amount == 0 {
         return in_vis;

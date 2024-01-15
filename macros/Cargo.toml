@@ -14,6 +14,7 @@ quote = "1.0"
 convert_case = "0.6.0"
 proc-macro-error = "1.0.4"
 syn = { version = "2.0.29", features = ["full"] }
+tap = "1.0.1"
 
 [lib]
 proc-macro = true
@@ -21,3 +22,7 @@ proc-macro = true
 [features]
 default = ["extra-traits"]
 extra-traits = ["syn/extra-traits"]
+
+[dev-dependencies]
+rpc-it = { path = ".." }
+serde = { version = "1", features = ["derive"] }
