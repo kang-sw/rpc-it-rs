@@ -167,21 +167,44 @@
     sender.try_noti(module_name::method_noti::Fn, &(1, 2));
 */
 
+use convert_case::Case;
 use proc_macro_error::proc_macro_error;
 
 use proc_macro2::TokenStream;
+use syn::{punctuated::Punctuated, spanned::Spanned, Meta, Token};
+
+macro_rules! unwrap_result {
+    ($expr:expr) => {
+        match $expr {
+            Ok(expr) => expr,
+            Err(err) => proc_macro_error::abort_call_site!("{}", err),
+        }
+    };
+
+    ($span:expr, $expr:expr) => {
+        match $expr {
+            Ok(expr) => expr,
+            Err(err) => proc_macro_error::abort!($span, "{}", err),
+        }
+    };
+}
 
 #[proc_macro_error]
 #[proc_macro_attribute]
 pub fn service(
-    _attr: proc_macro::TokenStream,
-    item: proc_macro::TokenStream,
+    attr: proc_macro::TokenStream,
+    items: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let item = syn::parse_macro_input!(item as syn::ItemForeignMod);
+    // let Ok(item) = syn::parse::<syn::ItemForeignMod>(items.clone()) else {
+    //     proc_macro_error::emit_call_site_error!("Expected foreign module");
+    //     return items;
+    // };
+    let item = syn::parse_macro_input!(items as syn::ItemForeignMod);
+
     let mut model = DataModel::default();
     let mut out_stream = TokenStream::new();
 
-    model.parse_attr(_attr);
+    model.parse_attr(attr.into());
     model.main(item, &mut out_stream);
 
     out_stream.into()
@@ -200,6 +223,9 @@ struct DataModel {
     /// Prefix for all method routes.
     route_prefix: Option<syn::LitStr>,
 
+    /// Rename all method names with given case.
+    rename_all: Option<Case>,
+
     /// Notify method definitions. Used for generating inbound router.
     notifies: Vec<MethodDef>,
 
@@ -215,11 +241,93 @@ struct MethodDef {
 }
 
 impl DataModel {
-    fn parse_attr(&mut self, attrs: proc_macro::TokenStream) {
+    fn parse_attr(&mut self, attrs: proc_macro2::TokenStream) {
         // TODO:
+        let attrs: syn::Meta = syn::parse_quote_spanned! { attrs.span() => service(#attrs) };
+        let syn::Meta::List(attrs) = attrs else {
+            return;
+        };
+
+        let attrs = match attrs.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated) {
+            Ok(attrs) => attrs,
+            Err(err) => {
+                proc_macro_error::emit_error!("{}", err);
+                return; // Just skip attribute parsing
+            }
+        };
+
+        for meta in attrs.into_iter() {
+            let mut err_ident = None;
+
+            match meta {
+                Meta::Path(meta) => {
+                    if meta.is_ident("flatten") {
+                        self.is_flattened_module = true;
+                    } else {
+                        err_ident = meta.get_ident().cloned();
+                    }
+                }
+                Meta::NameValue(meta) => {
+                    if meta.path.is_ident("name_prefix") {
+                        self.name_prefix = expr_unwrap_lit_str(meta.value);
+                    } else if meta.path.is_ident("route_prefix") {
+                        self.route_prefix = expr_unwrap_lit_str(meta.value);
+                    } else if meta.path.is_ident("rename_all") {
+                        let Some(str) = expr_unwrap_lit_str(meta.value) else {
+                            continue;
+                        };
+
+                        match str.value().as_str() {
+                            "snake_case" => self.rename_all = Some(Case::Snake),
+                            "camelCase" => self.rename_all = Some(Case::Camel),
+                            "PascalCase" => self.rename_all = Some(Case::Pascal),
+                            "SCREAMING_SNAKE_CASE" => self.rename_all = Some(Case::ScreamingSnake),
+                            "kebab-case" => self.rename_all = Some(Case::Kebab),
+                            "UPPERCASE" => self.rename_all = Some(Case::Upper),
+                            "lowercase" => self.rename_all = Some(Case::Lower),
+                            _ => {
+                                proc_macro_error::emit_error!(
+                                    str,
+                                    "Unknown case convention '{}', case must be one of \
+                                     'snake_case', 'camelCase', 'PascalCase', \
+                                     'SCREAMING_SNAKE_CASE', 'kebab-case', 'UPPERCASE', \
+                                     'lowercase'",
+                                    str.value()
+                                );
+                            }
+                        }
+                    } else {
+                        err_ident = meta.path.get_ident().cloned();
+                    }
+                }
+                Meta::List(m) => {
+                    err_ident = m.path.get_ident().cloned();
+                }
+            }
+
+            if let Some(ident) = err_ident {
+                proc_macro_error::emit_error!(
+                    ident,
+                    "Unexpected or incorrect usage of attribute argument '{}'",
+                    ident
+                );
+            }
+        }
     }
 
     fn main(&mut self, item: syn::ItemForeignMod, out: &mut TokenStream) {
         // TODO:
     }
+}
+
+fn expr_unwrap_lit_str(expr: syn::Expr) -> Option<syn::LitStr> {
+    match expr {
+        syn::Expr::Lit(expr) => match expr.lit {
+            syn::Lit::Str(lit) => return Some(lit),
+            _ => proc_macro_error::emit_error!(expr, "Expected string literal"),
+        },
+        _ => proc_macro_error::emit_error!(expr, "Expected string literal"),
+    }
+
+    None
 }
