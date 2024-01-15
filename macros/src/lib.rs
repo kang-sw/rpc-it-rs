@@ -341,14 +341,6 @@ impl DataModel {
             }
         */
 
-        // 1. Analyze visibility and name
-
-        // 2. TODO: Generate method router (what kind of data required?)
-
-        // 3. Analyze input types; generate `impl NotifyMethod`
-
-        // 4. Analyze output types; generate `impl RequestMethod`
-
         let vis_outer = elevate_vis_level(item.vis, vis_offset);
         let vis_inner = elevate_vis_level(vis_outer.clone(), 1);
         let mut docs = TokenStream::new();
@@ -407,7 +399,6 @@ impl DataModel {
         let method_name = &def.name;
 
         let tok_input = {
-            // TODO: Generate Input Type impl Trait
             let args = item
                 .sig
                 .inputs
@@ -503,8 +494,6 @@ impl DataModel {
 
         let tok_output = if let syn::ReturnType::Type(_, ty) = item.sig.output {
             def.is_req = true;
-
-            // TODO: Generate Output Type impl Trait
 
             // Check if it defines result type
             let opt_ok_err = 'find_result_t: {

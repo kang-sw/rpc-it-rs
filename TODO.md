@@ -1,9 +1,0 @@
-- [ ] Macro API: Channels
-  - [ ] 1 enum variant per RPC definition
-- [x] Notification Broadcast
-  - [x] Writer consumes BytesMut -> Bytes (Make it sharable)
-  - [x] Single encoder => multiple notifications
-- [ ] Borrowed Deserialization
-  - [ ] Resolve lifetime puzzles
-- [ ] Deferred invocation optimization
-- [ ] Message byte size optimization

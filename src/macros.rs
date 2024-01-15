@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 pub mod route {
-
     use thiserror::Error;
 
     use crate::{Inbound, UserData};
@@ -208,11 +207,11 @@ fn xx() {
 }
 
 pub mod inbound {
-    use std::mem::transmute;
+    use std::{marker::PhantomData, mem::transmute};
 
     use bytes::BytesMut;
 
-    use crate::{Inbound, NotifySender, RequestSender, UserData};
+    use crate::{error::ErrorResponse, Inbound, NotifySender, RequestSender, UserData};
 
     use super::{NotifyMethod, RequestMethod};
 
@@ -309,7 +308,7 @@ pub mod inbound {
             }
         }
 
-        pub fn param(&self) -> &M::ParamRecv<'_> {
+        pub fn args(&self) -> &M::ParamRecv<'_> {
             unsafe { transmute(&self.v) }
         }
     }
@@ -330,22 +329,21 @@ pub mod inbound {
 
     pub struct CachedWaitResponse<'a, U: UserData, M: RequestMethod>(
         crate::ReceiveResponse<'a, U>,
-        std::marker::PhantomData<M>,
+        PhantomData<M>,
     );
 
-    pub struct CachedErrorResponse<M: RequestMethod>(
-        crate::error::ErrorResponse,
-        M::ErrRecv<'static>,
-    );
+    // TODO: Parse API, Deref Inner API
+    pub struct TypedErrorResponse<M: RequestMethod>(ErrorResponse, PhantomData<M>);
 
-    pub struct CachedOkayResponse<M: RequestMethod>(crate::Response, M::OkRecv<'static>);
+    // TODO: Parse API, Deref Inner API
+    pub struct TypedOkayResponse<M: RequestMethod>(crate::Response, PhantomData<M>);
 
     impl<'a, U, M> std::future::Future for CachedWaitResponse<'a, U, M>
     where
         U: UserData,
         M: RequestMethod,
     {
-        type Output = Result<M::OkRecv<'static>, Option<CachedErrorResponse<M>>>;
+        type Output = Result<TypedOkayResponse<M>, Option<TypedErrorResponse<M>>>;
 
         fn poll(
             self: std::pin::Pin<&mut Self>,
@@ -354,12 +352,10 @@ pub mod inbound {
             // SAFETY: We are not moving the inner value.
             let inner = unsafe { self.map_unchecked_mut(|x| &mut x.0) };
 
-            match futures::ready!(inner.poll(cx)) {
-                Ok(response) => {}
-                Err(err) => {}
-            }
-
-            todo!()
+            futures::ready!(inner.poll(cx))
+                .map(|x| TypedOkayResponse(x, PhantomData))
+                .map_err(|x| x.map(|x| TypedErrorResponse(x, PhantomData)))
+                .into()
         }
     }
 
@@ -406,7 +402,7 @@ pub mod inbound {
         {
             self.request(buf, M::METHOD_NAME, &p)
                 .await
-                .map(|x| CachedWaitResponse(x, std::marker::PhantomData))
+                .map(|x| CachedWaitResponse(x, PhantomData))
         }
 
         pub fn try_call<M>(
@@ -418,7 +414,7 @@ pub mod inbound {
             M: NotifyMethod + RequestMethod,
         {
             self.try_request(buf, M::METHOD_NAME, &p)
-                .map(|x| CachedWaitResponse(x, std::marker::PhantomData))
+                .map(|x| CachedWaitResponse(x, PhantomData))
         }
     }
 }

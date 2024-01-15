@@ -123,12 +123,26 @@ pub use macros::route::{
     ExecError as RouteExecError, Router, RouterBuilder, RouterFunc, RouterFuncBuilder,
 };
 
+#[cfg(feature = "proc-macro")]
 pub mod cached {
     pub use crate::macros::inbound::{
-        CachedErrorResponse as ErrorResponse, CachedNotify as Notify,
-        CachedOkayResponse as OkayResponse, CachedRequest as Request,
-        CachedWaitResponse as WaitResponse,
+        CachedNotify as Notify, CachedRequest as Request, CachedWaitResponse as WaitResponse,
+        TypedErrorResponse as ErrorResponse, TypedOkayResponse as OkayResponse,
     };
+}
+
+#[cfg(feature = "proc-macro")]
+pub mod router {
+    use crate::{Router, RouterBuilder};
+
+    pub type StdHashMapRouter<U> = Router<U, std::collections::HashMap<String, usize>>;
+    pub type StdHashMapRouterBuilder<U> =
+        RouterBuilder<U, std::collections::HashMap<String, usize>>;
+    pub type StdBTreeMapRouter<U> = Router<U, std::collections::BTreeMap<String, usize>>;
+    pub type StdBTreeMapRouterBuilder<U> =
+        RouterBuilder<U, std::collections::BTreeMap<String, usize>>;
+    pub type HashbrownHashMapRouter<U> = Router<U, hashbrown::HashMap<String, usize>>;
+    pub type HashbrownHashMapRouterBuilder<U> = RouterBuilder<U, hashbrown::HashMap<String, usize>>;
 }
 
 pub use codec::{Codec, ParseMessage, ResponseError};
