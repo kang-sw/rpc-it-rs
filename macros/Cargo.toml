@@ -20,5 +20,5 @@ tap = "1.0.1"
 proc-macro = true
 
 [features]
-default = ["extra-traits"]
+default = []
 extra-traits = ["syn/extra-traits"]

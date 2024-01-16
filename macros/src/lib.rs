@@ -495,9 +495,7 @@ impl DataModel {
                             }
                         }
 
-                        syn::Expr::Assign(syn::ExprAssign {
-                            left, right, attrs, ..
-                        }) => {
+                        syn::Expr::Assign(syn::ExprAssign { left, right, .. }) => {
                             let syn::Expr::Path(expr_path) = *left else {
                                 emit_error!(left, "Expected path");
                                 continue;
