@@ -1,7 +1,8 @@
+#![allow(unused)]
+
 use std::borrow::{Borrow, Cow};
 
-use hashbrown::HashMap;
-
+#[allow(unused)]
 #[rpc_it_macros::service(rename_all = "camelCase")]
 extern "prods" {
     fn foo_my_dlfofl();
@@ -24,6 +25,7 @@ extern "prods" {
 
 #[rpc_it_macros::service(flatten, rename_all = "kebab-case", no_recv)]
 extern "" {
+
     fn foo_my_dlfofl();
 
     /// dasf

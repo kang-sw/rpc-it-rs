@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 pub mod route {
-    use bytes::Bytes;
     use thiserror::Error;
 
     use crate::{Inbound, UserData};

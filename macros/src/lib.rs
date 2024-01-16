@@ -421,7 +421,7 @@ impl DataModel {
         let vis_outer = type_util::elevate_vis_level(item.vis, vis_offset);
         let vis_inner = type_util::elevate_vis_level(vis_outer.clone(), 1);
 
-        let mut docs = TokenStream::new();
+        let mut attrs = TokenStream::new();
 
         let mut def = MethodDef {
             is_req: false,
@@ -434,36 +434,45 @@ impl DataModel {
             def.name = convert_case::Casing::to_case(&def.name, *case);
         }
 
-        for attr in item.attrs {
-            match attr.meta {
-                Meta::Path(_) => (),
-                Meta::List(_) => (),
-                Meta::NameValue(ref meta) if meta.path.is_ident("doc") => {
-                    docs.extend(attr.into_token_stream());
-                }
-                Meta::NameValue(meta) => {
+        'outer: for mut attr in item.attrs {
+            attr.meta = match attr.meta {
+                // Intentionally leaved this as-is matchings for future use
+                attr @ Meta::Path(_) => attr,
+                attr @ Meta::List(_) => attr,
+
+                // If it's doc name-value, just leave it as-is
+                Meta::NameValue(meta) if meta.path.is_ident("doc") => Meta::NameValue(meta),
+
+                // Match name-value attributes
+                Meta::NameValue(meta) => 'value: {
                     if meta.path.is_ident("name") {
                         if !def.name.is_empty() {
                             emit_error!(meta, "Duplicated name attribute");
-                            continue;
+                            continue 'outer;
                         }
 
                         let Some(lit) = type_util::expr_into_lit_str(meta.value) else {
                             emit_error!(meta.path, "'name' must be string literal");
-                            continue;
+                            continue 'outer;
                         };
 
                         def.name = lit.value();
                     } else if meta.path.is_ident("route") {
                         let Some(lit) = type_util::expr_into_lit_str(meta.value) else {
                             emit_error!(meta.path, "'route' must be string literal");
-                            continue;
+                            continue 'outer;
                         };
 
                         def.routes.push(lit.value());
+                    } else {
+                        break 'value Meta::NameValue(meta);
                     }
+
+                    continue 'outer;
                 }
-            }
+            };
+
+            attrs.extend(attr.into_token_stream());
         }
 
         if def.name.is_empty() {
@@ -738,7 +747,7 @@ impl DataModel {
             }
 
             // #vis_outer fn #method_ident(_: #method_ident::Fn) {}
-            #docs
+            #attrs
             #serializer_method
         ));
 
