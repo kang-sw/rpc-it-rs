@@ -1,98 +1,39 @@
-//! # Procedural Macro for Generating RPC Signatures
+//! # rpc-it-macros
 //!
-//! This documentation explains the procedural macro used for generating RPC signatures, focusing on
-//! key concepts and attributes.
+//! `rpc-it-macros` is a Rust utility crate designed to significantly enhance the development
+//! experience when working with RPC (Remote Procedure Call) systems. This crate primarily focuses
+//! on RPC code generation, leveraging Rust's strong type system.
 //!
-//! ## Key Concepts
+//! ## What Does This Library Do?
 //!
-//! - **Method Name**: The identifier for a method. Senders use this name to serialize requests,
-//!   while receivers use it to locate the appropriate handler through an 'exact match' strategy.
-//!   This is the default approach for filtering inbound requests and notifications.
+//! The core functionality of `rpc-it-macros` lies in its ability to automate the generation of
+//! RPC-related code. By utilizing Rust's type system, this crate ensures that the code for handling
+//! RPC calls is generated in a way that is both type-safe and efficient. This approach minimizes
+//! the boilerplate code typically associated with setting up RPCs, leading to a cleaner and more
+//! maintainable codebase.
 //!
-//! - **Method Route**: In server-side method routing, you can specify additional routing
-//!   configurations for each method. This is useful for creating methods that respond to multiple
-//!   names or patterns (if supported by the router). Method routes are not applicable to outbound
-//!   requests or notifications.
+//! ## Why Do You Need This?
 //!
-//! - **Request Method**: A method that returns a value. The sender waits for a response from this
-//!   type of method.
+//! In the world of software development, especially when dealing with inter-process or network
+//! communication, minimizing human error is crucial. `rpc-it-macros` addresses this by offering a
+//! code-driven approach to RPC. This method reduces the likelihood of errors that can arise from
+//! manual setup and maintenance of RPC calls and routes. By integrating this crate into your
+//! project, you ensure that your RPC implementations are not only correct by design but also
+//! consistent and reliable.
 //!
-//! - **Notification Method**: A method that does not return a value. It operates on a
-//!   'fire-and-forget' basis, meaning the sender has no confirmation of the receiver having
-//!   received the request.
+//! ## Getting Started
 //!
-//! ## Attributes
+//! To integrate `rpc-it-macros` into your Rust project, add it as a dependency in your `Cargo.toml`
+//! file:
 //!
-//! ### Service Attribute: `#[rpc_it::service(<ATTRS>)]`
-//!
-//! - `flatten`
-//!     - When specified, the generated code is integrated into the current module.
-//! - `name_prefix = "<PREFIX>"`
-//!     - Appends a specified prefix to every method name.
-//! - `route_prefix = "<PREFIX>"`
-//!     - Appends a specified prefix to every method route.
-//! - `rename_all = "<CASE>"`
-//!     - Renames all default method names according to the specified case convention.
-//!         - Explicit renamings using `#[name = "<NAME>"]` are exempt from this rule.
-//!     - Supported case conventions: `snake_case`, `camelCase`, `PascalCase`,
-//!       `SCREAMING_SNAKE_CASE`, `kebab-case`. The convention follows rules similar to
-//!       `serde(rename_all = "<CASE>")`.
-//! - `vis= "<VIS>"`
-//!     - Sets the visibility of generated methods. Defaults to private if unspecified.
-//!
-//! ### Method Attributes
-//!
-//! - `[name = "<NAME>"]`
-//!     - Renames the method to the specified string.
-//! - `[route = "<ROUTE>"]`
-//!     - Adds an additional route to the method.
-//!
-//! ## Serialization / Deserialization Rules
-//!
-//! - Single-argument methods: The argument is serialized as-is.
-//! - Multi-argument methods: Arguments are serialized as a tuple (array in most serialization
-//!   formats).
-//!     - To serialize a single argument as a tuple, wrap it in an additional tuple (e.g., `T`
-//!       becomes `(T,)`).
-//!
-//! ## Usage
-//!
-//! ```ignore
-//! #[rpc_it::service(name_prefix = "Namespace/", rename_all = "PascalCase")]
-//! extern "module_name" {
-//!   // If return type is specified explicitly, it is treated as request.
-//!   fn method_req(arg: (i32, i32)) -> ();
-//!
-//!   // This is request; you can specify which error type will be returned.
-//!   fn method_req_2() -> Result<MyParam<'_>, &'_ str>;
-//!
-//!   // This is notification, which does not return anything.
-//!   fn method_notify(arg: (i32, i32));
-//!
-//!   #[name = "MethodName"] // Client will encode the method name as this. Server takes either.
-//!   #[route = "MyMethod/*"] // This will define additional route on server side
-//!   #[route = "OtherMethodName"]
-//!   fn method_example(arg: &'_ str, arg2: &'_ [u8])
-//!
-//!   // If serialization type and deserialization type is different, you can specify it by
-//!   // double underscore and angle brackets, like specifying two parameters on generic type `__`
-//!   fn from_to(s: __<i32, u64>, b: __<&'_ str, String>) -> __<i32, String>;
-//! }
-//!
-//! pub struct MyParam<'a> {
-//!     name: &'a str,
-//!     age: &'a str,
-//! }
+//! ```toml
+//! [dependencies]
+//! rpc-it-macros = "0.10.0"
 //! ```
 //!
-//! ## Client side
-//!
-//! ```ignore
-//!
-//! let client: RequestSender = unimplemented!();
-//!
-//! client.try_call(module_name::method_req, )
-//! ```
+//! > Disclaimer: This README was generated with the assistance of AI. If there are any conceptual
+//! > errors or areas of improvement, please feel free to open an issue on our repository. Your
+//! > feedback is invaluable in enhancing the accuracy and utility of this documentation.
 //!
 
 use std::mem::take;
@@ -130,6 +71,106 @@ macro_rules! ok_or {
     };
 }
 
+/// # Procedural Macro for Generating RPC Signatures
+///
+/// This documentation explains the procedural macro used for generating RPC signatures, focusing on
+/// key concepts and attributes.
+///
+/// ## Key Concepts
+///
+/// - **Method Name** is the identifier for a method. Senders use this name to serialize requests,
+///   while receivers use it to locate the appropriate handler through an 'exact match' strategy.
+///   This is the default approach for filtering inbound requests and notifications.
+///
+/// - **Method Route**, in server-side method routing, you can specify additional routing
+///   configurations for each method. This is useful for creating methods that respond to multiple
+///   names or patterns (if supported by the router). Method routes are not applicable to outbound
+///   requests or notifications.
+///
+/// - **Request Method** is a method that returns a value. The sender waits for a response from this
+///   type of method.
+///
+/// - **Notification Method** is a method that does not return a value. It operates on a
+///   'fire-and-forget' basis, meaning the sender has no confirmation of the receiver having
+///   received the request.
+///
+/// ## Attributes
+///
+/// ### Service Attribute: `#[rpc_it::service(<ATTRS>)]`
+///
+/// - `flatten`
+///     - When specified, the generated code is integrated into the current module.
+/// - `name_prefix = "<PREFIX>"`
+///     - Appends a specified prefix to every method name.
+/// - `route_prefix = "<PREFIX>"`
+///     - Appends a specified prefix to every method route.
+/// - `rename_all = "<CASE>"`
+///     - Renames all default method names according to the specified case convention.
+///         - Explicit renamings using `#[name = "<NAME>"]` are exempt from this rule.
+///     - Supported case conventions: `snake_case`, `camelCase`, `PascalCase`,
+///       `SCREAMING_SNAKE_CASE`, `kebab-case`. The convention follows rules similar to
+///       `serde(rename_all = "<CASE>")`.
+/// - `vis = "<VIS>"`
+///     - Sets the visibility of generated methods. Defaults to private if unspecified.
+/// - `handler_module_name = "<NAME>"`
+///     - Sets the name of the module containing the generated handler. Defaults to `handler`.
+/// - `no_handler`
+///     - Do not generate handler module.
+///
+/// ### Method Attributes
+///
+/// - `[name = "<NAME>"]`
+///     - Renames the method to the specified string.
+/// - `[route = "<ROUTE>"]`
+///     - Adds an additional route to the method.
+///
+/// ## Serialization / Deserialization Rules
+///
+/// - Single-argument methods: The argument is serialized as-is.
+/// - Multi-argument methods: Arguments are serialized as a tuple (array in most serialization
+///   formats).
+///     - To serialize a single argument as a tuple, wrap it in an additional tuple (e.g., `T`
+///       becomes `(T,)`).
+///
+/// ## Usage
+///
+/// ```ignore
+/// #[rpc_it::service(name_prefix = "Namespace/", rename_all = "PascalCase")]
+/// extern "<<your_module_name>>" {
+///   // If return type is specified explicitly, it is treated as request.
+///   fn method_req(arg: (i32, i32)) -> ();
+///
+///   // This is request; you can specify which error type will be returned.
+///   fn method_req_2() -> Result<MyParam<'_>, &'_ str>;
+///
+///   // This is notification, which does not return anything.
+///   fn method_notify(arg: (i32, i32));
+///
+///   #[name = "MethodName"] // Client will encode the method name as this. Server takes either.
+///   #[route = "MyMethod/*"] // This will define additional route on server side
+///   #[route = "OtherMethodName"]
+///   fn method_example(arg: &'_ str, arg2: &'_ [u8]);
+///
+///   // If serialization type and deserialization type is different, you can specify it by
+///   // double underscore and angle brackets, like specifying two parameters on generic type `__`
+///   fn from_to(s: __<i32, u64>, b: __<&'_ str, String>) -> __<i32, String>;
+/// }
+///
+/// pub struct MyParam<'a> {
+///     name: &'a str,
+///     age: &'a str,
+/// }
+/// ```
+///
+/// ## Client side
+///
+/// ```ignore
+///
+/// let client: RequestSender = unimplemented!();
+///
+/// client.try_call(your_module_name::method_req, )
+/// ```
+///
 #[proc_macro_error]
 #[proc_macro_attribute]
 pub fn service(
@@ -297,6 +338,24 @@ impl DataModel {
         // TODO: Generate router for inbound requests/notifies
         // * Router: May response 'ErrorRequestOnNotifyHandler' if notify router receives request
 
+        /*  NOTE
+            <<vis>> mod <<handler_module_name>> {
+                use super::*;
+
+                <<vis>> trait <<router_type_name>><U> {
+                    fn <<method_name>>(&self, inbound: ::rpc_it::cached::(Request|Notify)Message<U, self::<<method_name>>::Fn>);
+                    ...
+                }
+
+                <<vis>> enum <<route_enum_type>> {
+                    <<method_name_pascal_case>>(::rpc_it::cached::(Request|Notify)Message<U, self::<<method_name>>::Fn>),
+                    ...
+                }
+            }
+
+            //
+        */
+
         if self.is_flattened_module {
             // Just expand the body as-is.
             out.extend(out_body);
@@ -315,7 +374,8 @@ impl DataModel {
         vis_offset: usize,
         out: &mut TokenStream,
     ) {
-        /*
+        /*  NOTE
+
             <elevated_vis> mod <method_name> {
                 #![allow(non_camel_case_types)]
 
