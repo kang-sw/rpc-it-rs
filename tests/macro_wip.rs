@@ -1,4 +1,5 @@
 #![allow(unused)]
+#![cfg(feature = "proc-macro")]
 
 use std::borrow::{Borrow, Cow};
 
@@ -8,13 +9,13 @@ pub(crate) mod prods {
     const MyRoute: Route = ALL_PASCAL_CASE;
 
     const OtherRoute: Route = [
-        // bocci_chan = AliasName {
-        //     routes: ["a", "b", "c"],
-        // },
-        // eoo {
-        //     routes: ["a", "b", "c", "D"],
-        // },
-        // bax = OtherAlias,
+        mono_ser_de_param = AliasName {
+            routes: ["a", "b", "c"],
+        },
+        eoo {
+            routes: ["a", "b", "c", "D"],
+        },
+        baz = OtherAlias,
         qux,
     ];
 
