@@ -3,7 +3,7 @@
 use std::borrow::{Borrow, Cow};
 
 #[rpc_it_macros::service(rename_all = "camelCase")]
-extern "prods" {
+pub(crate) mod prods {
     fn foo_my_dlfofl();
 
     fn bocci_chan(kawaii: __<String, (i32, i32)>) -> i32;
@@ -23,8 +23,7 @@ extern "prods" {
 }
 
 #[rpc_it_macros::service(rename_all = "kebab-case", no_recv)]
-extern "ga" {
-
+mod ga {
     fn foo_my_dlfofl();
 
     /// dasf

@@ -42,7 +42,8 @@ use proc_macro_error::{abort, emit_error, proc_macro_error};
 use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned, ToTokens};
 use syn::{
-    punctuated::Punctuated, spanned::Spanned, ForeignItem, GenericArgument, Meta, Token, Type,
+    parse_quote, punctuated::Punctuated, spanned::Spanned, ForeignItem, GenericArgument, Item,
+    Meta, Token, TraitItem, Type,
 };
 
 mod type_util;
@@ -136,24 +137,24 @@ macro_rules! ok_or {
 ///
 /// ```ignore
 /// #[rpc_it::service(name_prefix = "Namespace/", rename_all = "PascalCase")]
-/// extern "<<your_module_name>>" {
+/// pub mod my_service {
 ///   // If return type is specified explicitly, it is treated as request.
-///   fn method_req(arg: (i32, i32)) -> ();
+///   fn method_req(arg: (i32, i32)) -> () {}
 ///
 ///   // This is request; you can specify which error type will be returned.
-///   fn method_req_2() -> Result<MyParam<'_>, &'_ str>;
+///   fn method_req_2() -> Result<MyParam<'_>, &'_ str> {}
 ///
 ///   // This is notification, which does not return anything.
-///   fn method_notify(arg: (i32, i32));
+///   fn method_notify(arg: (i32, i32)) {}
 ///
 ///   #[name = "MethodName"] // Client will encode the method name as this. Server takes either.
 ///   #[route = "MyMethod/*"] // This will define additional route on server side
 ///   #[route = "OtherMethodName"]
-///   fn method_example(arg: &'_ str, arg2: &'_ [u8]);
+///   fn method_example(arg: &'_ str, arg2: &'_ [u8]) {}
 ///
 ///   // If serialization type and deserialization type is different, you can specify it by
 ///   // double underscore and angle brackets, like specifying two parameters on generic type `__`
-///   fn from_to(s: __<i32, u64>, b: __<&'_ str, String>) -> __<i32, String>;
+///   fn from_to(s: __<i32, u64>, b: __<&'_ str, String>) -> __<i32, String> {}
 /// }
 ///
 /// pub struct MyParam<'a> {
@@ -181,7 +182,7 @@ pub fn service(
     //     proc_macro_error::emit_call_site_error!("Expected foreign module");
     //     return items;
     // };
-    let item = syn::parse_macro_input!(items as syn::ItemForeignMod);
+    let item = syn::parse_macro_input!(items as syn::ItemMod);
 
     let mut model = DataModel::default();
     let mut out_stream = TokenStream::new();
@@ -228,6 +229,12 @@ struct MethodDef {
 }
 
 impl DataModel {
+    fn vis(&self) -> &syn::Visibility {
+        self.vis.as_ref().unwrap_or(&syn::Visibility::Inherited)
+    }
+}
+
+impl DataModel {
     fn parse_attr(&mut self, attrs: proc_macro2::TokenStream) {
         let attrs: syn::Meta = syn::parse_quote_spanned! { attrs.span() => service(#attrs) };
         let syn::Meta::List(attrs) = attrs else {
@@ -260,28 +267,6 @@ impl DataModel {
                         self.name_prefix = type_util::expr_into_lit_str(meta.value);
                     } else if meta.path.is_ident("route_prefix") {
                         self.route_prefix = type_util::expr_into_lit_str(meta.value);
-                    } else if meta.path.is_ident("handler_module_name") {
-                        let Some(str) = type_util::expr_into_lit_str(meta.value) else {
-                            continue;
-                        };
-
-                        let Some(ident) = ok_or!(str.parse::<syn::Ident>()) else {
-                            emit_error!(str, "Failed to parse identifier");
-                            continue;
-                        };
-
-                        self.handler_module_name = Some(ident);
-                    } else if meta.path.is_ident("vis") {
-                        let Some(str) = type_util::expr_into_lit_str(meta.value) else {
-                            continue;
-                        };
-
-                        let Some(vis) = ok_or!(str.parse::<syn::Visibility>()) else {
-                            emit_error!(str, "Failed to parse visibility");
-                            continue;
-                        };
-
-                        self.vis = Some(vis);
                     } else if meta.path.is_ident("rename_all") {
                         let Some(str) = type_util::expr_into_lit_str(meta.value) else {
                             continue;
@@ -325,7 +310,7 @@ impl DataModel {
         }
     }
 
-    fn main(&mut self, item: syn::ItemForeignMod, out: &mut TokenStream) {
+    fn main(&mut self, item: syn::ItemMod, out: &mut TokenStream) {
         let vis_level = 1;
 
         // TODO: In future, find re-imported crate name
@@ -333,24 +318,45 @@ impl DataModel {
 
         // Create module name
         {
-            let name_parse_result = item.abi.name.as_ref().unwrap().parse::<syn::Ident>();
-            let Some(ident) = ok_or!(item.abi.name.span(), name_parse_result) else {
-                abort!(
-                    item.abi.name.span(),
-                    "'{}' can't be made into valid identifier",
-                    item.abi.name.as_ref().unwrap().value()
-                );
-            };
+            self.vis = Some(item.vis);
+            let vis = self.vis();
+            let ident = &item.ident;
 
-            let module_vis = self.vis.as_ref().unwrap_or(&syn::Visibility::Inherited);
-            out.extend(quote!(#module_vis mod #ident));
+            out.extend(quote!(#vis mod #ident));
         }
 
         let mut out_body = TokenStream::new();
 
-        for item in item.items.into_iter() {
+        for item in item.content.unwrap().1.into_iter() {
             match item {
-                ForeignItem::Fn(x) => self.generate_item_fn(x, vis_level, &mut out_body),
+                Item::Fn(syn::ItemFn {
+                    attrs,
+                    vis,
+                    sig,
+                    block: _,
+                }) => self.generate_item_fn(
+                    syn::ForeignItemFn {
+                        semi_token: Token![;](sig.span()),
+                        attrs,
+                        sig,
+                        vis,
+                    },
+                    vis_level,
+                    &mut out_body,
+                ),
+                Item::Verbatim(verbatim) => {
+                    let Ok(x @ syn::ItemForeignMod { .. }) =
+                        syn::parse2(quote!(extern "C" { #verbatim }))
+                    else {
+                        continue;
+                    };
+
+                    let Some(syn::ForeignItem::Fn(item)) = x.items.into_iter().next() else {
+                        continue;
+                    };
+
+                    self.generate_item_fn(item, vis_level, &mut out_body);
+                }
                 other => emit_error!(other, "Expected function declaration"),
             }
         }
@@ -362,6 +368,7 @@ impl DataModel {
         // Wrap the result in block
         out.extend(quote!({
             #![allow(unused_parens)]
+            #![allow(clippy::needless_lifetimes)]
             use super::*; // Make transparent to parent module
 
             use #crate_name as ___crate;
