@@ -122,21 +122,14 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
     /// encoding is stateful(e.g. contextually encrypted), this method should return `None`.
     ///
     /// This method is primarily used for broadcasting notification over multiple rpc channels.
-    fn codec_noti_hash(&self) -> Option<NonZeroU64> {
-        // NOTE: Can't provide default implementation, as it prevents trait object from being
-        // created.
-        None
-    }
+    fn codec_noti_hash(&self) -> Option<NonZeroU64>;
 
     fn encode_notify<S: serde::Serialize>(
         &self,
         method: &str,
         params: &S,
         buf: &mut BytesMut,
-    ) -> Result<(), EncodeError> {
-        let _ = (method, params, buf);
-        Err(EncodeError::UnsupportedAction)
-    }
+    ) -> Result<(), EncodeError>;
 
     /// Encodes a request message into the given buffer. The `request_id` is contextually unique
     /// integer value, which is used to match the returned response with the request that was
@@ -148,10 +141,7 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
         method: &str,
         params: &S,
         buf: &mut BytesMut,
-    ) -> Result<(), EncodeError> {
-        let _ = (request_id, method, params, buf);
-        Err(EncodeError::UnsupportedAction)
-    }
+    ) -> Result<(), EncodeError>;
 
     /// This is called from server side, where it responds to the request with received request_id.
     ///
@@ -167,10 +157,7 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
         request_id_raw: &[u8],
         result: EncodeResponsePayload<S>,
         buf: &mut BytesMut,
-    ) -> Result<(), EncodeError> {
-        let _ = (request_id_raw, result, buf);
-        Err(EncodeError::UnsupportedAction)
-    }
+    ) -> Result<(), EncodeError>;
 
     /// Create deserializer from the payload part of the original message.
     fn payload_deserializer<'de>(
@@ -184,10 +171,7 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
     ///
     /// The frame size is guaranteed to be shorter than 2^32-1 bytes. Therefore, any range in
     /// returned [`InboundFrameType`] should be able to be represented in `u32` type.
-    fn decode_inbound(&self, frame: &[u8]) -> Result<InboundFrameType, DecodeError> {
-        let _ = frame;
-        Err(DecodeError::UnsupportedAction)
-    }
+    fn decode_inbound(&self, frame: &[u8]) -> Result<InboundFrameType, DecodeError>;
 }
 
 /// Internal utilities for [`Codec`] implementations.
@@ -331,7 +315,7 @@ mod dynamic {
 
     use super::{DecodePayloadUnsupportedError, EncodeResponsePayload};
 
-    pub trait DynamicCodec: std::fmt::Debug + Send + Sync {
+    pub trait DynCodec: std::fmt::Debug + Send + Sync {
         fn dynamic_payload_deserializer<'de>(
             &'de self,
             payload: &'de [u8],
@@ -367,16 +351,16 @@ mod dynamic {
         ) -> Result<super::InboundFrameType, super::DecodeError>;
     }
 
-    impl Codec for Arc<dyn DynamicCodec> {
+    impl Codec for Arc<dyn DynCodec> {
         fn payload_deserializer<'de>(
             &'de self,
             payload: &'de [u8],
         ) -> Result<impl serde::Deserializer<'de>, DecodePayloadUnsupportedError> {
-            <dyn DynamicCodec>::dynamic_payload_deserializer(self.as_ref(), payload)
+            <dyn DynCodec>::dynamic_payload_deserializer(self.as_ref(), payload)
         }
 
         fn codec_noti_hash(&self) -> Option<std::num::NonZeroU64> {
-            <dyn DynamicCodec>::codec_noti_hash(self.as_ref())
+            <dyn DynCodec>::codec_noti_hash(self.as_ref())
         }
 
         fn encode_notify<S: serde::Serialize>(
@@ -385,7 +369,7 @@ mod dynamic {
             params: &S,
             buf: &mut bytes::BytesMut,
         ) -> Result<(), super::EncodeError> {
-            <dyn DynamicCodec>::encode_notify(self.as_ref(), method, params, buf)
+            <dyn DynCodec>::encode_notify(self.as_ref(), method, params, buf)
         }
 
         fn encode_request<S: serde::Serialize>(
@@ -395,7 +379,7 @@ mod dynamic {
             params: &S,
             buf: &mut bytes::BytesMut,
         ) -> Result<(), super::EncodeError> {
-            <dyn DynamicCodec>::encode_request(self.as_ref(), request_id, method, params, buf)
+            <dyn DynCodec>::encode_request(self.as_ref(), request_id, method, params, buf)
         }
 
         fn encode_response<S: serde::Serialize>(
@@ -414,18 +398,18 @@ mod dynamic {
                 EP::Err(e, s) => EP::Err(e, (ref_body = s, &ref_body).1),
             };
 
-            <dyn DynamicCodec>::encode_response(self.as_ref(), request_id_raw, result, buf)
+            <dyn DynCodec>::encode_response(self.as_ref(), request_id_raw, result, buf)
         }
 
         fn decode_inbound(
             &self,
             frame: &[u8],
         ) -> Result<super::InboundFrameType, super::DecodeError> {
-            <dyn DynamicCodec>::decode_inbound(self.as_ref(), frame)
+            <dyn DynCodec>::decode_inbound(self.as_ref(), frame)
         }
     }
 
-    impl<T: Codec> DynamicCodec for T {
+    impl<T: Codec> DynCodec for T {
         fn dynamic_payload_deserializer<'de>(
             &'de self,
             payload: &'de [u8],
@@ -479,4 +463,8 @@ mod dynamic {
     }
 }
 
+#[cfg(feature = "dynamic-codec")]
 pub use dynamic::*;
+
+#[cfg(feature = "dynamic-codec")]
+pub type DynamicCodec = std::sync::Arc<dyn dynamic::DynCodec>;

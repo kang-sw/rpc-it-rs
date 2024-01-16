@@ -84,7 +84,7 @@ fn verify_request_jsonrpc() {
 fn verify_request_dynamic_codecs() {
     use rpc_it::{codec::DynamicCodec, ext_codec::jsonrpc};
 
-    verify_request(|| Arc::new(jsonrpc::Codec) as Arc<dyn DynamicCodec>);
+    verify_request(|| Arc::new(jsonrpc::Codec) as DynamicCodec);
 }
 
 fn verify_request<C: Codec>(codec: impl Fn() -> C) {
