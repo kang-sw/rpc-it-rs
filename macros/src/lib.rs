@@ -114,8 +114,10 @@ macro_rules! ok_or {
 ///     - Sets the visibility of generated methods. Defaults to private if unspecified.
 /// - `handler_module_name = "<NAME>"`
 ///     - Sets the name of the module containing the generated handler. Defaults to `handler`.
-/// - `no_handler`
-///     - Do not generate handler module.
+/// - `no_recv`
+///     - Do not generate receiver part of the module.
+/// - `no_param_recv_newtype`
+///     - Do not generate new type for `ParamRecv` types. This will reduce generated code size.
 ///
 /// ### Method Attributes
 ///
@@ -207,6 +209,12 @@ struct DataModel {
 
     /// Rename all method names with given case.
     rename_all: Option<Case>,
+
+    /// No receiver part of the module.
+    no_recv: bool,
+
+    /// No newtype for `ParamRecv` types.
+    no_param_recv_newtype: bool,
 
     /// Visibility of generated methods.
     vis: Option<syn::Visibility>,
@@ -487,43 +495,31 @@ impl DataModel {
                 types_de.push(de);
             }
 
-            let make_into_tuple = |x: &[Type]| {
-                if x.len() == 1 {
-                    let x = &x[0];
-                    quote!(#x)
-                } else {
-                    quote!((#(#x),*))
-                }
-            };
+            let type_idents = args
+                .iter()
+                .enumerate()
+                .map(|(index, arg)| {
+                    if let syn::Pat::Ident(ident) = &*arg.pat {
+                        ident.ident.clone()
+                    } else {
+                        syn::Ident::new(&format!("___{index}"), arg.pat.span())
+                    }
+                })
+                .collect::<Vec<_>>();
 
-            let types_ser_tup = make_into_tuple(&types_ser);
-            let types_de_tup = make_into_tuple(&types_de);
+            assert!(type_idents.len() == types_ser.len());
 
             serializer_method = {
-                let idents = args
-                    .iter()
-                    .enumerate()
-                    .map(|(index, arg)| {
-                        if let syn::Pat::Ident(ident) = &*arg.pat {
-                            ident.ident.clone()
-                        } else {
-                            syn::Ident::new(&format!("___{index}"), arg.pat.span())
-                        }
-                    })
-                    .collect::<Vec<_>>();
-
-                assert!(idents.len() == types_ser.len());
-
-                let tok_return = if idents.is_empty() {
+                let tok_return = if type_idents.is_empty() {
                     quote!(())
                 } else {
-                    quote!((#(#idents),*))
+                    quote!((#(#type_idents),*))
                 };
 
-                let tok_input = if idents.is_empty() {
+                let tok_input = if type_idents.is_empty() {
                     quote!()
                 } else {
-                    let zipped_tokens = idents
+                    let zipped_tokens = type_idents
                         .iter()
                         .zip(types_ser.iter())
                         .map(|(ident, ty)| quote!(#ident: #ty));
@@ -543,13 +539,47 @@ impl DataModel {
                 )
             };
 
+            let tok_de_type = if !self.no_recv {
+                /*  NOTE
+
+                   pub struct ParamRecv<'___de> {
+                       #(#type_idents: #types_de),*
+                   }
+
+                */
+
+                quote!(
+                    pub struct ParamRecv<'___de> {
+                        #(#type_idents: #types_de),*
+                    }
+
+                    #[derive(___serde::Deserialize)]
+                    struct ParseInner<'___de>(#(#[serde(borrow)] #types_de), *);
+
+                    impl<'___de> ___serde::Deserialize<'___de> for ParamRecv<'___de> {
+                        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                        where
+                            D: ___serde::Deserializer<'___de>,
+                        {
+                                todo!()
+                        }
+                    }
+                )
+            } else {
+                quote!(
+                    type ParamRecv<'___de> = (#(#types_de), *);
+                )
+            };
+
             quote!(
                 impl ___crate::NotifyMethod for Fn {
-                    type ParamSend<'___ser> = #types_ser_tup;
-                    type ParamRecv<'___de> = #types_de_tup;
+                    type ParamSend<'___ser> = (#(#types_ser), *);
+                    type ParamRecv<'___de> = self::ParamRecv<'___de>;
 
                     const METHOD_NAME: &'static str = #method_name;
                 }
+
+                #tok_de_type
             )
         };
 
@@ -636,7 +666,10 @@ impl DataModel {
 
         out.extend(quote!(
             #vis_outer mod #method_ident {
+                #![allow(unused_parens)]
+
                 use ::rpc_it::macros as ___crate;
+                use ::rpc_it::serde as ___serde;
                 use super::*; // Make transparent to parent module
 
                 #vis_inner struct Fn;
@@ -653,6 +686,10 @@ impl DataModel {
 
         self.methods.push(def);
     }
+}
+
+fn has_any_lifetime(ty: &Type) -> bool {
+    todo!()
 }
 
 /// Retrieve serialization/deserialization types for given type.

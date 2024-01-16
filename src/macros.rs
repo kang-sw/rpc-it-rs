@@ -211,9 +211,28 @@ pub trait NotifyMethod {
 #[ignore]
 #[cfg(feature = "jsonrpc")]
 fn xx() {
-    #[derive(Serialize, Deserialize)]
+    #![allow(unused_parens)]
+
+    #[derive(Serialize)]
     struct Foo<'a> {
         x: &'a str,
+    }
+    #[derive(Serialize, Deserialize)]
+    struct A {
+        i: i32,
+        vv: f32,
+        k: Vec<i32>,
+    }
+
+    impl<'de> serde::Deserialize<'de> for Foo<'de> {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let (x) = <(&str) as serde::Deserialize>::deserialize(deserializer)?;
+
+            Ok(Self { x })
+        }
     }
 
     struct MyMethod;

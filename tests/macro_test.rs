@@ -6,6 +6,8 @@ use hashbrown::HashMap;
 extern "prods" {
     fn foo_my_dlfofl();
 
+    fn bocci_chan(kawaii: __<String, (i32, i32)>);
+
     /// dasf
     /// sagfa gsda
     #[name = "dslaoi"]
