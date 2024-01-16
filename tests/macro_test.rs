@@ -2,7 +2,6 @@
 
 use std::borrow::{Borrow, Cow};
 
-#[allow(unused)]
 #[rpc_it_macros::service(rename_all = "camelCase")]
 extern "prods" {
     fn foo_my_dlfofl();
@@ -23,8 +22,8 @@ extern "prods" {
     fn qux(las: i32, ggg: i32) -> Result<__<&'_ str, String>, i32>;
 }
 
-#[rpc_it_macros::service(flatten, rename_all = "kebab-case", no_recv)]
-extern "" {
+#[rpc_it_macros::service(rename_all = "kebab-case", no_recv)]
+extern "ga" {
 
     fn foo_my_dlfofl();
 
@@ -39,6 +38,8 @@ extern "" {
 
     fn qux(las: String, ggg: i32) -> Result<&'_ str, i32>;
 }
+
+use ga::*;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct MyArg<'a> {

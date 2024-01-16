@@ -20,8 +20,8 @@ pub mod route {
         #[error("parsing inbound failed")]
         ParseError(#[from] erased_serde::Error),
 
-        #[error("invalid method type")]
-        InvalidMethodType,
+        #[error("request received on notify handler!")]
+        RequestOnNotifyHandler,
     }
 
     /// A function which routes method(i.e. query) to internal index representation. See

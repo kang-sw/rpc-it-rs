@@ -96,8 +96,6 @@ macro_rules! ok_or {
 ///
 /// ### Service Attribute: `#[rpc_it::service(<ATTRS>)]`
 ///
-/// - `flatten`
-///     - When specified, the generated code is integrated into the current module.
 /// - `name_prefix = "<PREFIX>"`
 ///     - Appends a specified prefix to every method name.
 /// - `route_prefix = "<PREFIX>"`
@@ -123,6 +121,8 @@ macro_rules! ok_or {
 ///     - Renames the method to the specified string.
 /// - `[route = "<ROUTE>"]`
 ///     - Adds an additional route to the method.
+/// - `[no_recv]`
+///     - Do not define handler for this method.
 ///
 /// ## Serialization / Deserialization Rules
 ///
@@ -195,10 +195,6 @@ pub fn service(
 /// A model which describes parsed declarations
 #[derive(Default)]
 struct DataModel {
-    /// If the descriptions are being generated within current module. All visibility specifications
-    /// will be reduced by one level.
-    is_flattened_module: bool,
-
     /// Prefix for all method names.
     name_prefix: Option<syn::LitStr>,
 
@@ -214,11 +210,14 @@ struct DataModel {
     /// No newtype for `ParamRecv` types.
     no_param_recv_newtype: bool,
 
+    /// Name of the module containing generated handler.
+    handler_module_name: Option<syn::Ident>,
+
     /// Visibility of generated methods.
     vis: Option<syn::Visibility>,
 
     /// Notify method definitions. Used for generating inbound router.
-    methods: Vec<MethodDef>,
+    handled_methods: Vec<MethodDef>,
 }
 
 struct MethodDef {
@@ -248,9 +247,7 @@ impl DataModel {
 
             match meta {
                 Meta::Path(meta) => {
-                    if meta.is_ident("flatten") {
-                        self.is_flattened_module = true;
-                    } else if meta.is_ident("no_param_recv_newtype") {
+                    if meta.is_ident("no_param_recv_newtype") {
                         self.no_param_recv_newtype = true;
                     } else if meta.is_ident("no_recv") {
                         self.no_recv = true;
@@ -263,6 +260,17 @@ impl DataModel {
                         self.name_prefix = type_util::expr_into_lit_str(meta.value);
                     } else if meta.path.is_ident("route_prefix") {
                         self.route_prefix = type_util::expr_into_lit_str(meta.value);
+                    } else if meta.path.is_ident("handler_module_name") {
+                        let Some(str) = type_util::expr_into_lit_str(meta.value) else {
+                            continue;
+                        };
+
+                        let Some(ident) = ok_or!(str.parse::<syn::Ident>()) else {
+                            emit_error!(str, "Failed to parse identifier");
+                            continue;
+                        };
+
+                        self.handler_module_name = Some(ident);
                     } else if meta.path.is_ident("vis") {
                         let Some(str) = type_util::expr_into_lit_str(meta.value) else {
                             continue;
@@ -318,11 +326,13 @@ impl DataModel {
     }
 
     fn main(&mut self, item: syn::ItemForeignMod, out: &mut TokenStream) {
-        let mut vis_level = 0;
+        let vis_level = 1;
 
-        if !self.is_flattened_module {
-            vis_level += 1;
+        // TODO: In future, find re-imported crate name
+        let crate_name = quote!(rpc_it);
 
+        // Create module name
+        {
             let name_parse_result = item.abi.name.as_ref().unwrap().parse::<syn::Ident>();
             let Some(ident) = ok_or!(item.abi.name.span(), name_parse_result) else {
                 abort!(
@@ -333,7 +343,7 @@ impl DataModel {
             };
 
             let module_vis = self.vis.as_ref().unwrap_or(&syn::Visibility::Inherited);
-            out.extend(quote!(#module_vis mod #ident))
+            out.extend(quote!(#module_vis mod #ident));
         }
 
         let mut out_body = TokenStream::new();
@@ -345,41 +355,57 @@ impl DataModel {
             }
         }
 
-        // TODO: Generate router for inbound requests/notifies
-        // * Router: May response 'ErrorRequestOnNotifyHandler' if notify router receives request
+        if !self.no_recv {
+            self.generate_router_part(vis_level, out);
+        }
 
+        // Wrap the result in block
+        out.extend(quote!({
+            #![allow(unused_parens)]
+            use super::*; // Make transparent to parent module
+
+            use #crate_name as ___crate;
+
+            use ___crate::macros as ___macros;
+            use ___crate::serde as serde;
+
+            #out_body
+        }))
+    }
+
+    fn generate_router_part(&mut self, vis_offset: usize, out: &mut TokenStream) {
         /*  NOTE
             <<vis>> mod <<handler_module_name>> {
                 use super::*;
+                use rpc_it as ___crate;
+                use ___crate::macros as ___macros;
 
-                <<vis>> trait <<router_type_name>><U> {
-                    fn <<method_name>>(&self, inbound: ::rpc_it::cached::(Request|Notify)Message<U, self::<<method_name>>::Fn>);
+                <<vis>> trait <<router_type_name>><U: ___crate::UserData> {
+                    fn <<method_name>>(&self, inbound: ___crate::cached::(Request|Notify)Message<U, self::<<method_name>>::Fn>);
                     ...
                 }
 
                 <<vis>> enum <<route_enum_type>> {
-                    <<method_name_pascal_case>>(::rpc_it::cached::(Request|Notify)Message<U, self::<<method_name>>::Fn>),
+                    <<method_name_pascal_case>>(___crate::cached::(Request|Notify)Message<U, self::<<method_name>>::Fn>),
                     ...
                 }
+
+                impl<U> <<router_type_name>>
             }
 
             //
         */
-        if !self.no_recv {
 
-            // TODO:
-        }
+        let vis_module = type_util::elevate_vis_level(
+            self.vis.clone().unwrap_or(syn::Visibility::Inherited),
+            vis_offset,
+        );
+        let vis_inner = type_util::elevate_vis_level(vis_module.clone(), 1);
 
-        if self.is_flattened_module {
-            // Just expand the body as-is.
-            out.extend(out_body);
-        } else {
-            // Wrap the result in block
-            out.extend(quote!({
-                use super::*; // Make transparent to parent module
-                #out_body
-            }))
-        }
+        let handler_module_name = self
+            .handler_module_name
+            .clone()
+            .unwrap_or_else(|| syn::Ident::new("handler", proc_macro2::Span::call_site()));
     }
 
     fn generate_item_fn(
@@ -422,6 +448,7 @@ impl DataModel {
         let vis_inner = type_util::elevate_vis_level(vis_outer.clone(), 1);
 
         let mut attrs = TokenStream::new();
+        let mut no_recv = false;
 
         let mut def = MethodDef {
             is_req: false,
@@ -436,9 +463,10 @@ impl DataModel {
 
         'outer: for mut attr in item.attrs {
             attr.meta = match attr.meta {
-                // Intentionally leaved this as-is matchings for future use
-                attr @ Meta::Path(_) => attr,
-                attr @ Meta::List(_) => attr,
+                Meta::Path(path) if path.is_ident("no_recv") => {
+                    no_recv = true;
+                    continue 'outer;
+                }
 
                 // If it's doc name-value, just leave it as-is
                 Meta::NameValue(meta) if meta.path.is_ident("doc") => Meta::NameValue(meta),
@@ -470,6 +498,10 @@ impl DataModel {
 
                     continue 'outer;
                 }
+
+                // Intentionally leaving this as-is matchings for future use
+                attr @ Meta::Path(_) => attr,
+                attr @ Meta::List(_) => attr,
             };
 
             attrs.extend(attr.into_token_stream());
@@ -548,7 +580,7 @@ impl DataModel {
                     item_span =>
                     #vis_outer fn #method_ident<'___ser>(#tok_input) -> (
                         #method_ident::Fn,
-                        <#method_ident::Fn as ::rpc_it::macros::NotifyMethod>::ParamSend<'___ser>
+                        <#method_ident::Fn as rpc_it::macros::NotifyMethod>::ParamSend<'___ser>
                     ) {
                         (
                             #method_ident::Fn,
@@ -558,7 +590,8 @@ impl DataModel {
                 )
             };
 
-            let (de_recv_type, tok_de_type) = if !self.no_recv && !self.no_param_recv_newtype {
+            let gen_simple_de_type = no_recv || self.no_recv || self.no_param_recv_newtype;
+            let (de_recv_type, tok_de_type) = if !gen_simple_de_type {
                 // Creates new type for each deserialization types.
                 //
                 // This is to:
@@ -733,10 +766,6 @@ impl DataModel {
 
         out.extend(quote!(
             #vis_outer mod #method_ident {
-                #![allow(unused_parens)]
-
-                use ::rpc_it::macros as ___macros;
-                use ::rpc_it::serde as serde;
                 use super::*; // Make transparent to parent module
 
                 #vis_inner struct Fn;
@@ -751,6 +780,9 @@ impl DataModel {
             #serializer_method
         ));
 
-        self.methods.push(def);
+        if !no_recv {
+            // Only generate receiver part if it's not explicitly disabled
+            self.handled_methods.push(def);
+        }
     }
 }

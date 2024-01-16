@@ -66,7 +66,7 @@ pub(crate) fn retr_ser_de_params(ty: &Type) -> Option<(Type, Type)> {
 
     // ---
 
-    // Detect if type starts with `__<>`, which means separate serialization/deserialization types.
+    // Detect if type starts with `__<>`, which separates serialization/deserialization types.
     let split_ser_de_type = ty
         .pipe(|x| {
             if let Type::Path(syn::TypePath { path, .. }) = x {
