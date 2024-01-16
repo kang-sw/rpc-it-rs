@@ -84,15 +84,18 @@ pub mod route {
 
         pub fn push_handler<F>(&mut self, func: F)
         where
-            F: Into<Box<ExecFunc<U>>>,
+            F: for<'a> Fn(&mut Option<Inbound<'a, U>>) -> Result<(), ExecError>
+                + Send
+                + Sync
+                + 'static,
         {
-            self.inner.funcs.push(func.into());
+            self.inner.funcs.push(Box::new(func));
         }
 
         /// # Panics
         ///
         /// If no handler is registered, this function panics.
-        pub fn try_add_route_on_latest(&mut self, alias: &str) -> Result<(), R::Error> {
+        pub fn try_add_route_to_last(&mut self, alias: &str) -> Result<(), R::Error> {
             self.inner
                 .route_func
                 .add_route(alias, self.inner.funcs.len() - 1)?;
@@ -206,6 +209,33 @@ pub mod route {
     define_for!(std::collections::HashMap);
     define_for!(std::collections::BTreeMap);
     define_for!(hashbrown::HashMap);
+
+    // ========================================================== Macro Util ===|
+
+    pub enum RouteFailResponse {
+        /// Just ignore this error, and continue to route.
+        IgnoreAndContinue,
+        /// Generate panic. This is default behavior
+        Panic,
+        /// Abort route installation process. The router instance will be leaved in corrupted state.
+        Abort,
+    }
+
+    impl From<()> for RouteFailResponse {
+        fn from(_: ()) -> Self {
+            Self::Panic
+        }
+    }
+
+    impl From<bool> for RouteFailResponse {
+        fn from(value: bool) -> Self {
+            if value {
+                Self::IgnoreAndContinue
+            } else {
+                Self::Abort
+            }
+        }
+    }
 }
 
 pub trait RequestMethod {

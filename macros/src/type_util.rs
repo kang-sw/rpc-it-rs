@@ -1,4 +1,3 @@
-use proc_macro::Ident;
 use proc_macro_error::emit_error;
 use std::mem::take;
 use syn::parse_quote_spanned;

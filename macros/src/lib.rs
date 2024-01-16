@@ -41,34 +41,9 @@ use proc_macro_error::{abort, emit_error, proc_macro_error};
 
 use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned, ToTokens};
-use syn::{
-    parse_quote, punctuated::Punctuated, spanned::Spanned, ForeignItem, GenericArgument, Item,
-    Meta, Token, TraitItem, Type,
-};
+use syn::{punctuated::Punctuated, spanned::Spanned, GenericArgument, Item, Meta, Token, Type};
 
 mod type_util;
-
-macro_rules! ok_or {
-    ($expr:expr) => {
-        match $expr {
-            Ok(expr) => Some(expr),
-            Err(err) => {
-                proc_macro_error::emit_call_site_error!("{}", err);
-                None
-            }
-        }
-    };
-
-    ($span:expr, $expr:expr) => {
-        match $expr {
-            Ok(expr) => Some(expr),
-            Err(err) => {
-                proc_macro_error::emit_error!($span, "{}", err);
-                None
-            }
-        }
-    };
-}
 
 /// # Procedural Macro for Generating RPC Signatures
 ///
@@ -210,9 +185,6 @@ struct DataModel {
 
     /// No newtype for `ParamRecv` types.
     no_param_recv_newtype: bool,
-
-    /// Name of the module containing generated handler.
-    handler_module_name: Option<syn::Ident>,
 
     /// Visibility of generated methods.
     vis: Option<syn::Visibility>,
@@ -546,7 +518,6 @@ impl DataModel {
 
         let tok_enum_title = { quote!(#vis_this enum #ident_this) };
 
-        #[allow(clippy::if_same_then_else)]
         let tok_enum_variants = if generate_targets.is_empty() {
             quote!(__EmptyVariant(::std::marker::PhantomData<U>))
         } else {
@@ -576,19 +547,101 @@ impl DataModel {
             quote!(#(#tokens),*)
         };
 
+        let handler_impl_clone = (generate_targets.len() > 1).then(|| quote!(+ Clone));
+        let tok_install_contents = generate_targets.iter().enumerate().map(
+            |(
+                index,
+                GenDesc {
+                    variant_ident,
+                    def:
+                        MethodDef {
+                            is_req,
+                            method_ident,
+                            name,
+                            routes,
+                        },
+                },
+            )| {
+                let ident = variant_ident.as_ref().unwrap_or(method_ident);
+                let type_path = if *is_req {
+                    quote!(Request)
+                } else {
+                    quote!(Notify)
+                };
+
+                let route_strs = Some(name)
+                    .into_iter()
+                    .chain(routes.iter())
+                    .map(|x| quote!(#x));
+
+                let is_last = index == generate_targets.len() - 1;
+                let clone_handler = (!is_last).then(|| quote!(.clone()));
+                let method_name_str = method_ident.to_string();
+
+                quote!({
+                    let ___handler = ___handler #clone_handler;
+
+                    ___router.push_handler(move |___inbound| {
+                        let ___ib = ___inbound.take().unwrap();
+
+                        #[allow(unsafe_code)]
+                        unsafe {
+                            ___handler(
+                                #ident_this :: #ident (
+                                    ___crate::cached:: #type_path ::__internal_create(
+                                        ___ib.into_owned(),
+                                    ).map_err(|(___ib, ___err)| {
+                                        *___inbound = Some(___ib);
+                                        ___err
+                                    })?
+                                )
+                            );
+                        }
+
+                        Ok(())
+                    });
+
+                    let ___routes = [#(#route_strs),*];
+                    for ___route in ___routes {
+                        let Err(___err) = ___router.try_add_route_to_last(___route) else {
+                            continue;
+                        };
+
+                        match ___on_route_error(#method_name_str, ___route, ___err).into() {
+                            ___RF::IgnoreAndContinue => {}
+                            ___RF::Panic => {
+                                panic!(
+                                    "Failed to add route '{}::{}'",
+                                    #method_name_str,
+                                    ___route
+                                );
+                            },
+                            ___RF::Abort => return,
+                        }
+                    }
+                })
+            },
+        );
+
         out.extend(quote!(
             #tok_enum_title<U: ___crate::UserData> {
                 #tok_enum_variants
             }
 
             impl<U: ___crate::UserData> #ident_this<U> {
-                #vis_this fn install<F>(
-                    ___router: &mut ___route::RouterBuilder<U, F>,
-                    ___handler: impl Fn(Self) + Clone + Send + Sync + 'static,
-                )
-                    where F: ___route::RouterFuncBuilder
+                #vis_this fn install<B, E>(
+                    ___router: &mut ___route::RouterBuilder<U, B>,
+                    ___handler: impl Fn(Self) + Send + Sync + 'static #handler_impl_clone,
+                    mut ___on_route_error: impl FnMut(&str, &str, B::Error) -> E,
+                ) where
+                    B: ___route::RouterFuncBuilder,
+                    E: Into<___route::RouteFailResponse>,
                 {
-                    // TODO: install steps
+                    use ___route::RouteFailResponse as ___RF;
+
+
+
+                    #(#tok_install_contents)*
                 }
             }
         ))
