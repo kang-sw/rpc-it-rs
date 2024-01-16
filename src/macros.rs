@@ -423,6 +423,8 @@ pub mod inbound {
         }
 
         pub fn args(&self) -> &M::ParamRecv<'_> {
+            // SAFETY: We're downgrading the lifetime of the object, which is safe as long as the
+            // `self` object is alive; where identical with the lifetime that we're returning.
             unsafe { transmute(&self.v) }
         }
     }
@@ -446,13 +448,11 @@ pub mod inbound {
         PhantomData<M>,
     );
 
-    // TODO: Parse API, Deref Inner API
     pub struct CachedErrorResponse<M: RequestMethod>(
         ErrorResponse,
         Result<M::ErrRecv<'static>, erased_serde::Error>,
     );
 
-    // TODO: Parse API, Deref Inner API
     pub struct CachedOkayResponse<M: RequestMethod>(
         crate::Response,
         Result<M::OkRecv<'static>, erased_serde::Error>,
@@ -472,13 +472,61 @@ pub mod inbound {
             // SAFETY: We are not moving the inner value.
             let inner = unsafe { self.map_unchecked_mut(|x| &mut x.0) };
 
+            // SAFETY: See the comment in `CachedNotify::__internal_create`
             futures::ready!(inner.poll(cx))
-                .map(|x| {
-                    let parsed = x.parse::<M::OkRecv<'_>>();
-                    todo!()
+                .map(|x| unsafe {
+                    let parsed = (*(&x as *const crate::Response)).parse::<M::OkRecv<'_>>();
+                    CachedOkayResponse(x, transmute(parsed))
                 })
-                .map_err(|x| x.map(|x| todo!()))
+                .map_err(|x| {
+                    x.map(|x| unsafe {
+                        let parsed = (*(&x as *const ErrorResponse)).parse::<M::ErrRecv<'_>>();
+                        CachedErrorResponse(x, transmute(parsed))
+                    })
+                })
                 .into()
+        }
+    }
+
+    impl<F> std::ops::Deref for CachedOkayResponse<F>
+    where
+        F: RequestMethod,
+    {
+        type Target = crate::Response;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl<F> std::ops::Deref for CachedErrorResponse<F>
+    where
+        F: RequestMethod,
+    {
+        type Target = ErrorResponse;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl<F> CachedOkayResponse<F>
+    where
+        F: RequestMethod,
+    {
+        pub fn result(&self) -> &Result<F::OkRecv<'_>, erased_serde::Error> {
+            // SAFETY: See the comment in `CachedNotify::args`
+            unsafe { transmute(&self.1) }
+        }
+    }
+
+    impl<F> CachedErrorResponse<F>
+    where
+        F: RequestMethod,
+    {
+        pub fn result(&self) -> &Result<F::ErrRecv<'_>, erased_serde::Error> {
+            // SAFETY: See the comment in `CachedNotify::args`
+            unsafe { transmute(&self.1) }
         }
     }
 
