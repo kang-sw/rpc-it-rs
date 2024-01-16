@@ -36,7 +36,7 @@
 //! > feedback is invaluable in enhancing the accuracy and utility of this documentation.
 //!
 
-use convert_case::Case;
+use convert_case::{Case, Casing};
 use proc_macro_error::{abort, emit_error, proc_macro_error};
 
 use proc_macro2::TokenStream;
@@ -139,22 +139,22 @@ macro_rules! ok_or {
 /// #[rpc_it::service(name_prefix = "Namespace/", rename_all = "PascalCase")]
 /// pub mod my_service {
 ///   // If return type is specified explicitly, it is treated as request.
-///   fn method_req(arg: (i32, i32)) -> () {}
+///   pub fn method_req(arg: (i32, i32)) -> ();
 ///
 ///   // This is request; you can specify which error type will be returned.
-///   fn method_req_2() -> Result<MyParam<'_>, &'_ str> {}
+///   pub fn method_req_2() -> Result<MyParam<'_>, &'_ str> ;
 ///
 ///   // This is notification, which does not return anything.
-///   fn method_notify(arg: (i32, i32)) {}
+///   pub fn method_notify(arg: (i32, i32)) {}
 ///
 ///   #[name = "MethodName"] // Client will encode the method name as this. Server takes either.
 ///   #[route = "MyMethod/*"] // This will define additional route on server side
 ///   #[route = "OtherMethodName"]
-///   fn method_example(arg: &'_ str, arg2: &'_ [u8]) {}
+///   pub(crate) fn method_example(arg: &'_ str, arg2: &'_ [u8]) ;
 ///
 ///   // If serialization type and deserialization type is different, you can specify it by
 ///   // double underscore and angle brackets, like specifying two parameters on generic type `__`
-///   fn from_to(s: __<i32, u64>, b: __<&'_ str, String>) -> __<i32, String> {}
+///   fn from_to(s: __<i32, u64>, b: __<&'_ str, String>) -> __<i32, String> ;
 /// }
 ///
 /// pub struct MyParam<'a> {
@@ -221,6 +221,7 @@ struct DataModel {
     handled_methods: Vec<MethodDef>,
 }
 
+#[derive(Clone)]
 struct MethodDef {
     is_req: bool,
     method_ident: syn::Ident,
@@ -325,7 +326,9 @@ impl DataModel {
             out.extend(quote!(#vis mod #ident));
         }
 
-        let mut out_body = TokenStream::new();
+        let mut out_method_defs = TokenStream::new();
+        let mut out_routes = TokenStream::new();
+        let mut route_items = Vec::new();
 
         for item in item.content.unwrap().1.into_iter() {
             match item {
@@ -342,8 +345,21 @@ impl DataModel {
                         vis,
                     },
                     vis_level,
-                    &mut out_body,
+                    &mut out_method_defs,
                 ),
+                Item::Const(item) => {
+                    let Some(path_seg) = type_util::type_path_as_mono_seg(&item.ty) else {
+                        emit_error!(item.ty, "Expected single type path segment");
+                        continue;
+                    };
+
+                    if path_seg.ident == "Route" {
+                        route_items.push(item);
+                    } else {
+                        // NOTE: Update this on every route item addition
+                        emit_error!(item.ty, "Unknown type. Expected 'Route'");
+                    }
+                }
                 Item::Verbatim(verbatim) => {
                     let Ok(x @ syn::ItemForeignMod { .. }) =
                         syn::parse2(quote!(extern "C" { #verbatim }))
@@ -355,64 +371,227 @@ impl DataModel {
                         continue;
                     };
 
-                    self.generate_item_fn(item, vis_level, &mut out_body);
+                    self.generate_item_fn(item, vis_level, &mut out_method_defs);
                 }
-                other => emit_error!(other, "Expected function declaration"),
+                other => emit_error!(other, "Unknown item type"),
             }
         }
 
-        if !self.no_recv {
-            self.generate_router_part(vis_level, out);
+        for item in route_items {
+            self.generate_route(item, vis_level, &mut out_routes);
         }
 
         // Wrap the result in block
         out.extend(quote!({
             #![allow(unused_parens)]
+            #![allow(unused)]
+            #![allow(non_camel_case_types)]
+            #![allow(non_snake_case)]
             #![allow(clippy::needless_lifetimes)]
+
             use super::*; // Make transparent to parent module
 
             use #crate_name as ___crate;
 
-            use ___crate::macros as ___macros;
             use ___crate::serde as serde;
 
-            #out_body
+            use ___crate::macros as ___macros;
+            use ___macros::route as ___route;
+
+            // Let routes appear before methods; let method decls appear as method syntax by
+            // language server
+            #out_routes
+
+            // Method definitions here.
+            #out_method_defs
         }))
     }
 
-    fn generate_router_part(&mut self, vis_offset: usize, out: &mut TokenStream) {
-        /*  NOTE
-            <<vis>> mod <<handler_module_name>> {
-                use super::*;
-                use rpc_it as ___crate;
-                use ___crate::macros as ___macros;
+    fn find_method(&self, ident: &syn::Ident) -> Option<&MethodDef> {
+        self.handled_methods
+            .iter()
+            .find(|x| &x.method_ident == ident)
+    }
 
-                <<vis>> trait <<router_type_name>><U: ___crate::UserData> {
-                    fn <<method_name>>(&self, inbound: ___crate::cached::(Request|Notify)Message<U, self::<<method_name>>::Fn>);
-                    ...
+    fn find_method_by_path(&self, path: &syn::Path) -> Option<&MethodDef> {
+        let seg = type_util::path_as_mono_seg(path)?;
+        self.find_method(&seg.ident)
+    }
+
+    fn generate_route(&mut self, item: syn::ItemConst, vis_offset: usize, out: &mut TokenStream) {
+        struct GenDesc {
+            variant_ident: Option<syn::Ident>,
+            def: MethodDef,
+        }
+
+        impl GenDesc {
+            fn new(def: MethodDef) -> Self {
+                Self {
+                    variant_ident: None,
+                    def,
                 }
+            }
+        }
 
-                <<vis>> enum <<route_enum_type>> {
-                    <<method_name_pascal_case>>(___crate::cached::(Request|Notify)Message<U, self::<<method_name>>::Fn>),
-                    ...
-                }
+        let mut generate_targets = Vec::<GenDesc>::new();
 
-                impl<U> <<router_type_name>>
+        // -- Retrieve method definitions to generate
+
+        // If expr is `= ALL` then generate all methods. Otherwise, generate only specified methods.
+        // This shoud be `[<<method_name>>, <<alias>> = <<method_name>>, ...]`
+        match &*item.expr {
+            syn::Expr::Path(syn::ExprPath {
+                path, qself: None, ..
+            }) if path.is_ident("ALL") => {
+                generate_targets.extend(self.handled_methods.iter().cloned().map(GenDesc::new));
             }
 
-            //
+            syn::Expr::Path(syn::ExprPath {
+                path, qself: None, ..
+            }) if path.is_ident("ALL_PASCAL_CASE") => {
+                generate_targets.extend(self.handled_methods.iter().map(|x| GenDesc {
+                    variant_ident: {
+                        let str = x.method_ident.to_string().to_case(Case::Pascal);
+                        Some(syn::Ident::new(&str, x.method_ident.span()))
+                    },
+                    def: x.clone(),
+                }));
+            }
+
+            syn::Expr::Array(syn::ExprArray { elems, .. }) => {
+                // Rules:
+                // - <<method_name>>
+                // - <<method_name>> { <<rules>> }
+                // - <<method_name>> = <<rename>> { <<rules>> }
+
+                for elem in elems {
+                    match elem {
+                        syn::Expr::Path(syn::ExprPath {
+                            qself: None, path, ..
+                        }) => {
+                            if let Some(def) = self.find_method_by_path(path) {
+                                generate_targets.push(GenDesc::new(def.clone()));
+                            } else {
+                                emit_error!(path, "Unknown method");
+                            }
+                        }
+
+                        syn::Expr::Assign(_) => todo!(),
+
+                        syn::Expr::Struct(_) => todo!(),
+
+                        elem => {
+                            emit_error!(
+                                elem,
+                                "Expected path, struct or assignment style declaration"
+                            );
+                        }
+                    }
+                }
+            }
+
+            other => {
+                emit_error!(
+                    other,
+                    "Expected 'ALL|ALL_PASCAL_CASE' or list of method names"
+                );
+            }
+        }
+
+        // -- Generate route definitions
+
+        /*  NOTE
+
+            <<vis>> enum <<route_ident_name>> <U: ___crate::UserData> {
+                <<variant_ident>>(
+                    ___crate::cached::Cached<<Request|Notify>><U, <<method_name>>::Fn>
+                ),
+            }
+
+            impl<U: ___crate::UserData> <<route_ident_name>> <U> {
+                /// # Panics
+                ///
+                /// Router installation failed.
+                <<vis>> fn install<F>(
+                    ___router: &mut ___route::RouterBuilder<U, F>,
+                    ___handler: impl Fn(Self) + Send + Sync + 'static + Clone,
+                )
+                    where F: ___route::RouterFuncBuilder
+                {
+                    // <<method_name>>
+                    {
+                        let ___handler = ___handler.clone();
+                        ___router.push_handler(move |___inbound| {
+                            let ___ib = ___inbound.take();
+
+                            ___handler(
+                                ___crate::cached::Cached<<Request|Notify>>::__internal_create(
+                                    inbound.into_owned()
+                                ).map_err(|(___ib, ___err)| {
+                                    ___inbound = ___ib;
+                                    ___err.into()
+                                })
+                            );
+
+                            Ok(())
+                        });
+                    }
+
+                }
+            }
         */
 
-        let vis_module = type_util::elevate_vis_level(
-            self.vis.clone().unwrap_or(syn::Visibility::Inherited),
-            vis_offset,
-        );
-        let vis_inner = type_util::elevate_vis_level(vis_module.clone(), 1);
+        let vis_this = type_util::elevate_vis_level(item.vis.clone(), vis_offset);
+        let ident_this = &item.ident;
 
-        let handler_module_name = self
-            .handler_module_name
-            .clone()
-            .unwrap_or_else(|| syn::Ident::new("handler", proc_macro2::Span::call_site()));
+        let tok_enum_title = { quote!(#vis_this enum #ident_this) };
+
+        #[allow(clippy::if_same_then_else)]
+        let tok_enum_variants = if generate_targets.is_empty() {
+            quote!(__EmptyVariant(::std::marker::PhantomData<U>))
+        } else {
+            let tokens = generate_targets.iter().map(
+                |GenDesc {
+                     variant_ident,
+                     def:
+                         MethodDef {
+                             is_req,
+                             method_ident,
+                             ..
+                         },
+                 }| {
+                    let ident = variant_ident.as_ref().unwrap_or(method_ident);
+                    let type_path = if *is_req {
+                        quote!(Request)
+                    } else {
+                        quote!(Notify)
+                    };
+
+                    quote!(
+                        #ident(___crate::cached:: #type_path <U, self:: #method_ident :: Fn>)
+                    )
+                },
+            );
+
+            quote!(#(#tokens),*)
+        };
+
+        out.extend(quote!(
+            #tok_enum_title<U: ___crate::UserData> {
+                #tok_enum_variants
+            }
+
+            impl<U: ___crate::UserData> #ident_this<U> {
+                #vis_this fn install<F>(
+                    ___router: &mut ___route::RouterBuilder<U, F>,
+                    ___handler: impl Fn(Self) + Clone + Send + Sync + 'static,
+                )
+                    where F: ___route::RouterFuncBuilder
+                {
+                    // TODO: install steps
+                }
+            }
+        ))
     }
 
     fn generate_item_fn(

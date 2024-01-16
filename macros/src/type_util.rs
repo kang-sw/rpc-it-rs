@@ -1,3 +1,4 @@
+use proc_macro::Ident;
 use proc_macro_error::emit_error;
 use std::mem::take;
 use syn::parse_quote_spanned;
@@ -7,6 +8,31 @@ use syn::PathSegment;
 use syn::Token;
 use syn::Type;
 use tap::Pipe;
+
+pub(crate) fn type_path_as_mono_seg(ty: &Type) -> Option<&syn::PathSegment> {
+    match ty {
+        Type::Path(pat) => {
+            if pat.qself.is_some() {
+                return None;
+            }
+
+            path_as_mono_seg(&pat.path)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn path_as_mono_seg(path: &syn::Path) -> Option<&syn::PathSegment> {
+    if path.leading_colon.is_some() {
+        return None;
+    }
+
+    if path.segments.len() != 1 {
+        return None;
+    }
+
+    path.segments.first()
+}
 
 pub(crate) fn has_any_lifetime(ty: &Type) -> bool {
     match ty {

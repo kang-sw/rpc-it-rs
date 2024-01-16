@@ -82,7 +82,29 @@ pub mod route {
             }
         }
 
-        pub fn add_route<F>(&mut self, path: &str, func: F) -> Result<usize, R::Error>
+        pub fn push_handler<F>(&mut self, func: F)
+        where
+            F: Into<Box<ExecFunc<U>>>,
+        {
+            self.inner.funcs.push(func.into());
+        }
+
+        /// # Panics
+        ///
+        /// If no handler is registered, this function panics.
+        pub fn try_add_route_on_latest(&mut self, alias: &str) -> Result<(), R::Error> {
+            self.inner
+                .route_func
+                .add_route(alias, self.inner.funcs.len() - 1)?;
+
+            Ok(())
+        }
+
+        pub fn pop_handler(&mut self) {
+            self.inner.funcs.pop();
+        }
+
+        pub fn try_add_routed_handler<F>(&mut self, path: &str, func: F) -> Result<usize, R::Error>
         where
             F: Into<Box<ExecFunc<U>>>,
         {
@@ -91,11 +113,6 @@ pub mod route {
             self.inner.funcs.push(func.into());
 
             Ok(value)
-        }
-
-        pub fn add_alias_route(&mut self, alias: &str, index: usize) -> Result<(), R::Error> {
-            self.inner.route_func.add_route(alias, index)?;
-            Ok(())
         }
 
         pub fn finish(self) -> Router<U, R::Func> {
@@ -304,7 +321,7 @@ pub mod inbound {
         #[doc(hidden)]
         pub unsafe fn __internal_create(
             msg: Inbound<'static, U>,
-        ) -> Result<Self, erased_serde::Error> {
+        ) -> Result<Self, (Inbound<'static, U>, erased_serde::Error)> {
             Ok(Self {
                 inner: CachedNotify::__internal_create(msg)?,
             })
@@ -355,7 +372,7 @@ pub mod inbound {
         #[doc(hidden)]
         pub unsafe fn __internal_create(
             msg: Inbound<'static, U>,
-        ) -> Result<Self, erased_serde::Error> {
+        ) -> Result<Self, (Inbound<'static, U>, erased_serde::Error)> {
             Ok(Self {
                 // SAFETY:
                 // * The borrowed lifetime `'de` is bound to the payload of the inbound message, not
@@ -366,7 +383,10 @@ pub mod inbound {
                 //   `v`'s lifetime.
                 v: unsafe {
                     let msg_ptr = &msg as *const Inbound<'static, U>;
-                    transmute((*msg_ptr).parse::<M::ParamRecv<'_>>()?)
+                    transmute(match (*msg_ptr).parse::<M::ParamRecv<'_>>() {
+                        Ok(ok) => ok,
+                        Err(err) => return Err((msg, err)),
+                    })
                 },
                 ib: msg,
             })

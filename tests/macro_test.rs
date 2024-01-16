@@ -4,13 +4,28 @@ use std::borrow::{Borrow, Cow};
 
 #[rpc_it_macros::service(rename_all = "camelCase")]
 pub(crate) mod prods {
+
+    const MyRoute: Route = ALL_PASCAL_CASE;
+
+    const OtherRoute: Route = [
+        // bocci_chan = AliasName {
+        //     routes: ["a", "b", "c"],
+        // },
+        // eoo {
+        //     routes: ["a", "b", "c", "D"],
+        // },
+        // bax = OtherAlias,
+        qux,
+    ];
+
     fn foo_my_dlfofl();
 
-    fn bocci_chan(kawaii: __<String, (i32, i32)>) -> i32;
+    fn mono_ser_de_param(pff: __<String, (i32, i32)>) -> i32;
 
     /// dasf
     /// sagfa gsda
     #[name = "dslaoi"]
+    #[route = "hey dude"]
     fn eoo(s: __<i32, usize>, g: f32);
 
     // fn bar(my_name: &str, is: MyArg<'_>);
@@ -68,7 +83,8 @@ fn __compile_test() {
     let _ = req.args().go.value;
     req.try_response(b, Ok(&32)).ok();
 
-    let req: rpc_it::cached::Request<(), prods::bocci_chan::Fn> = unsafe { std::mem::zeroed() };
+    let req: rpc_it::cached::Request<(), prods::mono_ser_de_param::Fn> =
+        unsafe { std::mem::zeroed() };
     let _val = req.args().1;
     req.try_response(b, Ok(&32)).ok();
 }
