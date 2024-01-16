@@ -6,7 +6,7 @@ use hashbrown::HashMap;
 extern "prods" {
     fn foo_my_dlfofl();
 
-    fn bocci_chan(kawaii: __<String, (i32, i32)>);
+    fn bocci_chan(kawaii: __<String, (i32, i32)>) -> i32;
 
     /// dasf
     /// sagfa gsda
@@ -17,10 +17,12 @@ extern "prods" {
 
     fn baz(john: String, doe: Cow<'_, [i32]>) -> i32;
 
+    fn tew(te: String, go: Tew) -> i32;
+
     fn qux(las: i32, ggg: i32) -> Result<__<&'_ str, String>, i32>;
 }
 
-#[rpc_it_macros::service(flatten, rename_all = "kebab-case")]
+#[rpc_it_macros::service(flatten, rename_all = "kebab-case", no_recv)]
 extern "" {
     fn foo_my_dlfofl();
 
@@ -42,10 +44,13 @@ struct MyArg<'a> {
     key: Cow<'a, str>,
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct Tew {
     value: [i32; 10],
 }
+
+#[derive(serde::Deserialize)]
+struct Nt(i32);
 
 fn gore<'a>(_: &impl Borrow<MyArg<'a>>, _: &impl Borrow<Tew>) {}
 
@@ -57,9 +62,11 @@ fn __compile_test() {
     let b = &mut Default::default();
     handle.try_noti(b, eoo(&32, &4.1)).ok();
 
-    let req: rpc_it::cached::Request<(), prods::qux::Fn> = unsafe { std::mem::zeroed() };
-    req.args();
-    req.try_response(b, Ok("hello!")).ok();
+    let req: rpc_it::cached::Request<(), prods::tew::Fn> = unsafe { std::mem::zeroed() };
+    let _ = req.args().go.value;
+    req.try_response(b, Ok(&32)).ok();
 
-    let service = rpc_it::RouterBuilder::<(), HashMap<String, usize>>::default();
+    let req: rpc_it::cached::Request<(), prods::bocci_chan::Fn> = unsafe { std::mem::zeroed() };
+    let _val = req.args().1;
+    req.try_response(b, Ok(&32)).ok();
 }
