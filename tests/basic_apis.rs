@@ -1,3 +1,5 @@
+#![cfg(feature = "in-memory-io")]
+
 use std::sync::Arc;
 
 use bytes::BytesMut;

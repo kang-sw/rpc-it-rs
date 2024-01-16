@@ -676,11 +676,20 @@ impl DataModel {
                 let clone_handler = (!is_last).then(|| quote!(.clone()));
                 let method_name_str = method_ident.to_string();
 
+                let warn_req_on_noti = (!is_req).then(|| {
+                    quote!(if ___ib.is_request() {
+                        *___inbound = Some(___ib);
+                        return Err(___route::ExecError::RequestOnNotifyHandler);
+                    })
+                });
+
                 quote!({
                     let ___handler = ___handler #clone_handler;
 
                     ___router.push_handler(move |___inbound| {
                         let ___ib = ___inbound.take().unwrap();
+
+                        #warn_req_on_noti
 
                         #[allow(unsafe_code)]
                         unsafe {
