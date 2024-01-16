@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use bytes::BytesMut;
 use futures::{executor::LocalPool, task::SpawnExt, StreamExt};
-use rpc_it::{error::SendMsgError, ext_codec::jsonrpc, Codec, ParseMessage, ResponseError};
+use rpc_it::{error::SendMsgError, Codec, ParseMessage, ResponseError};
 
 use crate::shared::create_default_rpc_pair;
 
@@ -13,6 +13,8 @@ mod shared;
 #[cfg(feature = "jsonrpc")]
 #[test]
 fn verify_notify() {
+    use rpc_it::ext_codec::jsonrpc;
+
     let (tx, rx) = rpc_it::io::in_memory(1);
 
     let (tx_rpc, task_runner) = rpc_it::builder()
@@ -72,7 +74,17 @@ fn verify_notify() {
 #[test]
 #[cfg(feature = "jsonrpc")]
 fn verify_request_jsonrpc() {
+    use rpc_it::ext_codec::jsonrpc;
+
     verify_request(|| jsonrpc::Codec);
+}
+
+#[test]
+#[cfg(all(feature = "jsonrpc", feature = "dynamic-codec"))]
+fn verify_request_dynamic_codecs() {
+    use rpc_it::{codec::DynamicCodec, ext_codec::jsonrpc};
+
+    verify_request(|| Arc::new(jsonrpc::Codec) as Arc<dyn DynamicCodec>);
 }
 
 fn verify_request<C: Codec>(codec: impl Fn() -> C) {

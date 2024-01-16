@@ -174,7 +174,7 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
 
     /// Create deserializer from the payload part of the original message.
     fn payload_deserializer<'de>(
-        &self,
+        &'de self,
         payload: &'de [u8],
     ) -> Result<impl serde::Deserializer<'de>, DecodePayloadUnsupportedError>;
 
@@ -320,3 +320,163 @@ fn err_to_de_error(e: impl std::error::Error) -> DeserializeError {
         DeserializeError
     }
 }
+
+// ========================================================== Dynamic Codec ===|
+
+#[cfg(feature = "dynamic-codec")]
+mod dynamic {
+    use std::sync::Arc;
+
+    use crate::Codec;
+
+    use super::{DecodePayloadUnsupportedError, EncodeResponsePayload};
+
+    pub trait DynamicCodec: std::fmt::Debug + Send + Sync {
+        fn dynamic_payload_deserializer<'de>(
+            &'de self,
+            payload: &'de [u8],
+        ) -> Result<Box<dyn erased_serde::Deserializer<'de> + 'de>, DecodePayloadUnsupportedError>;
+
+        fn codec_noti_hash(&self) -> Option<std::num::NonZeroU64>;
+
+        fn encode_notify(
+            &self,
+            method: &str,
+            params: &dyn erased_serde::Serialize,
+            buf: &mut bytes::BytesMut,
+        ) -> Result<(), super::EncodeError>;
+
+        fn encode_request(
+            &self,
+            request_id: crate::defs::RequestId,
+            method: &str,
+            params: &dyn erased_serde::Serialize,
+            buf: &mut bytes::BytesMut,
+        ) -> Result<(), super::EncodeError>;
+
+        fn encode_response(
+            &self,
+            request_id_raw: &[u8],
+            result: EncodeResponsePayload<'_, &dyn erased_serde::Serialize>,
+            buf: &mut bytes::BytesMut,
+        ) -> Result<(), super::EncodeError>;
+
+        fn decode_inbound(
+            &self,
+            frame: &[u8],
+        ) -> Result<super::InboundFrameType, super::DecodeError>;
+    }
+
+    impl Codec for Arc<dyn DynamicCodec> {
+        fn payload_deserializer<'de>(
+            &'de self,
+            payload: &'de [u8],
+        ) -> Result<impl serde::Deserializer<'de>, DecodePayloadUnsupportedError> {
+            <dyn DynamicCodec>::dynamic_payload_deserializer(self.as_ref(), payload)
+        }
+
+        fn codec_noti_hash(&self) -> Option<std::num::NonZeroU64> {
+            <dyn DynamicCodec>::codec_noti_hash(self.as_ref())
+        }
+
+        fn encode_notify<S: serde::Serialize>(
+            &self,
+            method: &str,
+            params: &S,
+            buf: &mut bytes::BytesMut,
+        ) -> Result<(), super::EncodeError> {
+            <dyn DynamicCodec>::encode_notify(self.as_ref(), method, params, buf)
+        }
+
+        fn encode_request<S: serde::Serialize>(
+            &self,
+            request_id: crate::defs::RequestId,
+            method: &str,
+            params: &S,
+            buf: &mut bytes::BytesMut,
+        ) -> Result<(), super::EncodeError> {
+            <dyn DynamicCodec>::encode_request(self.as_ref(), request_id, method, params, buf)
+        }
+
+        fn encode_response<S: serde::Serialize>(
+            &self,
+            request_id_raw: &[u8],
+            result: super::EncodeResponsePayload<S>,
+            buf: &mut bytes::BytesMut,
+        ) -> Result<(), super::EncodeError> {
+            type EP<'a, T> = EncodeResponsePayload<'a, T>;
+
+            let ref_body: &dyn erased_serde::Serialize;
+            let result: EP<'_, &dyn erased_serde::Serialize> = match result {
+                EP::Ok(s) => EP::Ok((ref_body = s, &ref_body).1),
+                EP::ErrCodeOnly(s) => EP::ErrCodeOnly(s),
+                EP::ErrObjectOnly(s) => EP::ErrObjectOnly((ref_body = s, &ref_body).1),
+                EP::Err(e, s) => EP::Err(e, (ref_body = s, &ref_body).1),
+            };
+
+            <dyn DynamicCodec>::encode_response(self.as_ref(), request_id_raw, result, buf)
+        }
+
+        fn decode_inbound(
+            &self,
+            frame: &[u8],
+        ) -> Result<super::InboundFrameType, super::DecodeError> {
+            <dyn DynamicCodec>::decode_inbound(self.as_ref(), frame)
+        }
+    }
+
+    impl<T: Codec> DynamicCodec for T {
+        fn dynamic_payload_deserializer<'de>(
+            &'de self,
+            payload: &'de [u8],
+        ) -> Result<Box<dyn erased_serde::Deserializer<'de> + 'de>, DecodePayloadUnsupportedError>
+        {
+            let boxed = Box::new(<dyn erased_serde::Deserializer<'de>>::erase(
+                <Self as Codec>::payload_deserializer(self, payload)?,
+            ));
+
+            Ok(boxed)
+        }
+
+        fn codec_noti_hash(&self) -> Option<std::num::NonZeroU64> {
+            <Self as Codec>::codec_noti_hash(self)
+        }
+
+        fn encode_notify(
+            &self,
+            method: &str,
+            params: &dyn erased_serde::Serialize,
+            buf: &mut bytes::BytesMut,
+        ) -> Result<(), super::EncodeError> {
+            <Self as Codec>::encode_notify(self, method, &params, buf)
+        }
+
+        fn encode_request(
+            &self,
+            request_id: crate::defs::RequestId,
+            method: &str,
+            params: &dyn erased_serde::Serialize,
+            buf: &mut bytes::BytesMut,
+        ) -> Result<(), super::EncodeError> {
+            <Self as Codec>::encode_request(self, request_id, method, &params, buf)
+        }
+
+        fn encode_response(
+            &self,
+            request_id_raw: &[u8],
+            result: EncodeResponsePayload<'_, &dyn erased_serde::Serialize>,
+            buf: &mut bytes::BytesMut,
+        ) -> Result<(), super::EncodeError> {
+            <Self as Codec>::encode_response(self, request_id_raw, result, buf)
+        }
+
+        fn decode_inbound(
+            &self,
+            frame: &[u8],
+        ) -> Result<super::InboundFrameType, super::DecodeError> {
+            <Self as Codec>::decode_inbound(self, frame)
+        }
+    }
+}
+
+pub use dynamic::*;

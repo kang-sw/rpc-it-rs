@@ -632,7 +632,7 @@ impl DataModel {
 
                     quote!(
                         #(#attrs)*
-                        #ident(___crate::cached:: #type_path <U, self:: #method_ident :: Fn>)
+                        #ident(___crate::cached:: #type_path <U, C, self:: #method_ident :: Fn>)
                     )
                 },
             );
@@ -731,13 +731,13 @@ impl DataModel {
         let all_attrs = item.attrs;
         out.extend(quote!(
             #(#all_attrs)*
-            #tok_enum_title<U: ___crate::UserData> {
+            #tok_enum_title<U: ___crate::UserData, C: ___crate::Codec> {
                 #tok_enum_variants
             }
 
-            impl<U: ___crate::UserData> #ident_this<U> {
+            impl<U: ___crate::UserData, C: ___crate::Codec> #ident_this<U, C> {
                 #vis_this fn install<B, E>(
-                    ___router: &mut ___route::RouterBuilder<U, B>,
+                    ___router: &mut ___route::RouterBuilder<U, C, B>,
                     ___handler: impl Fn(Self) + Send + Sync + 'static #handler_impl_clone,
                     mut ___on_route_error: impl FnMut(&str, &str, B::Error) -> E,
                 ) where
@@ -745,8 +745,6 @@ impl DataModel {
                     E: Into<___route::RouteFailResponse>,
                 {
                     use ___route::RouteFailResponse as ___RF;
-
-
 
                     #(#tok_install_contents)*
                 }

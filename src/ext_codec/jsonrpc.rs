@@ -265,7 +265,7 @@ impl crate::Codec for Codec {
                 errc: Some(errc_to_error(code.unwrap_or(errc::INTERNAL_ERROR))),
                 payload: data.map(|x| range_of(x.get())).unwrap_or_default(),
             },
-            other => {
+            _other => {
                 return Err(DeserializeError::from(InvalidJsonRpcFrame).into());
             }
         };
@@ -274,7 +274,7 @@ impl crate::Codec for Codec {
     }
 
     fn payload_deserializer<'de>(
-        &self,
+        &'de self,
         payload: &'de [u8],
     ) -> Result<impl serde::Deserializer<'de>, codec::DecodePayloadUnsupportedError> {
         Ok(DeserializeWrapper(serde_json::Deserializer::from_slice(

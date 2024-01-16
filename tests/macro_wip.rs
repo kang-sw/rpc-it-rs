@@ -1,4 +1,3 @@
-#![cfg(feature = "")]
 #![allow(unused)]
 #![cfg(feature = "proc-macro")]
 
@@ -86,19 +85,19 @@ fn gore<'a>(_: &impl Borrow<MyArg<'a>>, _: &impl Borrow<Tew>) {}
 fn __compile_test() {
     #![allow(invalid_value)]
 
-    let handle: rpc_it::RequestSender<()> = unsafe { std::mem::zeroed() };
+    // let handle: rpc_it::RequestSender<()> = unsafe { std::mem::zeroed() };
 
-    let b = &mut Default::default();
-    handle.try_noti(b, eoo(&32, &4.1)).ok();
+    // let b = &mut Default::default();
+    // handle.try_noti(b, eoo(&32, &4.1)).ok();
 
-    let req: rpc_it::cached::Request<(), prods::tew::Fn> = unsafe { std::mem::zeroed() };
-    let _ = req.args().go.value;
-    req.try_response(b, Ok(&32)).ok();
+    // let req: rpc_it::cached::Request<(), prods::tew::Fn> = unsafe { std::mem::zeroed() };
+    // let _ = req.args().go.value;
+    // req.try_response(b, Ok(&32)).ok();
 
-    let _ = prods::foo_my_dlfofl;
+    // let _ = prods::foo_my_dlfofl;
 
-    let req: rpc_it::cached::Request<(), prods::mono_ser_de_param::Fn> =
-        unsafe { std::mem::zeroed() };
-    let _val = req.args().1;
-    req.try_response(b, Ok(&32)).ok();
+    // let req: rpc_it::cached::Request<(), prods::mono_ser_de_param::Fn> =
+    //     unsafe { std::mem::zeroed() };
+    // let _val = req.args().1;
+    // req.try_response(b, Ok(&32)).ok();
 }
