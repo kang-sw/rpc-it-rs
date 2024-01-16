@@ -36,6 +36,8 @@
 //! > feedback is invaluable in enhancing the accuracy and utility of this documentation.
 //!
 
+use std::mem::take;
+
 use convert_case::{Case, Casing};
 use proc_macro_error::{abort, emit_error, proc_macro_error};
 
@@ -302,6 +304,9 @@ impl DataModel {
         let mut out_routes = TokenStream::new();
         let mut route_items = Vec::new();
 
+        // Parse list of module items
+        // - If it's function body (or verbatim function declaration), generate method definition
+        // - If it's const item, try parse it as route item
         for item in item.content.unwrap().1.into_iter() {
             match item {
                 Item::Fn(syn::ItemFn {
@@ -394,6 +399,7 @@ impl DataModel {
         struct GenDesc {
             variant_ident: Option<syn::Ident>,
             no_default_route: bool,
+            attrs: Vec<syn::Attribute>,
             def: MethodDef,
         }
 
@@ -402,6 +408,7 @@ impl DataModel {
                 Self {
                     variant_ident: None,
                     no_default_route: false,
+                    attrs: Default::default(),
                     def,
                 }
             }
@@ -445,7 +452,7 @@ impl DataModel {
 
         // If expr is `= ALL` then generate all methods. Otherwise, generate only specified methods.
         // This shoud be `[<<method_name>>, <<alias>> = <<method_name>>, ...]`
-        match &*item.expr {
+        match *item.expr {
             syn::Expr::Path(syn::ExprPath {
                 path, qself: None, ..
             }) if path.is_ident("ALL") => {
@@ -460,6 +467,7 @@ impl DataModel {
                         let str = x.method_ident.to_string().to_case(Case::Pascal);
                         Some(syn::Ident::new(&str, x.method_ident.span()))
                     },
+                    attrs: Default::default(),
                     no_default_route: false,
                     def: x.clone(),
                 }));
@@ -474,30 +482,38 @@ impl DataModel {
                 for elem in elems {
                     match elem {
                         syn::Expr::Path(syn::ExprPath {
-                            qself: None, path, ..
+                            qself: None,
+                            path,
+                            attrs,
                         }) => {
-                            if let Some(def) = self.find_method_by_path(path) {
-                                generate_targets.push(GenDesc::new(def.clone()));
+                            if let Some(def) = self.find_method_by_path(&path) {
+                                let mut new_desc = GenDesc::new(def.clone());
+                                new_desc.attrs = attrs;
+                                generate_targets.push(new_desc);
                             } else {
                                 emit_error!(path, "Unknown method");
                             }
                         }
 
-                        syn::Expr::Assign(syn::ExprAssign { left, right, .. }) => {
-                            let syn::Expr::Path(expr_path) = &**left else {
+                        syn::Expr::Assign(syn::ExprAssign {
+                            left, right, attrs, ..
+                        }) => {
+                            let syn::Expr::Path(expr_path) = *left else {
                                 emit_error!(left, "Expected path");
                                 continue;
                             };
 
                             if let Some(def) = self.find_method_by_path(&expr_path.path) {
-                                generate_targets.push(GenDesc::new(def.clone()));
+                                let mut new_desc = GenDesc::new(def.clone());
+                                new_desc.attrs = expr_path.attrs;
+                                generate_targets.push(new_desc);
                             } else {
                                 emit_error!(expr_path, "Unknown method");
                                 continue;
                             }
 
                             let desc = generate_targets.last_mut().unwrap();
-                            match &**right {
+                            match &*right {
                                 syn::Expr::Struct(expr_struct) => {
                                     desc.setup_by_struct_expr(expr_struct);
                                 }
@@ -507,23 +523,25 @@ impl DataModel {
                                 }
                                 _ => {
                                     emit_error!(
-                                        elem,
+                                        right,
                                         "Expected `MethodAlias` or `MethodAlias {..}`"
                                     )
                                 }
                             }
                         }
 
-                        syn::Expr::Struct(strt) => {
+                        syn::Expr::Struct(mut strt) => {
                             if let Some(def) = self.find_method_by_path(&strt.path) {
-                                generate_targets.push(GenDesc::new(def.clone()));
+                                let mut new_desc = GenDesc::new(def.clone());
+                                new_desc.attrs = take(&mut strt.attrs);
+                                generate_targets.push(new_desc);
                             } else {
                                 emit_error!(strt, "Unknown method");
                                 continue;
                             }
 
                             let desc = generate_targets.last_mut().unwrap();
-                            desc.setup_by_struct_expr(strt);
+                            desc.setup_by_struct_expr(&strt);
                         }
 
                         elem => {
@@ -599,6 +617,7 @@ impl DataModel {
                 |GenDesc {
                      variant_ident,
                      no_default_route: _,
+                     attrs,
                      def:
                          MethodDef {
                              is_req,
@@ -614,6 +633,7 @@ impl DataModel {
                     };
 
                     quote!(
+                        #(#attrs)*
                         #ident(___crate::cached:: #type_path <U, self:: #method_ident :: Fn>)
                     )
                 },
@@ -629,6 +649,7 @@ impl DataModel {
                 GenDesc {
                     variant_ident,
                     no_default_route,
+                    attrs: _,
                     def:
                         MethodDef {
                             is_req,
@@ -700,7 +721,9 @@ impl DataModel {
             },
         );
 
+        let all_attrs = item.attrs;
         out.extend(quote!(
+            #(#all_attrs)*
             #tok_enum_title<U: ___crate::UserData> {
                 #tok_enum_variants
             }

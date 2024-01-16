@@ -6,19 +6,29 @@ use std::borrow::{Borrow, Cow};
 #[rpc_it_macros::service(rename_all = "camelCase")]
 pub(crate) mod prods {
 
+    /// This generate router for every item in this module.
     const MyRoute: Route = ALL_PASCAL_CASE;
 
     const OtherRoute: Route = [
+        /// This is a comment
         mono_ser_de_param = AliasName {
             routes: ["a", "b", "c"],
         },
+        /// This is a comment 2222
         eoo {
             routes: ["a", "b", "c", "D"],
         },
+        /// This is a comment 33333
         baz = OtherAlias,
+        /// This is a comment 4444
         qux,
     ];
 
+    /// ASD; dsagd gfsa
+    /// dsf asdg
+    ///
+    ///
+    /// sadf gdsag d
     fn foo_my_dlfofl();
 
     fn mono_ser_de_param(pff: __<String, (i32, i32)>) -> i32;
@@ -83,6 +93,8 @@ fn __compile_test() {
     let req: rpc_it::cached::Request<(), prods::tew::Fn> = unsafe { std::mem::zeroed() };
     let _ = req.args().go.value;
     req.try_response(b, Ok(&32)).ok();
+
+    let _ = prods::foo_my_dlfofl;
 
     let req: rpc_it::cached::Request<(), prods::mono_ser_de_param::Fn> =
         unsafe { std::mem::zeroed() };
