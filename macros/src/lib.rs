@@ -393,6 +393,7 @@ impl DataModel {
     fn generate_route(&mut self, item: syn::ItemConst, vis_offset: usize, out: &mut TokenStream) {
         struct GenDesc {
             variant_ident: Option<syn::Ident>,
+            no_default_route: bool,
             def: MethodDef,
         }
 
@@ -400,7 +401,40 @@ impl DataModel {
             fn new(def: MethodDef) -> Self {
                 Self {
                     variant_ident: None,
+                    no_default_route: false,
                     def,
+                }
+            }
+
+            fn setup_by_struct_expr(&mut self, expr: &syn::ExprStruct) {
+                self.variant_ident = expr.path.get_ident().cloned();
+
+                for field in &expr.fields {
+                    let syn::Member::Named(mem) = &field.member else {
+                        emit_error!(expr, "failed to parse expression");
+                        continue;
+                    };
+
+                    if mem == "no_default_route" {
+                        self.def.routes.clear();
+                        self.no_default_route = true;
+                    } else if mem == "routes" {
+                        let syn::Expr::Array(syn::ExprArray { elems, .. }) = &field.expr else {
+                            emit_error!(expr, "failed to parse expression");
+                            continue;
+                        };
+
+                        for elem in elems {
+                            let Some(lit) = type_util::expr_into_lit_str(elem.clone()) else {
+                                emit_error!(expr, "failed to parse expression");
+                                continue;
+                            };
+
+                            self.def.routes.push(lit.value());
+                        }
+                    } else {
+                        emit_error!(field, "Unknown field");
+                    }
                 }
             }
         }
@@ -426,6 +460,7 @@ impl DataModel {
                         let str = x.method_ident.to_string().to_case(Case::Pascal);
                         Some(syn::Ident::new(&str, x.method_ident.span()))
                     },
+                    no_default_route: false,
                     def: x.clone(),
                 }));
             }
@@ -448,9 +483,48 @@ impl DataModel {
                             }
                         }
 
-                        syn::Expr::Assign(_) => todo!(),
+                        syn::Expr::Assign(syn::ExprAssign { left, right, .. }) => {
+                            let syn::Expr::Path(expr_path) = &**left else {
+                                emit_error!(left, "Expected path");
+                                continue;
+                            };
 
-                        syn::Expr::Struct(_) => todo!(),
+                            if let Some(def) = self.find_method_by_path(&expr_path.path) {
+                                generate_targets.push(GenDesc::new(def.clone()));
+                            } else {
+                                emit_error!(expr_path, "Unknown method");
+                                continue;
+                            }
+
+                            let desc = generate_targets.last_mut().unwrap();
+                            match &**right {
+                                syn::Expr::Struct(expr_struct) => {
+                                    desc.setup_by_struct_expr(expr_struct);
+                                }
+                                syn::Expr::Path(path) => {
+                                    desc.variant_ident =
+                                        Some(path.path.get_ident().unwrap().clone());
+                                }
+                                _ => {
+                                    emit_error!(
+                                        elem,
+                                        "Expected `MethodAlias` or `MethodAlias {..}`"
+                                    )
+                                }
+                            }
+                        }
+
+                        syn::Expr::Struct(strt) => {
+                            if let Some(def) = self.find_method_by_path(&strt.path) {
+                                generate_targets.push(GenDesc::new(def.clone()));
+                            } else {
+                                emit_error!(strt, "Unknown method");
+                                continue;
+                            }
+
+                            let desc = generate_targets.last_mut().unwrap();
+                            desc.setup_by_struct_expr(strt);
+                        }
 
                         elem => {
                             emit_error!(
@@ -524,6 +598,7 @@ impl DataModel {
             let tokens = generate_targets.iter().map(
                 |GenDesc {
                      variant_ident,
+                     no_default_route: _,
                      def:
                          MethodDef {
                              is_req,
@@ -553,6 +628,7 @@ impl DataModel {
                 index,
                 GenDesc {
                     variant_ident,
+                    no_default_route,
                     def:
                         MethodDef {
                             is_req,
@@ -572,7 +648,8 @@ impl DataModel {
                 let route_strs = Some(name)
                     .into_iter()
                     .chain(routes.iter())
-                    .map(|x| quote!(#x));
+                    .map(|x| quote!(#x))
+                    .take_while(|_| !*no_default_route);
 
                 let is_last = index == generate_targets.len() - 1;
                 let clone_handler = (!is_last).then(|| quote!(.clone()));

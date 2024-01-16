@@ -2,19 +2,20 @@
 
 use std::borrow::{Borrow, Cow};
 
-#[rpc_it_macros::service(rename_all = "camelCase", no_param_recv_newtype)]
+#[rpc_it_macros::service(rename_all = "camelCase")]
 pub(crate) mod prods {
 
     const MyRoute: Route = ALL_PASCAL_CASE;
 
     const OtherRoute: Route = [
-        // bocci_chan = AliasName {
-        //     routes: ["a", "b", "c"],
-        // },
-        // eoo {
-        //     routes: ["a", "b", "c", "D"],
-        // },
-        // bax = OtherAlias,
+        mono_ser_de_param = AliasName {
+            no_default_route,
+            routes: ["a", "b", "c"],
+        },
+        eoo {
+            routes: ["a", "b", "c", "D"],
+        },
+        baz = OtherAlias,
         qux,
     ];
 
