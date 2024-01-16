@@ -105,7 +105,6 @@ mod inner {
 // ==== Exported Dependencies ====
 
 pub extern crate bytes;
-pub extern crate erased_serde;
 pub extern crate serde;
 
 // ==== Exposed APIs ====
@@ -136,14 +135,14 @@ pub mod cached {
 pub mod router {
     use crate::{Router, RouterBuilder};
 
-    pub type StdHashMapRouter<U> = Router<U, std::collections::HashMap<String, usize>>;
-    pub type StdHashMapRouterBuilder<U> =
-        RouterBuilder<U, std::collections::HashMap<String, usize>>;
-    pub type StdBTreeMapRouter<U> = Router<U, std::collections::BTreeMap<String, usize>>;
-    pub type StdBTreeMapRouterBuilder<U> =
-        RouterBuilder<U, std::collections::BTreeMap<String, usize>>;
-    pub type HashbrownHashMapRouter<U> = Router<U, hashbrown::HashMap<String, usize>>;
-    pub type HashbrownHashMapRouterBuilder<U> = RouterBuilder<U, hashbrown::HashMap<String, usize>>;
+    pub type StdHashMap<U, C> = Router<U, C, std::collections::HashMap<String, usize>>;
+    pub type StdHashMapBuilder<U, C> =
+        RouterBuilder<U, C, std::collections::HashMap<String, usize>>;
+    pub type StdBTreeMap<U, C> = Router<U, C, std::collections::BTreeMap<String, usize>>;
+    pub type StdBTreeMapBuilder<U, C> =
+        RouterBuilder<U, C, std::collections::BTreeMap<String, usize>>;
+    pub type HashbrownHashMap<U, C> = Router<U, C, hashbrown::HashMap<String, usize>>;
+    pub type HashbrownHashMapBuilder<U, C> = RouterBuilder<U, C, hashbrown::HashMap<String, usize>>;
 }
 
 pub use codec::{Codec, ParseMessage, ResponseError};

@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 pub mod route {
     use thiserror::Error;
 
-    use crate::{Inbound, UserData};
+    use crate::{codec::DeserializeError, Codec, Inbound, UserData};
 
     /// A function which actually deals with inbound message.
-    pub type ExecFunc<U> = dyn for<'a> Fn(&mut Option<Inbound<'a, U>>) -> Result<(), ExecError>
+    pub type ExecFunc<U, C> = dyn for<'a> Fn(&mut Option<Inbound<'a, U, C>>) -> Result<(), ExecError>
         + Send
         + Sync
         + 'static;
@@ -18,7 +18,7 @@ pub mod route {
         RouteFailed,
 
         #[error("parsing inbound failed")]
-        ParseError(#[from] erased_serde::Error),
+        ParseError(#[from] DeserializeError),
 
         #[error("request received on notify handler!")]
         RequestOnNotifyHandler,
@@ -42,20 +42,21 @@ pub mod route {
         fn finish(self) -> Self::Func;
     }
 
-    pub struct Router<U: UserData, R> {
+    pub struct Router<U: UserData, C: Codec, R> {
         route_func: R,
-        funcs: Vec<Box<ExecFunc<U>>>,
+        funcs: Vec<Box<ExecFunc<U, C>>>,
     }
 
-    pub struct RouterBuilder<U: UserData, R> {
-        inner: Router<U, R>,
+    pub struct RouterBuilder<U: UserData, C: Codec, R> {
+        inner: Router<U, C, R>,
     }
 
     // ==== Builder ====
 
-    impl<U, R> Default for RouterBuilder<U, R>
+    impl<U, C, R> Default for RouterBuilder<U, C, R>
     where
         U: UserData,
+        C: Codec,
         R: RouterFuncBuilder + Default,
     {
         fn default() -> Self {
@@ -68,9 +69,10 @@ pub mod route {
         }
     }
 
-    impl<U, R> RouterBuilder<U, R>
+    impl<U, C, R> RouterBuilder<U, C, R>
     where
         U: UserData,
+        C: Codec,
         R: RouterFuncBuilder,
     {
         pub fn new(builder: R) -> Self {
@@ -84,7 +86,7 @@ pub mod route {
 
         pub fn push_handler<F>(&mut self, func: F)
         where
-            F: for<'a> Fn(&mut Option<Inbound<'a, U>>) -> Result<(), ExecError>
+            F: for<'a> Fn(&mut Option<Inbound<'a, U, C>>) -> Result<(), ExecError>
                 + Send
                 + Sync
                 + 'static,
@@ -109,7 +111,7 @@ pub mod route {
 
         pub fn try_add_routed_handler<F>(&mut self, path: &str, func: F) -> Result<usize, R::Error>
         where
-            F: Into<Box<ExecFunc<U>>>,
+            F: Into<Box<ExecFunc<U, C>>>,
         {
             let value = self.inner.funcs.len();
             self.inner.route_func.add_route(path, value)?;
@@ -118,7 +120,7 @@ pub mod route {
             Ok(value)
         }
 
-        pub fn finish(self) -> Router<U, R::Func> {
+        pub fn finish(self) -> Router<U, C, R::Func> {
             Router {
                 route_func: self.inner.route_func.finish(),
                 funcs: self.inner.funcs,
@@ -128,9 +130,10 @@ pub mod route {
 
     // ==== Router ====
 
-    impl<U, R> Router<U, R>
+    impl<U, C, R> Router<U, C, R>
     where
         U: UserData,
+        C: Codec,
         R: RouterFunc,
     {
         /// Route received inbound to predefined handler function.
@@ -140,7 +143,7 @@ pub mod route {
         /// This function panics if the inbound message is [`None`].
         pub fn route(
             &self,
-            inbound_revoked_on_error: &mut Option<Inbound<'_, U>>,
+            inbound_revoked_on_error: &mut Option<Inbound<'_, U, C>>,
         ) -> Result<(), ExecError> {
             let opt_inbound = inbound_revoked_on_error;
 
@@ -300,16 +303,17 @@ pub mod inbound {
     use bytes::BytesMut;
 
     use crate::{
-        error::ErrorResponse, Inbound, NotifySender, ParseMessage, RequestSender, UserData,
+        codec::DeserializeError, error::ErrorResponse, Codec, Inbound, NotifySender, ParseMessage,
+        RequestSender, UserData,
     };
 
     use super::{NotifyMethod, RequestMethod};
 
-    pub struct CachedRequest<U: UserData, N: NotifyMethod + RequestMethod> {
-        inner: CachedNotify<U, N>,
+    pub struct CachedRequest<U: UserData, C: Codec, N: NotifyMethod + RequestMethod> {
+        inner: CachedNotify<U, C, N>,
     }
 
-    pub struct CachedNotify<U: UserData, M: NotifyMethod> {
+    pub struct CachedNotify<U: UserData, C: Codec, M: NotifyMethod> {
         /// NOTE: Paramter order is important; `ib` must be dropped after `v` disposed, as it
         /// borrows the underlying buffer of inbound `ib`
         v: M::ParamRecv<'static>,
@@ -324,7 +328,7 @@ pub mod inbound {
         ///
         ///
         /// This field should never be exposed as mutable reference.
-        ib: Inbound<'static, U>,
+        ib: Inbound<'static, U, C>,
     }
 
     struct F;
@@ -338,9 +342,10 @@ pub mod inbound {
 
     // ==== RequestMessage ====
 
-    impl<U, M> CachedRequest<U, M>
+    impl<U, C, M> CachedRequest<U, C, M>
     where
         U: UserData,
+        C: Codec,
         M: RequestMethod + NotifyMethod,
     {
         /// # Safety
@@ -350,8 +355,8 @@ pub mod inbound {
         /// buffer of the inbound message.
         #[doc(hidden)]
         pub unsafe fn __internal_create(
-            msg: Inbound<'static, U>,
-        ) -> Result<Self, (Inbound<'static, U>, erased_serde::Error)> {
+            msg: Inbound<'static, U, C>,
+        ) -> Result<Self, (Inbound<'static, U, C>, DeserializeError)> {
             Ok(Self {
                 inner: CachedNotify::__internal_create(msg)?,
             })
@@ -380,12 +385,13 @@ pub mod inbound {
         }
     }
 
-    impl<U, M> std::ops::Deref for CachedRequest<U, M>
+    impl<U, C, M> std::ops::Deref for CachedRequest<U, C, M>
     where
         U: UserData,
+        C: Codec,
         M: RequestMethod + NotifyMethod,
     {
-        type Target = CachedNotify<U, M>;
+        type Target = CachedNotify<U, C, M>;
 
         fn deref(&self) -> &Self::Target {
             &self.inner
@@ -394,15 +400,16 @@ pub mod inbound {
 
     // ==== NotifyMessage ====
 
-    impl<U, M> CachedNotify<U, M>
+    impl<U, C, M> CachedNotify<U, C, M>
     where
         U: UserData,
+        C: Codec,
         M: NotifyMethod,
     {
         #[doc(hidden)]
         pub unsafe fn __internal_create(
-            msg: Inbound<'static, U>,
-        ) -> Result<Self, (Inbound<'static, U>, erased_serde::Error)> {
+            msg: Inbound<'static, U, C>,
+        ) -> Result<Self, (Inbound<'static, U, C>, DeserializeError)> {
             Ok(Self {
                 // SAFETY:
                 // * The borrowed lifetime `'de` is bound to the payload of the inbound message, not
@@ -412,7 +419,7 @@ pub mod inbound {
                 //   reference is valid, the buffer of the inbound message won't be dropped during
                 //   `v`'s lifetime.
                 v: unsafe {
-                    let msg_ptr = &msg as *const Inbound<'static, U>;
+                    let msg_ptr = &msg as *const Inbound<'static, U, C>;
                     transmute(match (*msg_ptr).parse::<M::ParamRecv<'_>>() {
                         Ok(ok) => ok,
                         Err(err) => return Err((msg, err)),
@@ -429,12 +436,13 @@ pub mod inbound {
         }
     }
 
-    impl<U, M> std::ops::Deref for CachedNotify<U, M>
+    impl<U, C, M> std::ops::Deref for CachedNotify<U, C, M>
     where
         U: UserData,
+        C: Codec,
         M: NotifyMethod,
     {
-        type Target = Inbound<'static, U>;
+        type Target = Inbound<'static, U, C>;
 
         fn deref(&self) -> &Self::Target {
             &self.ib
@@ -443,27 +451,28 @@ pub mod inbound {
 
     // ========================================================== Response Wait ===|
 
-    pub struct CachedWaitResponse<'a, U: UserData, M: RequestMethod>(
-        crate::ReceiveResponse<'a, U>,
+    pub struct CachedWaitResponse<'a, U: UserData, C: Codec, M: RequestMethod>(
+        crate::ReceiveResponse<'a, U, C>,
         PhantomData<M>,
     );
 
-    pub struct CachedErrorResponse<M: RequestMethod>(
-        ErrorResponse,
-        Result<M::ErrRecv<'static>, erased_serde::Error>,
+    pub struct CachedErrorResponse<C: Codec, M: RequestMethod>(
+        ErrorResponse<C>,
+        Result<M::ErrRecv<'static>, DeserializeError>,
     );
 
-    pub struct CachedOkayResponse<M: RequestMethod>(
-        crate::Response,
-        Result<M::OkRecv<'static>, erased_serde::Error>,
+    pub struct CachedOkayResponse<C: Codec, M: RequestMethod>(
+        crate::Response<C>,
+        Result<M::OkRecv<'static>, DeserializeError>,
     );
 
-    impl<'a, U, M> std::future::Future for CachedWaitResponse<'a, U, M>
+    impl<'a, U, C, M> std::future::Future for CachedWaitResponse<'a, U, C, M>
     where
         U: UserData,
+        C: Codec,
         M: RequestMethod,
     {
-        type Output = Result<CachedOkayResponse<M>, Option<CachedErrorResponse<M>>>;
+        type Output = Result<CachedOkayResponse<C, M>, Option<CachedErrorResponse<C, M>>>;
 
         fn poll(
             self: std::pin::Pin<&mut Self>,
@@ -475,12 +484,12 @@ pub mod inbound {
             // SAFETY: See the comment in `CachedNotify::__internal_create`
             futures::ready!(inner.poll(cx))
                 .map(|x| unsafe {
-                    let parsed = (*(&x as *const crate::Response)).parse::<M::OkRecv<'_>>();
+                    let parsed = (*(&x as *const crate::Response<C>)).parse::<M::OkRecv<'_>>();
                     CachedOkayResponse(x, transmute(parsed))
                 })
                 .map_err(|x| {
                     x.map(|x| unsafe {
-                        let parsed = (*(&x as *const ErrorResponse)).parse::<M::ErrRecv<'_>>();
+                        let parsed = (*(&x as *const ErrorResponse<C>)).parse::<M::ErrRecv<'_>>();
                         CachedErrorResponse(x, transmute(parsed))
                     })
                 })
@@ -488,43 +497,45 @@ pub mod inbound {
         }
     }
 
-    impl<F> std::ops::Deref for CachedOkayResponse<F>
+    impl<C, F> std::ops::Deref for CachedOkayResponse<C, F>
     where
+        C: Codec,
         F: RequestMethod,
     {
-        type Target = crate::Response;
+        type Target = crate::Response<C>;
 
         fn deref(&self) -> &Self::Target {
             &self.0
         }
     }
 
-    impl<F> std::ops::Deref for CachedErrorResponse<F>
+    impl<C, F> std::ops::Deref for CachedErrorResponse<C, F>
     where
+        C: Codec,
         F: RequestMethod,
     {
-        type Target = ErrorResponse;
+        type Target = ErrorResponse<C>;
 
         fn deref(&self) -> &Self::Target {
             &self.0
         }
     }
 
-    impl<F> CachedOkayResponse<F>
+    impl<C: Codec, F> CachedOkayResponse<C, F>
     where
         F: RequestMethod,
     {
-        pub fn result(&self) -> &Result<F::OkRecv<'_>, erased_serde::Error> {
+        pub fn result(&self) -> &Result<F::OkRecv<'_>, DeserializeError> {
             // SAFETY: See the comment in `CachedNotify::args`
             unsafe { transmute(&self.1) }
         }
     }
 
-    impl<F> CachedErrorResponse<F>
+    impl<C: Codec, F> CachedErrorResponse<C, F>
     where
         F: RequestMethod,
     {
-        pub fn result(&self) -> &Result<F::ErrRecv<'_>, erased_serde::Error> {
+        pub fn result(&self) -> &Result<F::ErrRecv<'_>, DeserializeError> {
             // SAFETY: See the comment in `CachedNotify::args`
             unsafe { transmute(&self.1) }
         }
@@ -532,7 +543,7 @@ pub mod inbound {
 
     // ========================================================== Extensions ===|
 
-    impl<U> NotifySender<U>
+    impl<U, C: Codec> NotifySender<U, C>
     where
         U: UserData,
     {
@@ -559,7 +570,7 @@ pub mod inbound {
         }
     }
 
-    impl<U> RequestSender<U>
+    impl<U, C: Codec> RequestSender<U, C>
     where
         U: UserData,
     {
@@ -567,7 +578,7 @@ pub mod inbound {
             &self,
             buf: &mut BytesMut,
             (_, p): (M, M::ParamSend<'_>),
-        ) -> Result<CachedWaitResponse<'_, U, M>, crate::error::SendMsgError>
+        ) -> Result<CachedWaitResponse<'_, U, C, M>, crate::error::SendMsgError>
         where
             M: NotifyMethod + RequestMethod,
         {
@@ -580,7 +591,7 @@ pub mod inbound {
             &self,
             buf: &mut BytesMut,
             (_, p): (M, M::ParamSend<'_>),
-        ) -> Result<CachedWaitResponse<'_, U, M>, crate::error::TrySendMsgError>
+        ) -> Result<CachedWaitResponse<'_, U, C, M>, crate::error::TrySendMsgError>
         where
             M: NotifyMethod + RequestMethod,
         {

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use bytes::Bytes;
 use mpsc::TrySendError;
 use thiserror::Error;
@@ -98,9 +96,9 @@ pub enum TryRecvError {
 }
 
 #[derive(Debug)]
-pub struct ErrorResponse {
+pub struct ErrorResponse<C: Codec> {
     pub(super) errc: codec::ResponseError,
-    pub(super) codec: Arc<dyn Codec>,
+    pub(super) codec: C,
     pub(super) payload: Bytes,
 }
 

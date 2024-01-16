@@ -1,20 +1,20 @@
 use std::ops::Range;
 
 use bytes::BufMut;
-use serde::{de::Error, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue as RawJsonValue;
 
 use crate::{
     codec::{
         self,
         error::{DecodeError, EncodeError},
-        CodecUtil, EncodeResponsePayload, InboundFrameType,
+        CodecUtil, DeserializeError, EncodeResponsePayload, InboundFrameType,
     },
     defs::{RequestId, SizeType},
     ResponseError,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Codec;
 
 #[derive(Debug, serde::Deserialize)]
@@ -61,17 +61,17 @@ mod errc {
 }
 
 impl crate::Codec for Codec {
-    fn encode_notify(
+    fn encode_notify<S: Serialize>(
         &self,
         method: &str,
-        params: &dyn erased_serde::Serialize,
+        params: &S,
         buf: &mut bytes::BytesMut,
     ) -> Result<(), EncodeError> {
         #[derive(serde::Serialize)]
-        struct Encode<'a> {
+        struct Encode<'a, S: Serialize> {
             jsonrpc: &'static str,
             method: &'a str,
-            params: &'a dyn erased_serde::Serialize,
+            params: &'a S,
         }
 
         Encode {
@@ -80,23 +80,23 @@ impl crate::Codec for Codec {
             params,
         }
         .serialize(&mut serde_json::Serializer::new(buf.writer()))
-        .map_err(<erased_serde::Error as serde::ser::Error>::custom)?;
+        .map_err(DeserializeError::from)?;
 
         Ok(())
     }
 
-    fn encode_request(
+    fn encode_request<S: Serialize>(
         &self,
         request_id: crate::defs::RequestId,
         method: &str,
-        params: &dyn erased_serde::Serialize,
+        params: &S,
         buf: &mut bytes::BytesMut,
     ) -> Result<(), EncodeError> {
         #[derive(serde::Serialize)]
-        struct Encode<'a> {
+        struct Encode<'a, S: Serialize> {
             jsonrpc: &'static str,
             method: &'a str,
-            params: &'a dyn erased_serde::Serialize,
+            params: &'a S,
             id: &'a str,
         }
 
@@ -107,32 +107,39 @@ impl crate::Codec for Codec {
             id: itoa::Buffer::new().format(request_id.value().get()),
         }
         .serialize(&mut serde_json::Serializer::new(buf.writer()))
-        .map_err(<erased_serde::Error as serde::ser::Error>::custom)?;
+        .map_err(DeserializeError::from)?;
 
         Ok(())
     }
 
-    fn encode_response(
+    fn encode_response<S: Serialize>(
         &self,
         request_id_raw: &[u8],
-        result: EncodeResponsePayload,
+        result: EncodeResponsePayload<S>,
         buf: &mut bytes::BytesMut,
     ) -> Result<(), EncodeError> {
         #[derive(serde::Serialize)]
-        struct Encode<'a> {
+        struct Encode<'a, S: Serialize> {
             jsonrpc: &'static str,
             #[serde(skip_serializing_if = "Option::is_none")]
-            result: Option<&'a dyn erased_serde::Serialize>,
+            result: Option<&'a S>,
             #[serde(skip_serializing_if = "Option::is_none")]
-            error: Option<ErrorEncode<'a>>,
+            error: Option<ErrorEncode<'a, S>>,
             id: &'a str,
         }
 
         #[derive(serde::Serialize)]
-        struct ErrorEncode<'a> {
+        struct ErrorEncode<'a, S: Serialize> {
             code: i64,
             message: &'a str,
-            data: &'a dyn erased_serde::Serialize,
+            data: ErrorEncodeData<'a, S>,
+        }
+
+        #[derive(serde::Serialize)]
+        #[serde(untagged)]
+        enum ErrorEncodeData<'a, S: Serialize> {
+            Msg(&'a str),
+            Obj(&'a S),
         }
 
         let request_id =
@@ -158,12 +165,12 @@ impl crate::Codec for Codec {
                     errmsg = ec.to_string();
                     errmsg.as_str()
                 },
-                data: &errmsg,
+                data: ErrorEncodeData::Msg(&errmsg),
             }),
             EncodeResponsePayload::ErrObjectOnly(obj) => Err(ErrorEncode {
                 code: errc::INTERNAL_ERROR,
                 message: "internal error",
-                data: obj,
+                data: ErrorEncodeData::Obj(obj),
             }),
             EncodeResponsePayload::Err(ec, obj) => Err(ErrorEncode {
                 code: error_to_errc(ec),
@@ -171,7 +178,7 @@ impl crate::Codec for Codec {
                     errmsg = ec.to_string();
                     errmsg.as_str()
                 },
-                data: obj,
+                data: ErrorEncodeData::Obj(obj),
             }),
         };
 
@@ -192,20 +199,8 @@ impl crate::Codec for Codec {
 
         encode
             .serialize(&mut serde_json::Serializer::new(buf.writer()))
-            .map_err(<erased_serde::Error as serde::ser::Error>::custom)?;
+            .map_err(DeserializeError::from)?;
 
-        Ok(())
-    }
-
-    fn deserialize_payload<'de>(
-        &self,
-        payload: &'de [u8],
-        visitor: &mut dyn FnMut(
-            &mut dyn erased_serde::Deserializer<'de>,
-        ) -> Result<(), erased_serde::Error>,
-    ) -> Result<(), erased_serde::Error> {
-        let mut de = serde_json::Deserializer::from_slice(payload);
-        visitor(&mut <dyn erased_serde::Deserializer>::erase(&mut de))?;
         Ok(())
     }
 
@@ -216,8 +211,7 @@ impl crate::Codec for Codec {
     fn decode_inbound(&self, frame: &[u8]) -> Result<codec::InboundFrameType, DecodeError> {
         let frame = std::str::from_utf8(frame).map_err(|_| DecodeError::NonUtf8Input)?;
         let mut de = serde_json::Deserializer::from_str(frame);
-        let raw = RawData::deserialize(&mut de)
-            .map_err(<erased_serde::Error as serde::de::Error>::custom)?;
+        let raw = RawData::deserialize(&mut de).map_err(DeserializeError::from)?;
 
         let range_of = |s: &str| -> Range<SizeType> {
             // May panic if the range is out of bounds. (e.g. front of the frame)
@@ -229,6 +223,10 @@ impl crate::Codec for Codec {
         if raw.jsonrpc != "2.0" {
             return Err(DecodeError::UnsupportedProtocol);
         }
+
+        #[derive(thiserror::Error, Debug)]
+        #[error("Invalid JSON-RPC frame received")]
+        struct InvalidJsonRpcFrame;
 
         let frame_type = match raw {
             RawData {
@@ -268,14 +266,20 @@ impl crate::Codec for Codec {
                 payload: data.map(|x| range_of(x.get())).unwrap_or_default(),
             },
             other => {
-                return Err(From::from(erased_serde::Error::custom(format!(
-                    "invalid frame: {:?}",
-                    other
-                ))));
+                return Err(DeserializeError::from(InvalidJsonRpcFrame).into());
             }
         };
 
         Ok(frame_type)
+    }
+
+    fn payload_deserializer<'de>(
+        &self,
+        payload: &'de [u8],
+    ) -> Result<impl serde::Deserializer<'de>, codec::DecodePayloadUnsupportedError> {
+        Ok(DeserializeWrapper(serde_json::Deserializer::from_slice(
+            payload,
+        )))
     }
 }
 
@@ -298,4 +302,117 @@ fn req_id_from_str(s: &str) -> Result<RequestId, DecodeError> {
             .try_into()
             .map_err(|_| DecodeError::RequestIdRetrievalFailed)?,
     ))
+}
+
+struct DeserializeWrapper<T>(serde_json::Deserializer<T>);
+
+macro_rules! inherit {
+    ($($name:ident),*) => {
+        $(
+            fn $name<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
+            where
+                V: serde::de::Visitor<'de>,
+            {
+                (&mut self.0).$name(visitor)
+            }
+        )*
+    };
+}
+
+impl<'de, T> serde::Deserializer<'de> for DeserializeWrapper<T>
+where
+    T: serde_json::de::Read<'de>,
+{
+    type Error = serde_json::Error;
+
+    inherit!(
+        deserialize_any,
+        deserialize_bool,
+        deserialize_i8,
+        deserialize_i16,
+        deserialize_i32,
+        deserialize_i64,
+        deserialize_u8,
+        deserialize_u16,
+        deserialize_u32,
+        deserialize_u64,
+        deserialize_f32,
+        deserialize_f64,
+        deserialize_char,
+        deserialize_str,
+        deserialize_string,
+        deserialize_bytes,
+        deserialize_byte_buf,
+        deserialize_option,
+        deserialize_unit,
+        deserialize_seq,
+        deserialize_map,
+        deserialize_identifier,
+        deserialize_ignored_any
+    );
+
+    fn deserialize_unit_struct<V>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        (&mut { self.0 }).deserialize_unit_struct(name, visitor)
+    }
+
+    fn deserialize_newtype_struct<V>(
+        self,
+        name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        (&mut { self.0 }).deserialize_newtype_struct(name, visitor)
+    }
+
+    fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        (&mut { self.0 }).deserialize_tuple(len, visitor)
+    }
+
+    fn deserialize_tuple_struct<V>(
+        self,
+        name: &'static str,
+        len: usize,
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        (&mut { self.0 }).deserialize_tuple_struct(name, len, visitor)
+    }
+
+    fn deserialize_struct<V>(
+        self,
+        name: &'static str,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        (&mut { self.0 }).deserialize_struct(name, fields, visitor)
+    }
+
+    fn deserialize_enum<V>(
+        self,
+        name: &'static str,
+        variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        (&mut { self.0 }).deserialize_enum(name, variants, visitor)
+    }
 }

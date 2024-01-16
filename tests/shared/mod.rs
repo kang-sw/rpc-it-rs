@@ -27,7 +27,7 @@ pub fn create_default_rpc_pair<US, UC, C>(
     server_user_data: US,
     client_user_data: UC,
     codec: impl Fn() -> C,
-) -> (rpc_it::RequestSender<UC>, rpc_it::Receiver<US>)
+) -> (rpc_it::RequestSender<UC, C>, rpc_it::Receiver<US, C>)
 where
     US: rpc_it::UserData,
     UC: rpc_it::UserData,
@@ -48,11 +48,11 @@ pub fn create_rpc_pair<US, UC, C>(
     spawner: &impl Spawn,
     server_user_data: US,
     client_user_data: UC,
-    server_rh: impl ReceiveErrorHandler<US>,
-    client_rh: impl ReceiveErrorHandler<UC>,
+    server_rh: impl ReceiveErrorHandler<US, C>,
+    client_rh: impl ReceiveErrorHandler<UC, C>,
     codec: impl Fn() -> C,
     cfg: ConnectionConfig,
-) -> (rpc_it::RequestSender<UC>, rpc_it::Receiver<US>)
+) -> (rpc_it::RequestSender<UC, C>, rpc_it::Receiver<US, C>)
 where
     US: rpc_it::UserData,
     UC: rpc_it::UserData,

@@ -24,8 +24,7 @@ use crate::{
 use super::{
     error::{ReadRunnerError, ReadRunnerExitType, WriteRunnerError, WriteRunnerExitType},
     req_rep::RequestContext,
-    DeferredDirective, InboundDelivery, ReceiveErrorHandler, Receiver, RequestSender, RpcCore,
-    UserData,
+    DeferredDirective, InboundDelivery, ReceiveErrorHandler, Receiver, RequestSender, UserData,
 };
 
 ///
@@ -38,10 +37,10 @@ pub struct Builder<Wr, Rd, U, C, RH> {
     cfg: InitConfig,
 }
 
-struct RpcContextImpl<U, C> {
+pub(super) struct RpcCore<U, C> {
     user_data: U,
     codec: C,
-    reqs: Option<RequestContext>,
+    reqs: Option<RequestContext<C>>,
     send_ctx: Option<SenderContext>,
     recv_ctx: Option<ReceiverContext>,
 }
@@ -67,77 +66,25 @@ struct InitConfig {
 
 // ========================================================== RpcContext ===|
 
-impl<U, C> RpcCore<U> for RpcContextImpl<U, C>
-where
-    U: UserData,
-    C: Codec,
-{
-    fn self_as_codec(self: Arc<Self>) -> Arc<dyn Codec> {
-        self
+impl<U, C> RpcCore<U, C> {
+    pub fn codec(&self) -> &C {
+        &self.codec
     }
 
-    fn codec(&self) -> &dyn Codec {
-        self
-    }
-
-    fn user_data(&self) -> &U {
+    pub fn user_data(&self) -> &U {
         &self.user_data
     }
 
-    fn tx_deferred(&self) -> Option<&mpsc::Sender<DeferredDirective>> {
+    pub fn tx_deferred(&self) -> Option<&mpsc::Sender<DeferredDirective>> {
         self.send_ctx.as_ref().map(|x| &x.tx_deferred)
     }
 
-    fn request_context(&self) -> Option<&RequestContext> {
+    pub fn request_context(&self) -> Option<&RequestContext<C>> {
         self.reqs.as_ref()
     }
 }
 
-impl<U, C> Codec for RpcContextImpl<U, C>
-where
-    C: Codec,
-    U: UserData,
-{
-    fn encode_notify(
-        &self,
-        method: &str,
-        params: &dyn erased_serde::Serialize,
-        buf: &mut bytes::BytesMut,
-    ) -> Result<(), crate::codec::error::EncodeError> {
-        self.codec.encode_notify(method, params, buf)
-    }
-
-    fn encode_request(
-        &self,
-        request_id: crate::defs::RequestId,
-        method: &str,
-        params: &dyn erased_serde::Serialize,
-        buf: &mut bytes::BytesMut,
-    ) -> Result<(), crate::codec::error::EncodeError> {
-        self.codec.encode_request(request_id, method, params, buf)
-    }
-
-    fn encode_response(
-        &self,
-        request_id_raw: &[u8],
-        result: crate::codec::EncodeResponsePayload,
-        buf: &mut bytes::BytesMut,
-    ) -> Result<(), crate::codec::error::EncodeError> {
-        self.codec.encode_response(request_id_raw, result, buf)
-    }
-
-    fn deserialize_payload<'de>(
-        &self,
-        payload: &'de [u8],
-        visitor: &mut dyn FnMut(
-            &mut dyn erased_serde::Deserializer<'de>,
-        ) -> Result<(), erased_serde::Error>,
-    ) -> Result<(), erased_serde::Error> {
-        self.codec.deserialize_payload(payload, visitor)
-    }
-}
-
-impl<U, C> std::fmt::Debug for RpcContextImpl<U, C>
+impl<U, C> std::fmt::Debug for RpcCore<U, C>
 where
     U: UserData,
     C: Codec,
@@ -325,7 +272,7 @@ where
     Rd: AsyncFrameRead,
     U: UserData,
     C: Codec,
-    RH: ReceiveErrorHandler<U>,
+    RH: ReceiveErrorHandler<U, C>,
 {
     /// Create a bidirectional RPC connection in client mode; which won't create inbound receiver
     /// channel, but spawns reader task to enable receiving responses.
@@ -333,15 +280,15 @@ where
     pub fn build_client(
         self,
     ) -> (
-        RequestSender<U>,
+        RequestSender<U, C>,
         impl Future<Output = ReadRunnerResult>,
         impl Future<Output = WriteRunnerResult>,
     ) {
         let (tx_w, rx_w) = self.cfg.make_write_channel();
-        let context = Arc::new_cyclic(|w: &Weak<RpcContextImpl<U, C>>| RpcContextImpl {
+        let context = Arc::new(RpcCore {
             user_data: self.user_data,
+            reqs: Some(RequestContext::new(self.codec.clone())),
             codec: self.codec,
-            reqs: Some(RequestContext::new(w.clone())),
             send_ctx: Some(SenderContext {
                 tx_deferred: tx_w.clone(),
             }),
@@ -368,16 +315,16 @@ where
         self,
         enable_request: bool,
     ) -> (
-        Receiver<U>,
+        Receiver<U, C>,
         impl Future<Output = ReadRunnerResult>,
         impl Future<Output = WriteRunnerResult>,
     ) {
         let (tx_w, rx_w) = self.cfg.make_write_channel();
         let (tx_ib, rx_ib) = self.cfg.make_inbound_channel();
-        let context = Arc::new_cyclic(|w: &Weak<RpcContextImpl<U, C>>| RpcContextImpl {
+        let context = Arc::new(RpcCore {
             user_data: self.user_data,
+            reqs: enable_request.then(|| RequestContext::new(self.codec.clone())),
             codec: self.codec,
-            reqs: enable_request.then(|| RequestContext::new(w.clone())),
             send_ctx: Some(SenderContext {
                 tx_deferred: tx_w.clone(),
             }),
@@ -404,11 +351,11 @@ where
     Rd: AsyncFrameRead,
     U: UserData,
     C: Codec,
-    RH: ReceiveErrorHandler<U>,
+    RH: ReceiveErrorHandler<U, C>,
 {
     /// Creates read-only service. The receiver may never take any request.
     #[must_use = must_use_message!()]
-    pub fn build_read_only(self) -> (Receiver<U>, impl Future) {
+    pub fn build_read_only(self) -> (Receiver<U, C>, impl Future) {
         let Self {
             reader,
             read_event_handler,
@@ -419,7 +366,7 @@ where
         } = self;
 
         let (tx_ib, rx_ib) = cfg.make_inbound_channel();
-        let context = Arc::new(RpcContextImpl {
+        let context = Arc::new(RpcCore {
             user_data,
             codec,
             reqs: None,
@@ -455,7 +402,7 @@ where
     pub fn build_write_only(
         self,
     ) -> (
-        super::NotifySender<U>,
+        super::NotifySender<U, C>,
         impl Future<Output = WriteRunnerResult>,
     ) {
         let Self {
@@ -468,7 +415,7 @@ where
 
         let (tx_directive, rx) = cfg.make_write_channel();
 
-        let context = Arc::new(RpcContextImpl {
+        let context = Arc::new(RpcCore {
             user_data,
             codec,
             reqs: None,
@@ -509,7 +456,7 @@ impl InitConfig {
 
 // ==== Context Utils ====
 
-impl<U, C> RpcContextImpl<U, C>
+impl<U, C> RpcCore<U, C>
 where
     U: UserData,
     C: Codec,
@@ -533,11 +480,11 @@ async fn read_runner<Rd, RH, C, U>(
     reader: Rd,
     handler: RH,
     tx_inbound: Option<mpsc::Sender<InboundDelivery>>,
-    wctx: Weak<RpcContextImpl<U, C>>,
+    wctx: Weak<RpcCore<U, C>>,
 ) -> ReadRunnerResult
 where
     Rd: AsyncFrameRead,
-    RH: ReceiveErrorHandler<U>,
+    RH: ReceiveErrorHandler<U, C>,
     C: Codec,
     U: UserData,
 {
@@ -654,10 +601,7 @@ where
 
                     handler.on_unhandled_notify_or_request(
                         &ctx.user_data,
-                        Inbound::new(
-                            Cow::Borrowed(&(ctx.clone() as Arc<dyn RpcCore<U>>)),
-                            unhandled_delivery,
-                        ),
+                        Inbound::new(Cow::Borrowed(&ctx), unhandled_delivery),
                     )?;
                 }
                 Ok(None) => break Ok(ReadRunnerExitType::AllHandleDropped),
@@ -684,10 +628,11 @@ where
 async fn write_runner<Wr, U, C>(
     writer: Wr,
     rx_directive: mpsc::Receiver<DeferredDirective>,
-    w_ctx: Weak<RpcContextImpl<U, C>>,
+    w_ctx: Weak<RpcCore<U, C>>,
 ) -> WriteRunnerResult
 where
     Wr: AsyncFrameWrite,
+    C: Codec,
 {
     // Implements bulk receive to minimize number of polls on the channel
 

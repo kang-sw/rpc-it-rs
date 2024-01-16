@@ -3,18 +3,17 @@ use bytes::Bytes;
 use super::*;
 
 /// A RPC client handle which can only send RPC notifications.
-#[derive(Debug)]
 #[repr(transparent)]
-pub struct NotifySender<U> {
-    pub(super) context: Arc<dyn RpcCore<U>>,
+pub struct NotifySender<U, C> {
+    pub(super) context: Arc<RpcCore<U, C>>,
 }
 
 /// A weak RPC client handle which can only send RPC notifications.
 ///
 /// Should be upgraded to [`NotifySender`] before use.
 #[derive(Debug)]
-pub struct WeakNotifySender<U> {
-    pub(super) context: Weak<dyn RpcCore<U>>,
+pub struct WeakNotifySender<U, C> {
+    pub(super) context: Weak<RpcCore<U, C>>,
 }
 
 // ==== Request Capability ====
@@ -22,22 +21,21 @@ pub struct WeakNotifySender<U> {
 /// A RPC client handle which can send RPC requests and notifications.
 ///
 /// It is super-set of [`NotifySender`].
-#[derive(Debug)]
-pub struct RequestSender<U> {
-    pub(super) inner: NotifySender<U>,
+pub struct RequestSender<U, C> {
+    pub(super) inner: NotifySender<U, C>,
 }
 
 /// A weak RPC client handle which can send RPC requests and notifications.
 ///
 /// Should be upgraded to [`RequestSender`] before use.
 #[derive(Debug)]
-pub struct WeakRequestSender<U> {
-    inner: WeakNotifySender<U>,
+pub struct WeakRequestSender<U, C> {
+    inner: WeakNotifySender<U, C>,
 }
 
 /// An awaitable response for a sent RPC request
-pub struct ReceiveResponse<'a, U> {
-    pub(super) owner: Cow<'a, RequestSender<U>>,
+pub struct ReceiveResponse<'a, U, C> {
+    pub(super) owner: Cow<'a, RequestSender<U, C>>,
     pub(super) req_id: RequestId,
     pub(super) state: req_rep::ReceiveResponseState,
 }
@@ -64,10 +62,29 @@ pub(crate) enum DeferredDirective {
     WriteReqMsg(Bytes, RequestId),
 }
 
-// ========================================================== NotifySender ===|
+// ==== Debug Trait Impls ====
 
 /// Implements notification methods for [`NotifySender`].
-impl<U: UserData> NotifySender<U> {
+impl<U: UserData, C: Codec> std::fmt::Debug for NotifySender<U, C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NotifySender")
+            .field("context", &self.context)
+            .finish()
+    }
+}
+
+/// Implements notification methods for [`NotifySender`].
+impl<U: UserData, C: Codec> std::fmt::Debug for RequestSender<U, C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NotifySender")
+            .field("context", &self.context)
+            .finish()
+    }
+}
+
+// ========================================================== NotifySender ===|
+
+impl<U: UserData, C: Codec> NotifySender<U, C> {
     pub async fn notify<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
@@ -117,16 +134,12 @@ impl<U: UserData> NotifySender<U> {
         self.context.user_data()
     }
 
-    pub fn codec(&self) -> &dyn Codec {
+    pub fn codec(&self) -> &C {
         self.context.codec()
     }
 
-    pub fn cloned_codec(&self) -> Arc<dyn Codec> {
-        self.context.clone().self_as_codec()
-    }
-
     /// Upgrade this handle to request handle. Fails if request feature was not enabled at first.
-    pub fn try_into_request_sender(self) -> Result<RequestSender<U>, Self> {
+    pub fn try_into_request_sender(self) -> Result<RequestSender<U, C>, Self> {
         if self.context.request_context().is_some() {
             Ok(RequestSender { inner: self })
         } else {
@@ -192,14 +205,14 @@ impl<U: UserData> NotifySender<U> {
     }
 
     /// Downgrade this handle to a weak handle.
-    pub fn downgrade(&self) -> WeakNotifySender<U> {
+    pub fn downgrade(&self) -> WeakNotifySender<U, C> {
         WeakNotifySender {
             context: Arc::downgrade(&self.context),
         }
     }
 }
 
-impl<U> Clone for NotifySender<U> {
+impl<U, C> Clone for NotifySender<U, C> {
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
@@ -207,16 +220,16 @@ impl<U> Clone for NotifySender<U> {
     }
 }
 
-impl<U> WeakNotifySender<U> {
+impl<U, C> WeakNotifySender<U, C> {
     /// Upgrade this handle to a strong handle.
-    pub fn upgrade(&self) -> Option<NotifySender<U>> {
+    pub fn upgrade(&self) -> Option<NotifySender<U, C>> {
         self.context
             .upgrade()
             .map(|context| NotifySender { context })
     }
 }
 
-impl<U> Clone for WeakNotifySender<U> {
+impl<U, C> Clone for WeakNotifySender<U, C> {
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
@@ -227,13 +240,13 @@ impl<U> Clone for WeakNotifySender<U> {
 // ========================================================== RequestSender ===|
 
 /// Implements request methods for [`RequestSender`].
-impl<U: UserData> RequestSender<U> {
+impl<U: UserData, C: Codec> RequestSender<U, C> {
     pub async fn request<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<ReceiveResponse<U>, SendMsgError> {
+    ) -> Result<ReceiveResponse<U, C>, SendMsgError> {
         let resp = self
             .encode_request(buf, method, params)
             .ok_or(SendMsgError::ReceiverExpired)??;
@@ -253,7 +266,7 @@ impl<U: UserData> RequestSender<U> {
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<ReceiveResponse<U>, TrySendMsgError> {
+    ) -> Result<ReceiveResponse<U, C>, TrySendMsgError> {
         let resp = self
             .encode_request(buf, method, params)
             .ok_or(TrySendMsgError::ReceiverExpired)??;
@@ -272,7 +285,7 @@ impl<U: UserData> RequestSender<U> {
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Option<Result<ReceiveResponse<U>, EncodeError>> {
+    ) -> Option<Result<ReceiveResponse<U, C>, EncodeError>> {
         buf.clear();
 
         let reqs = self.reqs();
@@ -291,22 +304,22 @@ impl<U: UserData> RequestSender<U> {
         }))
     }
 
-    pub fn downgrade(&self) -> WeakRequestSender<U> {
+    pub fn downgrade(&self) -> WeakRequestSender<U, C> {
         WeakRequestSender {
             inner: self.inner.downgrade(),
         }
     }
 }
 
-impl<U> RequestSender<U> {
+impl<U, C> RequestSender<U, C> {
     /// Unwraps request context from this handle; This is valid since it's unconditionally defined
     /// when [`RequestSender`] is created.
-    pub(super) fn reqs(&self) -> &RequestContext {
+    pub(super) fn reqs(&self) -> &RequestContext<C> {
         self.context.request_context().unwrap()
     }
 }
 
-impl<U> Clone for RequestSender<U> {
+impl<U, C> Clone for RequestSender<U, C> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -315,21 +328,21 @@ impl<U> Clone for RequestSender<U> {
 }
 
 /// Provides handy way to access [`NotifySender`] methods in [`RequestSender`].
-impl<U> std::ops::Deref for RequestSender<U> {
-    type Target = NotifySender<U>;
+impl<U, C> std::ops::Deref for RequestSender<U, C> {
+    type Target = NotifySender<U, C>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl<U> WeakRequestSender<U> {
-    pub fn upgrade(&self) -> Option<RequestSender<U>> {
+impl<U, C> WeakRequestSender<U, C> {
+    pub fn upgrade(&self) -> Option<RequestSender<U, C>> {
         self.inner.upgrade().map(|inner| RequestSender { inner })
     }
 }
 
-impl<U> Clone for WeakRequestSender<U> {
+impl<U, C> Clone for WeakRequestSender<U, C> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),

@@ -2,10 +2,7 @@ use std::{
     borrow::Cow,
     future::Future,
     mem::replace,
-    sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
-        Arc, Weak,
-    },
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
     task::{Poll, Waker},
 };
 
@@ -23,16 +20,16 @@ use super::{error::ErrorResponse, ReceiveResponse};
 
 /// Response message from RPC server.
 #[derive(Debug)]
-pub struct Response {
-    codec: Arc<dyn Codec>,
+pub struct Response<C> {
+    codec: C,
     payload: Bytes,
 }
 
 /// A context for pending RPC requests.
 #[derive(Debug)]
-pub(crate) struct RequestContext {
+pub(crate) struct RequestContext<C> {
     /// Codec of owning RPC connection.
-    codec: Weak<dyn Codec>,
+    codec: C,
 
     /// Request ID generator. Rotates every 2^32 requests.
     ///
@@ -74,11 +71,12 @@ pub(super) enum ReceiveResponseState {
     Expired,
 }
 
-impl<'a, U> Future for ReceiveResponse<'a, U>
+impl<'a, U, C> Future for ReceiveResponse<'a, U, C>
 where
     U: UserData,
+    C: Codec,
 {
-    type Output = Result<Response, Option<ErrorResponse>>;
+    type Output = Result<Response<C>, Option<ErrorResponse<C>>>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -116,15 +114,7 @@ where
                 drop(lc_slot);
                 drop(lc_entry);
 
-                // NOTE: In this line, we're 'trying' to upgrade the pointer and checks if it's
-                // expired or not. However, in actual implementation, the backed `RpcContext`
-                // implementor will be cast itself to `Arc<dyn Codec>` and will be cloned, which
-                // means, as long as the `RequestContext` is alive, the `Arc<dyn Codec>` will never
-                // be invalidated.
-                //
-                // However, here, we explicitly check if the `Arc<dyn Codec>` is still alive or not
-                // to future change of internal implementation.
-                let codec = reqs.codec.upgrade().ok_or(None)?;
+                let codec = reqs.codec.clone();
 
                 return Poll::Ready(if let Some(errc) = errc {
                     Err(Some(ErrorResponse {
@@ -166,7 +156,7 @@ where
     }
 }
 
-impl<'a, U> Drop for ReceiveResponse<'a, U> {
+impl<'a, U, C> Drop for ReceiveResponse<'a, U, C> {
     fn drop(&mut self) {
         if matches!(self.state, ReceiveResponseState::Expired) {
             return;
@@ -182,9 +172,9 @@ impl<'a, U> Drop for ReceiveResponse<'a, U> {
 
 // ======== ReceiveResponse ======== //
 
-impl<'a, U> ReceiveResponse<'a, U> {
+impl<'a, U, C> ReceiveResponse<'a, U, C> {
     /// Elevate the lifetime of the response to `'static`.
-    pub fn into_owned(mut self) -> ReceiveResponse<'static, U> {
+    pub fn into_owned(mut self) -> ReceiveResponse<'static, U, C> {
         ReceiveResponse {
             owner: Cow::Owned((*self.owner).clone()),
             req_id: self.req_id,
@@ -199,28 +189,28 @@ impl<'a, U> ReceiveResponse<'a, U> {
 
 // ========================================================== Response ===|
 
-impl ParseMessage for Response {
-    fn codec_payload_pair(&self) -> (&dyn Codec, &[u8]) {
-        (self.codec.as_ref(), self.payload.as_ref())
+impl<C: Codec> ParseMessage<C> for Response<C> {
+    fn codec_payload_pair(&self) -> (&C, &[u8]) {
+        (&self.codec, self.payload.as_ref())
     }
 }
 
-impl ErrorResponse {
+impl<C: Codec> ErrorResponse<C> {
     pub fn errc(&self) -> ResponseError {
         self.errc
     }
 }
 
-impl ParseMessage for ErrorResponse {
-    fn codec_payload_pair(&self) -> (&dyn Codec, &[u8]) {
-        (self.codec.as_ref(), self.payload.as_ref())
+impl<C: Codec> ParseMessage<C> for ErrorResponse<C> {
+    fn codec_payload_pair(&self) -> (&C, &[u8]) {
+        (&self.codec, self.payload.as_ref())
     }
 }
 
 // ==== RequestContext ====
 
-impl RequestContext {
-    pub(super) fn new(codec: Weak<dyn Codec>) -> Self {
+impl<C: Codec> RequestContext<C> {
+    pub(super) fn new(codec: C) -> Self {
         Self {
             codec,
             req_id_gen: Default::default(),

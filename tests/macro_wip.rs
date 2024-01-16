@@ -1,3 +1,4 @@
+#![cfg(feature = "")]
 #![allow(unused)]
 #![cfg(feature = "proc-macro")]
 

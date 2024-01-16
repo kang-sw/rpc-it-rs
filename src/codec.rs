@@ -2,8 +2,6 @@ use std::num::NonZeroU64;
 use std::ops::Range;
 
 use bytes::BytesMut;
-use erased_serde::Deserializer as DynDeserializer;
-use erased_serde::Serialize as DynSerialize;
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -53,11 +51,11 @@ pub enum ResponseError {
     ParseFailed = 8,
 }
 
-pub enum EncodeResponsePayload<'a> {
-    Ok(&'a dyn DynSerialize),
+pub enum EncodeResponsePayload<'a, S: serde::Serialize> {
+    Ok(&'a S),
     ErrCodeOnly(ResponseError),
-    ErrObjectOnly(&'a dyn DynSerialize),
-    Err(ResponseError, &'a dyn DynSerialize),
+    ErrObjectOnly(&'a S),
+    Err(ResponseError, &'a S),
 }
 
 impl ResponseError {
@@ -102,8 +100,23 @@ impl From<ResponseError> for u8 {
 }
 
 // ========================================================== Codec ===|
+#[cfg(feature = "de-error-detail")]
+pub type DeserializeError = anyhow::Error;
+#[cfg(not(feature = "de-error-detail"))]
+pub struct DeserializeError;
 
-pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
+#[cfg(not(feature = "de-error-detail"))]
+impl<T: std::error::Error> From<T> for DeserializeError {
+    fn from(_: T) -> Self {
+        DeserializeError
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+#[error("Decoding payload is not supported for codec {0}")]
+pub struct DecodePayloadUnsupportedError(pub &'static str);
+
+pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
     /// Returns the hash value of this codec. If two codec instances return same hash, their
     /// notification result can be safely reused over multiple message transfer. If notification
     /// encoding is stateful(e.g. contextually encrypted), this method should return `None`.
@@ -115,10 +128,10 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
         None
     }
 
-    fn encode_notify(
+    fn encode_notify<S: serde::Serialize>(
         &self,
         method: &str,
-        params: &dyn DynSerialize,
+        params: &S,
         buf: &mut BytesMut,
     ) -> Result<(), EncodeError> {
         let _ = (method, params, buf);
@@ -129,11 +142,11 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
     /// integer value, which is used to match the returned response with the request that was
     /// sent. Underlying implementation can encode this `request_id` in any manner or type, as
     /// long as it can be decoded back to the original value.
-    fn encode_request(
+    fn encode_request<S: serde::Serialize>(
         &self,
         request_id: RequestId,
         method: &str,
-        params: &dyn DynSerialize,
+        params: &S,
         buf: &mut BytesMut,
     ) -> Result<(), EncodeError> {
         let _ = (request_id, method, params, buf);
@@ -149,10 +162,10 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
     /// received request, we don't know how the request id was encoded as it may not be originated
     /// from this crate's implementation. Therefore, we need to send back the original bytes of
     /// received request id as-is.
-    fn encode_response(
+    fn encode_response<S: serde::Serialize>(
         &self,
         request_id_raw: &[u8],
-        result: EncodeResponsePayload,
+        result: EncodeResponsePayload<S>,
         buf: &mut BytesMut,
     ) -> Result<(), EncodeError> {
         let _ = (request_id_raw, result, buf);
@@ -160,17 +173,10 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
     }
 
     /// Create deserializer from the payload part of the original message.
-    fn deserialize_payload<'de>(
+    fn payload_deserializer<'de>(
         &self,
         payload: &'de [u8],
-        visitor: &mut dyn FnMut(&mut dyn DynDeserializer<'de>) -> Result<(), erased_serde::Error>,
-    ) -> Result<(), erased_serde::Error> {
-        let _ = (payload, visitor);
-        let type_name = std::any::type_name::<Self>();
-        Err(serde::ser::Error::custom(format!(
-            "Codec <{type_name}> does not support argument deserialization"
-        )))
-    }
+    ) -> Result<impl serde::Deserializer<'de>, DecodePayloadUnsupportedError>;
 
     /// Given frame of the raw bytes, decode it into a message.
     ///
@@ -228,49 +234,10 @@ pub enum InboundFrameType {
 
 // ==== Codec ====
 
-impl<T> Codec for std::sync::Arc<T>
-where
-    T: std::fmt::Debug + 'static + Send + Sync + Codec,
-{
-    fn encode_notify(
-        &self,
-        method: &str,
-        params: &dyn DynSerialize,
-        buf: &mut BytesMut,
-    ) -> Result<(), EncodeError> {
-        (**self).encode_notify(method, params, buf)
-    }
-
-    fn encode_request(
-        &self,
-        request_id: RequestId,
-        method: &str,
-        params: &dyn DynSerialize,
-        buf: &mut BytesMut,
-    ) -> Result<(), EncodeError> {
-        (**self).encode_request(request_id, method, params, buf)
-    }
-
-    fn encode_response(
-        &self,
-        request_id_raw: &[u8],
-        result: EncodeResponsePayload,
-        buf: &mut BytesMut,
-    ) -> Result<(), EncodeError> {
-        (**self).encode_response(request_id_raw, result, buf)
-    }
-
-    fn deserialize_payload<'de>(
-        &self,
-        payload: &'de [u8],
-        visitor: &mut dyn FnMut(&mut dyn DynDeserializer<'de>) -> Result<(), erased_serde::Error>,
-    ) -> Result<(), erased_serde::Error> {
-        (**self).deserialize_payload(payload, visitor)
-    }
-}
-
 pub mod error {
     use thiserror::Error;
+
+    use super::DeserializeError;
 
     #[derive(Debug, Error)]
     pub enum EncodeError {
@@ -287,7 +254,7 @@ pub mod error {
         NonUtf8StringRequestId,
 
         #[error("Serialize failed: {0}")]
-        SerializeFailed(#[from] erased_serde::Error),
+        SerializeFailed(#[from] DeserializeError),
     }
 
     #[derive(Debug, Error)]
@@ -306,52 +273,50 @@ pub mod error {
         NonUtf8Input,
 
         #[error("Parse failed: {0}")]
-        ParseFailed(#[from] erased_serde::Error),
+        ParseFailed(#[from] DeserializeError),
     }
 }
 
 // ========================================================== ParseMessage ===|
 
 /// A generic trait to parse a message into concrete type.
-pub trait ParseMessage {
+pub trait ParseMessage<C: Codec> {
     /// Returns a pair of codec and payload bytes.
     #[doc(hidden)]
-    fn codec_payload_pair(&self) -> (&dyn Codec, &[u8]);
+    fn codec_payload_pair(&self) -> (&C, &[u8]);
 
     /// This function parses the message into the specified destination.
     ///
     /// Note: This function is not exposed in the public API, mirroring the context of
     /// [`Deserialize::deserialize_in_place`].
     #[doc(hidden)]
-    fn parse_in_place<'de, R>(&'de self, dst: &mut R) -> Result<(), erased_serde::Error>
+    fn parse_in_place<'de, R>(&'de self, dst: &mut R) -> Result<(), DeserializeError>
     where
         R: Deserialize<'de>,
     {
         let (codec, buf) = self.codec_payload_pair();
-        codec.deserialize_payload(buf.as_ref(), &mut |de| {
-            R::deserialize_in_place(de, dst)?;
-            Ok(())
-        })
+
+        R::deserialize_in_place(codec.payload_deserializer(buf.as_ref())?, dst)
+            .map_err(err_to_de_error)
     }
 
-    fn parse<'de, R>(&'de self) -> Result<R, erased_serde::Error>
+    fn parse<'de, R>(&'de self) -> Result<R, DeserializeError>
     where
         R: Deserialize<'de>,
     {
         let (codec, buf) = self.codec_payload_pair();
-        let mut mem = None;
 
-        codec.deserialize_payload(buf.as_ref(), &mut |de| {
-            mem = Some(R::deserialize(de)?);
-            Ok(())
-        })?;
+        R::deserialize(codec.payload_deserializer(buf.as_ref())?).map_err(err_to_de_error)
+    }
+}
 
-        if let Some(data) = mem {
-            Ok(data)
-        } else {
-            Err(serde::de::Error::custom(
-                "Codec logic error: No data deserialized",
-            ))
-        }
+fn err_to_de_error(e: impl std::error::Error) -> DeserializeError {
+    #[cfg(feature = "de-error-detail")]
+    {
+        anyhow::anyhow!("{}", e)
+    }
+    #[cfg(not(feature = "de-error-detail"))]
+    {
+        DeserializeError
     }
 }
