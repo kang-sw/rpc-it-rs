@@ -289,6 +289,10 @@ impl crate::Codec for Codec {
             fn as_deserializer(&mut self) -> impl serde::Deserializer<'de> {
                 self
             }
+
+            fn is_human_readable(&self) -> bool {
+                true
+            }
         }
 
         Ok(serde_json::Deserializer::from_slice(payload))

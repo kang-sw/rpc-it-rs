@@ -70,7 +70,7 @@ pub(crate) enum DeferredDirective {
 
 /// A message that was encoded but not yet sent to client.
 #[derive(Debug)]
-pub struct EncodedMessage<C> {
+pub struct PreparedNoti<C> {
     _c: PhantomData<C>,
     data: Bytes,
     hash: Option<NonZeroUsize>,
@@ -251,12 +251,12 @@ impl<U, C> Clone for WeakNotifySender<U, C> {
     }
 }
 
-impl<C> Clone for EncodedMessage<C> {
+impl<C> Clone for PreparedNoti<C> {
     fn clone(&self) -> Self {
         Self {
             _c: PhantomData,
+            hash: self.hash,
             data: self.data.clone(),
-            hash: self.hash.clone(),
         }
     }
 }
@@ -376,9 +376,9 @@ impl<U, C> Clone for WeakRequestSender<U, C> {
 
 // ========================================================== Broadcast ===|
 
-pub enum NotifyMessageBurst<C> {
-    Mono(EncodedMessage<C>),
-    Burst(Vec<EncodedMessage<C>>),
+pub enum NotiBurstOps<C> {
+    Mono(PreparedNoti<C>),
+    Burst(Vec<PreparedNoti<C>>),
 }
 
 impl<U, C> NotifySender<U, C>
@@ -392,12 +392,12 @@ where
         buf: &mut BytesMut,
         method: &str,
         params: &S,
-    ) -> Result<EncodedMessage<C>, EncodeError> {
+    ) -> Result<PreparedNoti<C>, EncodeError> {
         todo!()
     }
 
     ///
-    pub fn burst(&self) -> Result<NotifyMessageBurst<C>, EncodeError> {
+    pub fn burst(&self, burst: impl Into<NotiBurstOps<C>>) -> Result<NotiBurstOps<C>, EncodeError> {
         todo!()
     }
 }
