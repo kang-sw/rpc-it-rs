@@ -1,23 +1,19 @@
 #![cfg(feature = "in-memory-io")]
 
 use futures::task::{Spawn, SpawnExt};
-use rpc_it::{io::InMemoryRx, rpc::Config, Codec};
+use rpc_it::{io::InMemoryRx, rpc::Config};
 
 #[derive(Clone, Debug)]
 pub struct ConnectionConfig {
     pub client_tx_queue_cap: usize,
-    pub client_rx_queue_cap: usize,
     pub server_tx_queue_cap: usize,
-    pub server_rx_queue_cap: usize,
 }
 
 impl Default for ConnectionConfig {
     fn default() -> Self {
         Self {
             client_tx_queue_cap: 1,
-            client_rx_queue_cap: 1,
             server_tx_queue_cap: 1,
-            server_rx_queue_cap: 1,
         }
     }
 }
@@ -56,7 +52,6 @@ pub fn create_rpc_pair<RS: Config, RC: Config>(
             .with_frame_writer(tx_client)
             .with_frame_reader(rx_client)
             .with_user_data(client_user_data)
-            .with_inbound_queue_capacity(cfg.client_rx_queue_cap)
             .with_outbound_queue_capacity(cfg.client_tx_queue_cap)
             .build_client();
 
@@ -80,7 +75,6 @@ pub fn create_rpc_pair<RS: Config, RC: Config>(
             .with_frame_writer(tx_server)
             .with_frame_reader(rx_server)
             .with_user_data(server_user_data)
-            .with_inbound_queue_capacity(cfg.server_rx_queue_cap)
             .with_outbound_queue_capacity(cfg.server_tx_queue_cap)
             .build_server(false);
 

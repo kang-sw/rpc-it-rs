@@ -157,14 +157,14 @@ impl<R: Config, Rx> Drop for Receiver<R, Rx> {
 }
 
 mod rx_inner {
-    use std::sync::Arc;
+    use std::{ops::Range, str::Utf8Error, sync::Arc};
 
     use bytes::Bytes;
 
     use crate::{
         codec::error::DecodeError,
         defs::{NonZeroRangeType, RangeType},
-        rpc::{core::RpcCore, make_response, ErrorResponse, InboundDelivery},
+        rpc::{core::RpcCore, make_response, ErrorResponse, InboundInner},
         Codec, Config, Inbound, Response,
     };
 
@@ -181,6 +181,9 @@ mod rx_inner {
 
         #[error("Unexpected response error")]
         UnhandledResponse(Result<Response<C>, ErrorResponse<C>>),
+
+        #[error("non-utf8 method name")]
+        NonUtf8MethodName(Utf8Error, Bytes, Range<usize>),
     }
 
     // ==== Impls ====
@@ -195,24 +198,19 @@ mod rx_inner {
         };
 
         use crate::codec::InboundFrameType as IFT;
-        match frame_type {
+        let inbound = match frame_type {
             IFT::Request {
                 req_id_raw: std::ops::Range { start, end },
                 method,
                 params,
-            } => {
-                let ib = InboundDelivery::new_request(
-                    ib,
-                    method.into(),
-                    params.into(),
-                    NonZeroRangeType::new(start, end.try_into().unwrap()),
-                );
-
-                Ok(Some(Inbound::new(core.clone(), ib)))
-            }
+            } => InboundInner::new_request(
+                ib,
+                method.into(),
+                params.into(),
+                NonZeroRangeType::new(start, end.try_into().unwrap()),
+            ),
             IFT::Notify { method, params } => {
-                let ib = InboundDelivery::new_notify(ib, method.into(), params.into());
-                Ok(Some(Inbound::new(core.clone(), ib)))
+                InboundInner::new_notify(ib, method.into(), params.into())
             }
             IFT::Response {
                 req_id,
@@ -238,16 +236,26 @@ mod rx_inner {
                 };
 
                 // For request handling; We don't need to return inbound message.
-                Ok(None)
+                return Ok(None);
             }
+        };
+
+        if let Err(e) = std::str::from_utf8(inbound.method_bytes()) {
+            return Err(Error::NonUtf8MethodName(
+                e,
+                inbound.buffer,
+                inbound.method.range(),
+            ));
         }
+
+        Ok(Some(Inbound::new(core.clone(), inbound)))
     }
 }
 
 // ========================================================== Inbound Delivery ===|
 
-impl InboundDelivery {
-    pub(crate) fn new_request(
+impl InboundInner {
+    fn new_request(
         buffer: Bytes,
         method: RangeType,
         payload: RangeType,
@@ -261,7 +269,7 @@ impl InboundDelivery {
         }
     }
 
-    pub(crate) fn new_notify(buffer: Bytes, method: RangeType, payload: RangeType) -> Self {
+    fn new_notify(buffer: Bytes, method: RangeType, payload: RangeType) -> Self {
         Self {
             buffer,
             method,
@@ -287,12 +295,12 @@ fn req_id_to_inner(range: Option<NonZeroRangeType>) -> LongSizeType {
 /// A inbound message that was received from remote. It is either a notification or a request.
 pub struct Inbound<R: Config> {
     owner: Arc<RpcCore<R>>,
-    inner: InboundDelivery,
+    inner: InboundInner,
 }
 
 /// An inbound message delivered from the background receiver.
 #[derive(Default)]
-pub(crate) struct InboundDelivery {
+pub(crate) struct InboundInner {
     buffer: Bytes,
     method: RangeType,
     payload: RangeType,
@@ -307,7 +315,7 @@ pub struct ResponsePayload<T: serde::Serialize>(Result<T, (ResponseError, Option
 // ==== impl:Inbound ====
 
 impl<R: Config> Inbound<R> {
-    pub(super) fn new(owner: Arc<RpcCore<R>>, inner: InboundDelivery) -> Self {
+    pub(super) fn new(owner: Arc<RpcCore<R>>, inner: InboundInner) -> Self {
         Self { owner, inner }
     }
 
@@ -332,7 +340,7 @@ impl<R: Config> Inbound<R> {
         let req_id = self.atomic_take_req_range();
         Inbound {
             owner: self.owner.clone(),
-            inner: InboundDelivery {
+            inner: InboundInner {
                 buffer: take(&mut self.inner.buffer),
                 method: take(&mut self.inner.method),
                 payload: take(&mut self.inner.payload),
@@ -353,7 +361,7 @@ impl<R: Config> Inbound<R> {
     pub fn clone_message(&self, take_request: bool) -> Inbound<R> {
         Inbound {
             owner: self.owner.clone(),
-            inner: InboundDelivery {
+            inner: InboundInner {
                 buffer: self.inner.buffer.clone(),
                 method: self.inner.method,
                 payload: self.inner.payload,
@@ -391,13 +399,9 @@ impl<R: Config> Inbound<R> {
         self.inner.req_id != 0
     }
 
-    /// A shorthand for unwrapping result [`Inbound::parse_method`].
-    ///
-    /// # Panics
-    ///
-    /// Panics if method name is not a valid UTF-8 string.
+    /// Retrieves method name
     pub fn method(&self) -> &str {
-        let bytes = &self.inner.buffer[self.inner.method.range()];
+        let bytes = self.inner.method_bytes();
 
         // If it's not UTF-8 string, it's crate logic error.
         debug_assert!(std::str::from_utf8(bytes).is_ok());
@@ -558,7 +562,7 @@ impl<R: Config> Inbound<R> {
     // - Maybe implemented via request id table mapping ..?
 }
 
-impl InboundDelivery {
+impl InboundInner {
     pub(crate) fn method_bytes(&self) -> &[u8] {
         &self.buffer[self.method.range()]
     }

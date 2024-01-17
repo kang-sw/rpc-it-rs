@@ -3,36 +3,30 @@
 //! This is highest level API that the user interact with very-first.
 
 use std::{
-    borrow::Cow,
-    future::poll_fn,
     marker::PhantomData,
     num::NonZeroUsize,
     sync::{Arc, Weak},
-    task::Poll,
 };
 
 use bytes::Bytes;
-use futures::{task::AtomicWaker, AsyncWrite, AsyncWriteExt, Future, FutureExt};
+use futures::{task::AtomicWaker, AsyncWrite, AsyncWriteExt, Future};
 
 use crate::{
-    codec::{Codec, InboundFrameType},
-    defs::{NonZeroRangeType, RangeType},
     error::WriteRunnerResult,
     io::{AsyncFrameRead, AsyncFrameWrite},
-    Inbound, NotifySender,
+    NotifySender,
 };
 
 use super::{
     error::{ReadRunnerExitType, WriteRunnerError, WriteRunnerExitType},
     req_rep::RequestContext,
-    Config, InboundDelivery, Receiver, RequestSender, WriterDirective,
+    Config, Receiver, RequestSender, WriterDirective,
 };
 
 ///
-pub struct Builder<R: Config, Wr, Rd, U, C, RH> {
+pub struct Builder<R: Config, Wr, Rd, U, C> {
     writer: Wr,
     reader: Rd,
-    read_event_handler: RH,
     user_data: U,
     codec: C,
     cfg: InitConfig,
@@ -61,9 +55,6 @@ struct ReceiverContext {
 struct InitConfig {
     /// Channel capacity for deferred directive queue.
     writer_channel_capacity: Option<NonZeroUsize>,
-
-    /// Maximum queued inbound count.
-    inbound_queue_capacity: Option<NonZeroUsize>,
 }
 
 // ========================================================== RpcContext ===|
@@ -98,11 +89,10 @@ impl<R: Config> std::fmt::Debug for RpcCore<R> {
 
 // ========================================================== Builder ===|
 
-pub fn builder<R: Config>() -> Builder<R, (), (), (), (), ()> {
+pub fn builder<R: Config>() -> Builder<R, (), (), (), ()> {
     Builder {
         writer: (),
         reader: (),
-        read_event_handler: (),
         user_data: (),
         codec: (),
         cfg: InitConfig::default(),
@@ -110,10 +100,10 @@ pub fn builder<R: Config>() -> Builder<R, (), (), (), (), ()> {
     }
 }
 
-impl<R: Config, Wr, Rd, U, C, RH> Builder<R, Wr, Rd, U, C, RH> {
+impl<R: Config, Wr, Rd, U, C> Builder<R, Wr, Rd, U, C> {
     // TODO: Add documentation for these methods.
 
-    pub fn with_frame_writer<Wr2>(self, writer: Wr2) -> Builder<R, Wr2, Rd, U, C, RH>
+    pub fn with_frame_writer<Wr2>(self, writer: Wr2) -> Builder<R, Wr2, Rd, U, C>
     where
         Wr2: AsyncFrameWrite,
     {
@@ -123,12 +113,11 @@ impl<R: Config, Wr, Rd, U, C, RH> Builder<R, Wr, Rd, U, C, RH> {
             user_data: self.user_data,
             codec: self.codec,
             cfg: self.cfg,
-            read_event_handler: self.read_event_handler,
             __: PhantomData,
         }
     }
 
-    pub fn with_stream_writer<Wr2>(self, writer: Wr2) -> Builder<R, Wr2, Rd, U, C, RH>
+    pub fn with_stream_writer<Wr2>(self, writer: Wr2) -> Builder<R, Wr2, Rd, U, C>
     where
         Wr2: AsyncWrite,
     {
@@ -162,12 +151,12 @@ impl<R: Config, Wr, Rd, U, C, RH> Builder<R, Wr, Rd, U, C, RH> {
             user_data: self.user_data,
             codec: self.codec,
             cfg: self.cfg,
-            read_event_handler: self.read_event_handler,
+
             __: PhantomData,
         }
     }
 
-    pub fn with_frame_reader<Rd2>(self, reader: Rd2) -> Builder<R, Wr, Rd2, U, C, RH>
+    pub fn with_frame_reader<Rd2>(self, reader: Rd2) -> Builder<R, Wr, Rd2, U, C>
     where
         Rd2: AsyncFrameRead,
     {
@@ -177,31 +166,31 @@ impl<R: Config, Wr, Rd, U, C, RH> Builder<R, Wr, Rd, U, C, RH> {
             user_data: self.user_data,
             codec: self.codec,
             cfg: self.cfg,
-            read_event_handler: self.read_event_handler,
+
             __: PhantomData,
         }
     }
 
-    pub fn with_user_data(self, user_data: R::UserData) -> Builder<R, Wr, Rd, R::UserData, C, RH> {
+    pub fn with_user_data(self, user_data: R::UserData) -> Builder<R, Wr, Rd, R::UserData, C> {
         Builder {
             writer: self.writer,
             reader: self.reader,
             user_data,
             codec: self.codec,
             cfg: self.cfg,
-            read_event_handler: self.read_event_handler,
+
             __: PhantomData,
         }
     }
 
-    pub fn with_codec<C2>(self, codec: C2) -> Builder<R, Wr, Rd, U, C2, RH> {
+    pub fn with_codec<C2>(self, codec: C2) -> Builder<R, Wr, Rd, U, C2> {
         Builder {
             codec,
             writer: self.writer,
             reader: self.reader,
             user_data: self.user_data,
             cfg: self.cfg,
-            read_event_handler: self.read_event_handler,
+
             __: PhantomData,
         }
     }
@@ -210,34 +199,8 @@ impl<R: Config, Wr, Rd, U, C, RH> Builder<R, Wr, Rd, U, C, RH> {
         Builder {
             cfg: InitConfig {
                 writer_channel_capacity: capacity.try_into().ok(),
-                ..self.cfg
             },
             ..self
-        }
-    }
-
-    pub fn with_inbound_queue_capacity(self, capacity: impl TryInto<NonZeroUsize>) -> Self {
-        Builder {
-            cfg: InitConfig {
-                inbound_queue_capacity: capacity.try_into().ok(),
-                ..self.cfg
-            },
-            ..self
-        }
-    }
-
-    pub fn with_read_event_handler<RH2>(
-        self,
-        read_event_handler: RH2,
-    ) -> Builder<R, Wr, Rd, U, C, RH2> {
-        Builder {
-            writer: self.writer,
-            reader: self.reader,
-            user_data: self.user_data,
-            codec: self.codec,
-            cfg: self.cfg,
-            read_event_handler,
-            __: PhantomData,
         }
     }
 }
@@ -248,7 +211,7 @@ macro_rules! must_use_message {
     };
 }
 
-impl<R: Config, Wr, Rd, RH> Builder<R, Wr, Rd, R::UserData, R::Codec, RH>
+impl<R: Config, Wr, Rd> Builder<R, Wr, Rd, R::UserData, R::Codec>
 where
     Wr: AsyncFrameWrite,
     Rd: AsyncFrameRead,
@@ -312,7 +275,7 @@ where
     }
 }
 
-impl<R: Config, Wr, Rd, RH> Builder<R, Wr, Rd, R::UserData, R::Codec, RH>
+impl<R: Config, Wr, Rd> Builder<R, Wr, Rd, R::UserData, R::Codec>
 where
     Rd: AsyncFrameRead,
 {
@@ -321,10 +284,8 @@ where
     pub fn build_read_only(self) -> Receiver<R, Rd> {
         let Self {
             reader,
-            read_event_handler,
             user_data,
             codec,
-            cfg,
             ..
         } = self;
 
@@ -340,7 +301,7 @@ where
     }
 }
 
-impl<R: Config, Wr, Rd, RH> Builder<R, Wr, Rd, R::UserData, R::Codec, RH>
+impl<R: Config, Wr, Rd> Builder<R, Wr, Rd, R::UserData, R::Codec>
 where
     Wr: AsyncFrameWrite,
 {
@@ -387,16 +348,6 @@ impl InitConfig {
         mpsc::Receiver<WriterDirective>,
     ) {
         self.writer_channel_capacity
-            .map_or_else(mpsc::unbounded, |x| mpsc::bounded(x.get()))
-    }
-
-    fn make_inbound_channel(
-        &self,
-    ) -> (
-        mpsc::Sender<InboundDelivery>,
-        mpsc::Receiver<InboundDelivery>,
-    ) {
-        self.inbound_queue_capacity
             .map_or_else(mpsc::unbounded, |x| mpsc::bounded(x.get()))
     }
 }

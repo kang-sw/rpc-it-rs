@@ -324,10 +324,6 @@ impl<C: Codec> RequestContext<C> {
         }
     }
 
-    pub fn is_expired(&self) -> bool {
-        self.expired.load(Ordering::Relaxed)
-    }
-
     /// Called by deferred runner, when the request is canceled due to write error
     pub fn invalidate_request(&self, id: RequestId) {
         let table = self.pending_tasks.read();
