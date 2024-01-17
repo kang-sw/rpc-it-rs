@@ -264,6 +264,9 @@ pub mod error {
 
         #[error("This codec is not reusable")]
         NotReusable,
+
+        #[error("Request ID allocation retries exhausted")]
+        RequestIdAllocationFailed,
     }
 
     #[derive(Debug, Error)]

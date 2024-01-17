@@ -38,8 +38,7 @@ pub struct WeakRequestSender<R: Config> {
 /// An awaitable response for a sent RPC request
 pub struct ReceiveResponse<'a, R: Config> {
     pub(super) owner: Cow<'a, RequestSender<R>>,
-    pub(super) req_id: RequestId,
-    pub(super) state: req_rep::ReceiveResponseState,
+    pub(super) state: Option<req_rep::ReceiveResponseState>,
 }
 
 /// A message to be sent to the background dedicated writer task.
@@ -294,19 +293,33 @@ impl<R: Config> RequestSender<R> {
         buf.clear();
 
         let reqs = self.reqs();
-        let request_id = reqs.allocate_new_request()?;
-        let encode_result = self.codec().encode_request(request_id, method, params, buf);
+        const MAX_RETRY_HEURISTIC: usize = 4;
 
-        if let Err(err) = encode_result {
-            self.reqs().cancel_request_alloc(request_id);
-            return Some(Err(err));
+        for _ in 0..MAX_RETRY_HEURISTIC {
+            let candidate_request_id = RequestId::generate();
+            let actual_request_id =
+                match self
+                    .codec()
+                    .encode_request(candidate_request_id, method, params, buf)
+                {
+                    Ok(x) => x,
+                    Err(e) => return Some(Err(e)),
+                };
+
+            let Some(wait_obj) = reqs.try_allocate_new_request(actual_request_id) else {
+                crate::cold_path(); // This should unlikely happen.
+                continue;
+            };
+
+            return Some(Ok(ReceiveResponse {
+                owner: Cow::Borrowed(self),
+                state: Some(wait_obj),
+            }));
         }
 
-        Some(Ok(ReceiveResponse {
-            owner: Cow::Borrowed(self),
-            req_id: request_id,
-            state: Default::default(),
-        }))
+        // If you could reach here, you'd better to go buy a lottery ticket.
+        crate::cold_path();
+        Some(Err(EncodeError::RequestIdAllocationFailed))
     }
 
     pub fn downgrade(&self) -> WeakRequestSender<R> {

@@ -88,6 +88,12 @@ pub mod defs {
         /// maximum value(2^32-1).
         pub struct RequestId(NonZeroU64)
     }
+
+    impl RequestId {
+        pub(crate) fn generate() -> Self {
+            Self(rand::random::<NonZeroU64>())
+        }
+    }
 }
 
 #[cfg(feature = "proc-macro")]
