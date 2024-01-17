@@ -119,7 +119,7 @@ where
     }
 
     pub fn codec(&self) -> &C {
-        self.context.codec()
+        &self.context.codec
     }
 
     /// Receive an inbound message from remote.
@@ -252,7 +252,7 @@ where
     }
 
     pub fn codec(&self) -> &C {
-        self.owner.codec()
+        &self.owner.codec
     }
 
     /// Creates a new notify channel from this inbound message. It is not guaranteed that the writer
@@ -452,7 +452,7 @@ where
             Err((errc, None)) => R::<T>::ErrCodeOnly(*errc),
         };
 
-        Some(self.owner.codec().encode_response(req_id, encoded, buf))
+        Some(self.owner.codec.encode_response(req_id, encoded, buf))
     }
 
     /// Drops the request without sending any response. This function is used to override the
@@ -501,7 +501,7 @@ where
     C: Codec,
 {
     fn codec_payload_pair(&self) -> (&C, &[u8]) {
-        (self.owner.codec(), self.payload_bytes())
+        (&self.owner.codec, self.payload_bytes())
     }
 }
 

@@ -38,8 +38,8 @@ pub struct Builder<Wr, Rd, U, C, RH> {
 }
 
 pub(super) struct RpcCore<U, C> {
+    pub(super) codec: C,
     user_data: U,
-    codec: C,
     reqs: Option<RequestContext<C>>,
     send_ctx: Option<SenderContext>,
     recv_ctx: Option<ReceiverContext>,
@@ -67,10 +67,6 @@ struct InitConfig {
 // ========================================================== RpcContext ===|
 
 impl<U, C> RpcCore<U, C> {
-    pub fn codec(&self) -> &C {
-        &self.codec
-    }
-
     pub fn user_data(&self) -> &U {
         &self.user_data
     }

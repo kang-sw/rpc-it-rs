@@ -254,6 +254,9 @@ pub mod error {
 
         #[error("Serialize failed: {0}")]
         SerializeFailed(#[from] DeserializeError),
+
+        #[error("This codec is not reusable")]
+        NotReusable,
     }
 
     #[derive(Debug, Error)]

@@ -1,7 +1,6 @@
 use std::{marker::PhantomData, num::NonZeroUsize};
 
 use bytes::Bytes;
-use erased_serde::Serialize;
 
 use super::*;
 
@@ -68,14 +67,6 @@ pub(crate) enum DeferredDirective {
     WriteReqMsg(Bytes, RequestId),
 }
 
-/// A message that was encoded but not yet sent to client.
-#[derive(Debug)]
-pub struct PreparedNoti<C> {
-    _c: PhantomData<C>,
-    data: Bytes,
-    hash: Option<NonZeroUsize>,
-}
-
 // ==== Debug Trait Impls ====
 
 /// Implements notification methods for [`NotifySender`].
@@ -106,7 +97,7 @@ impl<U: UserData, C: Codec> NotifySender<U, C> {
         params: &T,
     ) -> Result<(), SendMsgError> {
         buf.clear();
-        self.context.codec().encode_notify(method, params, buf)?;
+        self.context.codec.encode_notify(method, params, buf)?;
         self.send_frame(DeferredDirective::WriteMsg(buf.split().freeze()))
             .await?;
 
@@ -120,7 +111,7 @@ impl<U: UserData, C: Codec> NotifySender<U, C> {
         params: &T,
     ) -> Result<(), TrySendMsgError> {
         buf.clear();
-        self.context.codec().encode_notify(method, params, buf)?;
+        self.context.codec.encode_notify(method, params, buf)?;
         self.try_send_frame(DeferredDirective::WriteMsg(buf.split().freeze()))?;
 
         Ok(())
@@ -149,7 +140,7 @@ impl<U: UserData, C: Codec> NotifySender<U, C> {
     }
 
     pub fn codec(&self) -> &C {
-        self.context.codec()
+        &self.context.codec
     }
 
     /// Upgrade this handle to request handle. Fails if request feature was not enabled at first.
@@ -247,16 +238,6 @@ impl<U, C> Clone for WeakNotifySender<U, C> {
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
-        }
-    }
-}
-
-impl<C> Clone for PreparedNoti<C> {
-    fn clone(&self) -> Self {
-        Self {
-            _c: PhantomData,
-            hash: self.hash,
-            data: self.data.clone(),
         }
     }
 }
@@ -376,28 +357,169 @@ impl<U, C> Clone for WeakRequestSender<U, C> {
 
 // ========================================================== Broadcast ===|
 
-pub enum NotiBurstOps<C> {
-    Mono(PreparedNoti<C>),
-    Burst(Vec<PreparedNoti<C>>),
+/// A message that was encoded but not yet sent to client.
+#[derive(Debug)]
+pub struct PreparedPacket<C> {
+    _c: PhantomData<C>,
+    data: Bytes,
+    hash: NonZeroUsize,
 }
+
+pub enum PacketWriteBurst<C> {
+    ErrHashMismatch,
+    Empty,
+    Mono(PreparedPacket<C>),
+    Burst(NonZeroUsize, Vec<Bytes>),
+}
+
+// ==== PreparedPacket ====
+
+impl<C> PreparedPacket<C>
+where
+    C: Codec,
+{
+    pub(super) fn from_bytes(data: Bytes, codec: &C) -> Option<Self> {
+        Self {
+            _c: PhantomData,
+            data,
+            hash: (codec.codec_hash_ptr() as usize).try_into().ok()?,
+        }
+        .into()
+    }
+}
+
+impl<C> Clone for PreparedPacket<C> {
+    fn clone(&self) -> Self {
+        Self {
+            _c: PhantomData,
+            hash: self.hash,
+            data: self.data.clone(),
+        }
+    }
+}
+
+// ==== Burst API ====
 
 impl<U, C> NotifySender<U, C>
 where
     U: UserData,
     C: Codec,
 {
-    /// Prepare pre-encoded notification message.
-    pub fn prepare<S: Serialize>(
+    /// Prepare pre-encoded notification message. Request can't be prepared as there's no concept of
+    /// broadcast or reuse in request.
+    pub fn prepare<S: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
         method: &str,
         params: &S,
-    ) -> Result<PreparedNoti<C>, EncodeError> {
-        todo!()
+    ) -> Result<PreparedPacket<C>, EncodeError> {
+        buf.clear();
+
+        let hash: NonZeroUsize = (self.context.codec.codec_hash_ptr() as usize)
+            .try_into()
+            .map_err(|_| EncodeError::NotReusable)?;
+
+        self.context.codec.encode_notify(method, params, buf)?;
+
+        Ok(PreparedPacket {
+            _c: PhantomData,
+            data: buf.split().freeze(),
+            hash,
+        })
     }
 
     ///
-    pub fn burst(&self, burst: impl Into<NotiBurstOps<C>>) -> Result<NotiBurstOps<C>, EncodeError> {
-        todo!()
+    pub async fn burst(
+        &self,
+        burst: impl Into<PacketWriteBurst<C>>,
+    ) -> Result<usize, SendMsgError> {
+        let Some((count, msg)) = self.burst_into_directive(burst.into())? else {
+            return Ok(0);
+        };
+
+        self.send_frame(msg).await.map(|_| count)
+    }
+
+    pub fn try_burst(
+        &self,
+        burst: impl Into<PacketWriteBurst<C>>,
+    ) -> Result<usize, TrySendMsgError> {
+        let Some((count, msg)) = self.burst_into_directive(burst.into())? else {
+            return Ok(0);
+        };
+
+        self.try_send_frame(msg).map(|_| count)
+    }
+
+    /// Returns
+    /// - `Ok(None)` if the burst is empty
+    /// - `Ok(Some(_))` if the burst can be sent
+    /// - `Err(())` if burst codec hash mismatches
+    fn burst_into_directive(
+        &self,
+        burst: PacketWriteBurst<C>,
+    ) -> Result<Option<(usize, DeferredDirective)>, EncodeError> {
+        let codec_hash = self.context.codec.codec_hash_ptr() as usize;
+
+        match burst {
+            PacketWriteBurst::Empty => Ok(None),
+            PacketWriteBurst::ErrHashMismatch => Err(EncodeError::NotReusable),
+            PacketWriteBurst::Mono(pkt) => {
+                if pkt.hash.get() == codec_hash {
+                    Ok(Some((1, DeferredDirective::WriteMsg(pkt.data))))
+                } else {
+                    Err(EncodeError::NotReusable)
+                }
+            }
+            PacketWriteBurst::Burst(hsah, chunks) => {
+                if hsah.get() == codec_hash {
+                    Ok(Some((
+                        chunks.len(),
+                        DeferredDirective::WriteMsgBurst(chunks),
+                    )))
+                } else {
+                    Err(EncodeError::NotReusable)
+                }
+            }
+        }
+    }
+}
+
+impl<C: Codec> From<PreparedPacket<C>> for PacketWriteBurst<C> {
+    fn from(value: PreparedPacket<C>) -> Self {
+        Self::Mono(value)
+    }
+}
+
+impl<C: Codec, T: IntoIterator<Item = PreparedPacket<C>>> From<T> for PacketWriteBurst<C> {
+    fn from(value: T) -> Self {
+        let mut iter = value.into_iter();
+
+        let Some(one) = iter.next() else {
+            return Self::Empty;
+        };
+
+        let codec_hash = one.hash;
+        let Some(two) = iter.next() else {
+            return Self::Mono(one);
+        };
+
+        if two.hash != codec_hash {
+            return Self::ErrHashMismatch;
+        }
+
+        let mut vec = Vec::with_capacity(iter.size_hint().0 + 2);
+        vec.push(one.data);
+        vec.push(two.data);
+
+        for elem in iter {
+            if elem.hash != codec_hash {
+                return Self::ErrHashMismatch;
+            }
+
+            vec.push(elem.data);
+        }
+
+        Self::Burst(codec_hash, vec)
     }
 }
