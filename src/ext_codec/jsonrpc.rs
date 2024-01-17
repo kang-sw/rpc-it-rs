@@ -8,7 +8,7 @@ use crate::{
     codec::{
         self,
         error::{DecodeError, EncodeError},
-        DeserializeError, EncodeResponsePayload, InboundFrameType,
+        AsDeserializer, DeserializeError, EncodeResponsePayload, InboundFrameType,
     },
     defs::{RequestId, SizeType},
     ResponseError,
@@ -281,10 +281,17 @@ impl crate::Codec for Codec {
     fn payload_deserializer<'de>(
         &'de self,
         payload: &'de [u8],
-    ) -> Result<impl serde::Deserializer<'de>, codec::DecodePayloadUnsupportedError> {
-        Ok(DeserializeWrapper(serde_json::Deserializer::from_slice(
-            payload,
-        )))
+    ) -> Result<impl AsDeserializer<'de>, codec::DecodePayloadUnsupportedError> {
+        impl<'de, R> AsDeserializer<'de> for serde_json::Deserializer<R>
+        where
+            R: serde_json::de::Read<'de>,
+        {
+            fn as_deserializer(&mut self) -> impl serde::Deserializer<'de> {
+                self
+            }
+        }
+
+        Ok(serde_json::Deserializer::from_slice(payload))
     }
 }
 
@@ -307,117 +314,4 @@ fn req_id_from_str(s: &str) -> Result<RequestId, DecodeError> {
             .try_into()
             .map_err(|_| DecodeError::RequestIdRetrievalFailed)?,
     ))
-}
-
-struct DeserializeWrapper<T>(serde_json::Deserializer<T>);
-
-macro_rules! inherit {
-    ($($name:ident),*) => {
-        $(
-            fn $name<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
-            where
-                V: serde::de::Visitor<'de>,
-            {
-                (&mut self.0).$name(visitor)
-            }
-        )*
-    };
-}
-
-impl<'de, T> serde::Deserializer<'de> for DeserializeWrapper<T>
-where
-    T: serde_json::de::Read<'de>,
-{
-    type Error = serde_json::Error;
-
-    inherit!(
-        deserialize_any,
-        deserialize_bool,
-        deserialize_i8,
-        deserialize_i16,
-        deserialize_i32,
-        deserialize_i64,
-        deserialize_u8,
-        deserialize_u16,
-        deserialize_u32,
-        deserialize_u64,
-        deserialize_f32,
-        deserialize_f64,
-        deserialize_char,
-        deserialize_str,
-        deserialize_string,
-        deserialize_bytes,
-        deserialize_byte_buf,
-        deserialize_option,
-        deserialize_unit,
-        deserialize_seq,
-        deserialize_map,
-        deserialize_identifier,
-        deserialize_ignored_any
-    );
-
-    fn deserialize_unit_struct<V>(
-        self,
-        name: &'static str,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        (&mut { self.0 }).deserialize_unit_struct(name, visitor)
-    }
-
-    fn deserialize_newtype_struct<V>(
-        self,
-        name: &'static str,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        (&mut { self.0 }).deserialize_newtype_struct(name, visitor)
-    }
-
-    fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        (&mut { self.0 }).deserialize_tuple(len, visitor)
-    }
-
-    fn deserialize_tuple_struct<V>(
-        self,
-        name: &'static str,
-        len: usize,
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        (&mut { self.0 }).deserialize_tuple_struct(name, len, visitor)
-    }
-
-    fn deserialize_struct<V>(
-        self,
-        name: &'static str,
-        fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        (&mut { self.0 }).deserialize_struct(name, fields, visitor)
-    }
-
-    fn deserialize_enum<V>(
-        self,
-        name: &'static str,
-        variants: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: serde::de::Visitor<'de>,
-    {
-        (&mut { self.0 }).deserialize_enum(name, variants, visitor)
-    }
 }
