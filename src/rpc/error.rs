@@ -65,6 +65,36 @@ pub enum TrySendResponseError {
     InboundNotRequest,
 }
 
+// ========================================================== TryRecvResponseError ===|
+
+#[derive(Error, Debug)]
+pub enum TryRecvResponseError<C: Codec> {
+    #[error("A receive channel was closed. No more message to consume!")]
+    Closed,
+
+    #[error("No message available")]
+    Empty,
+
+    #[error("Remote peer respond with an error")]
+    Response(ErrorResponse<C>),
+}
+
+impl<C: Codec> TryRecvResponseError<C> {
+    pub fn into_response(self) -> Option<ErrorResponse<C>> {
+        match self {
+            Self::Response(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    pub fn as_response(&self) -> Option<&ErrorResponse<C>> {
+        match self {
+            Self::Response(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 // ==== Utils for deferred ====
 
 pub(crate) fn convert_deferred_write_err(e: TrySendError<WriterDirective>) -> TrySendMsgError {

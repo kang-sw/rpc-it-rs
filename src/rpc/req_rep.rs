@@ -1,3 +1,4 @@
+use core::panic;
 use std::{
     borrow::Cow,
     future::Future,
@@ -11,16 +12,17 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures::task::AtomicWaker;
+use futures::{future::FusedFuture, task::AtomicWaker};
 use hashbrown::HashMap;
 use parking_lot::Mutex;
+use thiserror::Error;
 
 use crate::{
     codec::{Codec, ParseMessage, ResponseError},
     defs::RequestId,
 };
 
-use super::{error::ErrorResponse, Config, ReceiveResponse};
+use super::{error::ErrorResponse, Config, ReceiveResponse, TryRecvResponseError};
 
 /// Response message from RPC server.
 #[derive(Debug)]
@@ -54,13 +56,14 @@ enum ResponseData {
     None,
     Ready(Bytes, Option<ResponseError>),
     Closed,
-    Unreachable,
+    Retrieved,
 }
 
 // ========================================================== ReceiveResponse ===|
 
 pub(super) struct ReceiveResponseState {
     request_id: RequestId,
+    wait_obj: Arc<PendingTask>,
 }
 
 impl ReceiveResponseState {
@@ -90,15 +93,50 @@ where
             - Expired: panic!
         */
 
-        todo!();
+        let context = this.owner.reqs();
+        if context.expired.load(Ordering::Acquire) {
+            return Poll::Ready(Err(None));
+        }
 
-        Poll::Pending
+        let Some(obj) = this.state.as_mut() else {
+            panic!("Polled after response is received")
+        };
+
+        // Don't let us miss the waker.
+        obj.wait_obj.waker.register(cx.waker());
+
+        // Try to get the response.
+        let mut data_lock = obj.wait_obj.response.lock();
+        let data_ref = &mut *data_lock;
+
+        match data_ref {
+            ResponseData::None => Poll::Pending,
+            x @ ResponseData::Ready(_, _) => {
+                let ResponseData::Ready(data, errc) = replace(x, ResponseData::Retrieved) else {
+                    unreachable!()
+                };
+
+                drop(data_lock);
+                this.try_unregister();
+
+                Poll::Ready(this.convert_result(data, errc).map_err(Some))
+            }
+            ResponseData::Closed => {
+                drop(data_lock);
+                this.try_unregister();
+
+                Poll::Ready(Err(None))
+            }
+            ResponseData::Retrieved => {
+                panic!("Polled after response is received")
+            }
+        }
     }
 }
 
-impl<'a, R: Config> Drop for ReceiveResponse<'a, R> {
-    fn drop(&mut self) {
-        todo!()
+impl<R: Config> FusedFuture for ReceiveResponse<'_, R> {
+    fn is_terminated(&self) -> bool {
+        self.state.is_none()
     }
 }
 
@@ -115,6 +153,45 @@ impl<'a, R: Config> ReceiveResponse<'a, R> {
 
     pub fn request_id(&self) -> RequestId {
         self.state.as_ref().unwrap().request_id
+    }
+
+    pub fn try_recv(&mut self) -> Result<Response<R::Codec>, TryRecvResponseError<R::Codec>> {
+        todo!()
+    }
+
+    fn convert_result(
+        &self,
+        payload: Bytes,
+        errc: Option<ResponseError>,
+    ) -> Result<Response<R::Codec>, ErrorResponse<R::Codec>> {
+        let codec = self.owner.codec().clone();
+
+        if let Some(errc) = errc {
+            Err(ErrorResponse {
+                codec,
+                payload,
+                errc,
+            })
+        } else {
+            Ok(Response { codec, payload })
+        }
+    }
+
+    fn try_unregister(&mut self) {
+        if let Some(obj) = self.state.take() {
+            // prevent redundant wakeups
+            obj.wait_obj.waker.take();
+
+            // unregister
+            let context = self.owner.reqs();
+            context.free_request_id(obj.request_id);
+        }
+    }
+}
+
+impl<R: Config> Drop for ReceiveResponse<'_, R> {
+    fn drop(&mut self) {
+        self.try_unregister()
     }
 }
 
@@ -184,7 +261,7 @@ impl<C: Codec> RequestContext<C> {
     /// # Panics
     ///
     /// Panics if the request ID is not found from the registry
-    pub(super) fn cancel_request_alloc(&self, id: ReceiveResponseState) {
+    pub(super) fn free_request_id(&self, id: RequestId) {
         todo!()
     }
 
