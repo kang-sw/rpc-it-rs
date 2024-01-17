@@ -661,7 +661,7 @@ impl DataModel {
         let tok_enum_title = { quote!(#vis_this enum #ident_this) };
 
         let tok_enum_variants = if generate_targets.is_empty() {
-            quote!(__EmptyVariant(::std::marker::PhantomData<U>))
+            quote!(__EmptyVariant(::std::marker::PhantomData<R>))
         } else {
             let tokens = generate_targets.iter().map(
                 |GenDesc {

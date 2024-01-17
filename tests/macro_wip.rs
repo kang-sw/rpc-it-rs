@@ -24,6 +24,22 @@ pub(crate) mod prods {
         qux,
     ];
 
+    #[no_default_route]
+    const OtherRoute2: Route = [
+        /// This is a comment
+        mono_ser_de_param = AliasName {
+            routes: ["a", "b", "c"],
+        },
+        /// This is a comment 2222
+        eoo {
+            routes: ["a", "b", "c", "D"],
+        },
+        /// This is a comment 33333
+        baz = OtherAlias,
+        /// This is a comment 4444
+        qux,
+    ];
+
     /// ASD; dsagd gfsa
     /// dsf asdg
     ///
