@@ -206,6 +206,9 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
         scratch: &mut BytesMut,
         frame: &mut Bytes,
     ) -> Result<InboundFrameType, DecodeError>;
+
+    /// Restore the request ID from given bytes array.
+    fn restore_request_id(&self, raw_id: &[u8]) -> Result<RequestId, DecodeError>;
 }
 
 /// Describes the inbound frame chunk.
@@ -376,6 +379,8 @@ mod dynamic {
             scratch: &mut BytesMut,
             frame: &mut Bytes,
         ) -> Result<super::InboundFrameType, super::DecodeError>;
+
+        fn restore_request_id(&self, raw_id: &[u8]) -> Result<RequestId, super::DecodeError>;
     }
 
     impl Codec for Arc<dyn DynCodec> {
@@ -446,6 +451,10 @@ mod dynamic {
             frame: &mut Bytes,
         ) -> Result<super::InboundFrameType, super::DecodeError> {
             <dyn DynCodec>::decode_inbound(self.as_ref(), scratch, frame)
+        }
+
+        fn restore_request_id(&self, raw_id: &[u8]) -> Result<RequestId, super::DecodeError> {
+            <dyn DynCodec>::restore_request_id(self.as_ref(), raw_id)
         }
     }
 
@@ -565,6 +574,10 @@ mod dynamic {
             frame: &mut Bytes,
         ) -> Result<super::InboundFrameType, super::DecodeError> {
             <Self as Codec>::decode_inbound(self, scratch, frame)
+        }
+
+        fn restore_request_id(&self, raw_id: &[u8]) -> Result<RequestId, super::DecodeError> {
+            <Self as Codec>::restore_request_id(self, raw_id)
         }
     }
 }

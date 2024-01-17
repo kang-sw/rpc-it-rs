@@ -300,6 +300,10 @@ impl crate::Codec for Codec {
 
         Ok(serde_json::Deserializer::from_slice(payload))
     }
+
+    fn restore_request_id(&self, raw_id: &[u8]) -> Result<RequestId, DecodeError> {
+        req_id_from_str(std::str::from_utf8(raw_id).map_err(|_| DecodeError::NonUtf8Input)?)
+    }
 }
 
 fn errc_to_error(errc: i64) -> ResponseError {
