@@ -132,6 +132,36 @@ mod type_util;
 ///   // If serialization type and deserialization type is different, you can specify it by
 ///   // double underscore and angle brackets, like specifying two parameters on generic type `__`
 ///   fn from_to(s: __<i32, u64>, b: __<&'_ str, String>) -> __<i32, String> ;
+///
+///   // After defining all methods, you can define server-side router by defining `Route` const
+///   // item. `ALL` and `ALL_PASCAL_CASE` generates router for every method within this namespace,
+///   // `ALL` will use method name as variant identifier as-is, while `ALL_PASCAL_CASE` will
+///   // convert method name to `PascalCase`.
+///   const MyRouterIdent: Route = ALL;
+///
+///   // You can also choose list of routed methods selectively:
+///   const MySelectiveRoute: Route = [
+///     /// (Documentation comment is allowed)
+///     ///
+///     /// A identifier to rpc method must be specified here.
+///     method_example,
+///
+///     /// By opening braces next to method identifier, you can specify additional route
+///     /// specs for this method.
+///     from_to {
+///         routes = ["aaabbb", "from_to2"],
+///     },
+///
+///     /// You can route same method repeatedly, with different route config.
+///     /// (In practice, this is pointless)
+///     ///
+///     /// In following declaration, right side of the identifier is treated as new variant name.
+///     from_to = VariantName {
+///         no_default_route, // Prevents error from duplicated route
+///         routes = ["OtherRoute", "AAaaaH"]
+///     }
+///   ];
+///   
 /// }
 ///
 /// pub struct MyParam<'a> {
@@ -413,8 +443,9 @@ impl DataModel {
                 }
             }
 
-            fn setup_by_struct_expr(&mut self, expr: &syn::ExprStruct) {
+            fn setup_by_struct_expr(&mut self, expr: &syn::ExprStruct, no_default_route: bool) {
                 self.variant_ident = expr.path.get_ident().cloned();
+                self.no_default_route = no_default_route;
 
                 for field in &expr.fields {
                     let syn::Member::Named(mem) = &field.member else {
@@ -423,7 +454,6 @@ impl DataModel {
                     };
 
                     if mem == "no_default_route" {
-                        self.def.routes.clear();
                         self.no_default_route = true;
                     } else if mem == "routes" {
                         let syn::Expr::Array(syn::ExprArray { elems, .. }) = &field.expr else {
@@ -443,10 +473,31 @@ impl DataModel {
                         emit_error!(field, "Unknown field");
                     }
                 }
+
+                if self.no_default_route {
+                    self.def.routes.clear();
+                }
             }
         }
 
         let mut generate_targets = Vec::<GenDesc>::new();
+
+        // Parse const item attribute to get route name
+        let mut all_attrs = item.attrs;
+        let mut global_no_default_route = false;
+
+        all_attrs.retain(|x| {
+            match &x.meta {
+                Meta::Path(p) => {
+                    if p.is_ident("no_default_route") {
+                        global_no_default_route = true;
+                    }
+                }
+                _ => return true,
+            };
+
+            false
+        });
 
         // -- Retrieve method definitions to generate
 
@@ -513,7 +564,7 @@ impl DataModel {
                             let desc = generate_targets.last_mut().unwrap();
                             match &*right {
                                 syn::Expr::Struct(expr_struct) => {
-                                    desc.setup_by_struct_expr(expr_struct);
+                                    desc.setup_by_struct_expr(expr_struct, global_no_default_route);
                                 }
                                 syn::Expr::Path(path) => {
                                     desc.variant_ident =
@@ -539,7 +590,7 @@ impl DataModel {
                             }
 
                             let desc = generate_targets.last_mut().unwrap();
-                            desc.setup_by_struct_expr(&strt);
+                            desc.setup_by_struct_expr(&strt, global_no_default_route);
                         }
 
                         elem => {
@@ -603,6 +654,7 @@ impl DataModel {
             }
         */
 
+        // Generate enum definition for route
         let vis_this = type_util::elevate_vis_level(item.vis.clone(), vis_offset);
         let ident_this = &item.ident;
 
@@ -664,11 +716,12 @@ impl DataModel {
                     quote!(Notify)
                 };
 
-                let route_strs = Some(name)
+                let no_default_route = *no_default_route || global_no_default_route;
+                let route_strs = (!no_default_route)
+                    .then_some(name)
                     .into_iter()
                     .chain(routes.iter())
-                    .map(|x| quote!(#x))
-                    .take_while(|_| !*no_default_route);
+                    .map(|x| quote!(#x));
 
                 let is_last = index == generate_targets.len() - 1;
                 let clone_handler = (!is_last).then(|| quote!(.clone()));
@@ -728,7 +781,6 @@ impl DataModel {
             },
         );
 
-        let all_attrs = item.attrs;
         out.extend(quote!(
             #(#all_attrs)*
             #tok_enum_title<R: ___crate::Config> {
