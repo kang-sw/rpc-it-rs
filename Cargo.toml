@@ -26,8 +26,6 @@ futures = "0.3"
 assert = { version = "1.1.0", package = "static_assertions" }
 
 serde_json = { version = "1", optional = true, features = ["raw_value"] }
-itoa = { version = "1.0", optional = true }
-atoi = { version = "2.0", optional = true }
 
 crossbeam-queue = { version = "0.3", optional = true }
 anyhow = { version = "1.0.79", optional = true }
@@ -69,7 +67,7 @@ de-error-detail = ["dep:anyhow"]
 proc-macro = ["dep:rpc-it-macros"]
 
 # Add JSONRPC support to the library
-jsonrpc = ["dep:serde_json", "dep:itoa", "dep:atoi"]
+jsonrpc = ["dep:serde_json"]
 
 # Add msgpack-rpc support to the library
 msgpack-rpc = []

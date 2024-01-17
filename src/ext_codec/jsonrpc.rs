@@ -109,7 +109,9 @@ impl crate::Codec for Codec {
             jsonrpc: "2.0",
             method,
             params,
-            id: itoa::Buffer::new().format(request_id.value().get()),
+
+            // TODO: if performance matters, use stack allocated string buffer(e.g. `compact_str`).
+            id: &format!("{:x}", request_id.value()),
         }
         .serialize(&mut serde_json::Serializer::new(buf.writer()))
         .map_err(DeserializeError::from)?;
@@ -314,9 +316,8 @@ fn errc_to_error(errc: i64) -> ResponseError {
 
 fn req_id_from_str(s: &str) -> Result<RequestId, DecodeError> {
     Ok(RequestId::new(
-        <u64 as atoi::FromRadix16Checked>::from_radix_16_checked(s.as_bytes())
-            .0
-            .ok_or(DecodeError::RequestIdRetrievalFailed)?
+        u64::from_str_radix(s, 16)
+            .map_err(|_| DecodeError::RequestIdRetrievalFailed)?
             .try_into()
             .map_err(|_| DecodeError::RequestIdRetrievalFailed)?,
     ))
