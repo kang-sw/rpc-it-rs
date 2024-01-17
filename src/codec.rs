@@ -145,7 +145,7 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
     ///     }
     /// }
     /// ```
-    fn codec_hash_ptr(&self) -> *const () {
+    fn codec_type_hash_ptr(&self) -> *const () {
         std::ptr::null()
     }
 
@@ -392,7 +392,7 @@ mod dynamic {
             <dyn DynCodec>::dynamic_payload_deserializer(self.as_ref(), payload).map(Boxed::<'de>)
         }
 
-        fn codec_hash_ptr(&self) -> *const () {
+        fn codec_type_hash_ptr(&self) -> *const () {
             <dyn DynCodec>::codec_type_addr(self.as_ref())
         }
 
@@ -525,7 +525,7 @@ mod dynamic {
         }
 
         fn codec_type_addr(&self) -> *const () {
-            <Self as Codec>::codec_hash_ptr(self)
+            <Self as Codec>::codec_type_hash_ptr(self)
         }
 
         fn encode_notify(

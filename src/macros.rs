@@ -303,8 +303,10 @@ pub mod inbound {
     use bytes::BytesMut;
 
     use crate::{
-        codec::DeserializeError, error::ErrorResponse, Codec, Inbound, NotifySender, ParseMessage,
-        RequestSender, UserData,
+        codec::{error::EncodeError, DeserializeError},
+        error::ErrorResponse,
+        rpc::PreparedPacket,
+        Codec, Inbound, NotifySender, ParseMessage, RequestSender, UserData,
     };
 
     use super::{NotifyMethod, RequestMethod};
@@ -567,6 +569,17 @@ pub mod inbound {
             M: NotifyMethod,
         {
             self.try_notify(buf, M::METHOD_NAME, &p)
+        }
+
+        pub fn prepare<M>(
+            &self,
+            buf: &mut BytesMut,
+            (_, p): (M, M::ParamSend<'_>),
+        ) -> Result<PreparedPacket<C>, EncodeError>
+        where
+            M: NotifyMethod,
+        {
+            self.encode_notify(buf, M::METHOD_NAME, &p)
         }
     }
 

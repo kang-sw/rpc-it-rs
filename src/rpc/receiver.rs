@@ -23,6 +23,7 @@ use crate::{
 use super::{
     core::RpcCore,
     error::{SendMsgError, SendResponseError, TryRecvError, TrySendMsgError, TrySendResponseError},
+    PreparedPacket,
 };
 
 /// Handles error during receiving inbound messages inside runner.
@@ -471,6 +472,45 @@ where
         // Simply take the request range, and drop it.
         let _ = self.atomic_take_req_range();
     }
+
+    /// This function retrieves a reusable packet from the current inbound while maintaining its
+    /// request ID. Consequently, forwarding this request payload directly to another remote could
+    /// cause the original client to receive an `unhandled` error response from that remote.
+    ///
+    /// To properly forward a request to a remote server, with the intention of having the server's
+    /// responses directed back to the original client, it is advisable to encode the request
+    /// payload into a new packet before sending it to the remote server.
+    ///
+    /// > Note:
+    /// > - Consider exploring more efficient methods for re-routing forwarded requests. For
+    /// >   example, a possible approach could involve (1) retrieving the original request ID and
+    /// >   (2) mapping it onto the new packet.
+    ///
+    /// This function returns `None` if the codec in use does not support packet reusability.
+    ///
+    /// # Warning
+    ///
+    /// Employing this method is predicated on the assumption that a packet decodable on this end
+    /// will also be decodable by the remote side. However, this cannot be guaranteed as the remote
+    /// side might not use the same codec. Therefore, it is not advisable to use this method in
+    /// scenarios where the remote side is not under your control, due to the potential for
+    /// unexpected behavior or security risks.
+    pub fn clone_reusable_packet(&self) -> Option<PreparedPacket<C>> {
+        let Ok(hash) = (self.codec().codec_type_hash_ptr() as usize).try_into() else {
+            return None;
+        };
+
+        Some(PreparedPacket::new_unchecked(
+            self.inner.buffer.clone(),
+            hash,
+        ))
+    }
+
+    // TODO: fn forward_request(self, other: &RequestSender) -> ...
+    //
+    // - Tries to forward the request to the other remote.
+    // - If the request is already responded, it'll return error.
+    // - Maybe implemented via request id table mapping ..?
 }
 
 impl InboundDelivery {

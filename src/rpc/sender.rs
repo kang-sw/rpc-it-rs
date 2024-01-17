@@ -378,13 +378,12 @@ impl<C> PreparedPacket<C>
 where
     C: Codec,
 {
-    pub(super) fn from_bytes(data: Bytes, codec: &C) -> Option<Self> {
+    pub(super) fn new_unchecked(data: Bytes, hash: NonZeroUsize) -> Self {
         Self {
             _c: PhantomData,
             data,
-            hash: (codec.codec_hash_ptr() as usize).try_into().ok()?,
+            hash,
         }
-        .into()
     }
 }
 
@@ -407,7 +406,7 @@ where
 {
     /// Prepare pre-encoded notification message. Request can't be prepared as there's no concept of
     /// broadcast or reuse in request.
-    pub fn prepare<S: serde::Serialize>(
+    pub fn encode_notify<S: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
         method: &str,
@@ -415,7 +414,7 @@ where
     ) -> Result<PreparedPacket<C>, EncodeError> {
         buf.clear();
 
-        let hash: NonZeroUsize = (self.context.codec.codec_hash_ptr() as usize)
+        let hash: NonZeroUsize = (self.context.codec.codec_type_hash_ptr() as usize)
             .try_into()
             .map_err(|_| EncodeError::NotReusable)?;
 
@@ -459,7 +458,7 @@ where
         &self,
         burst: PacketWriteBurst<C>,
     ) -> Result<Option<(usize, DeferredDirective)>, EncodeError> {
-        let codec_hash = self.context.codec.codec_hash_ptr() as usize;
+        let codec_hash = self.context.codec.codec_type_hash_ptr() as usize;
 
         match burst {
             PacketWriteBurst::Empty => Ok(None),

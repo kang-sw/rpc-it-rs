@@ -61,7 +61,7 @@ mod errc {
 }
 
 impl crate::Codec for Codec {
-    fn codec_hash_ptr(&self) -> *const () {
+    fn codec_type_hash_ptr(&self) -> *const () {
         const ADDR: *const () = &();
         ADDR
     }
