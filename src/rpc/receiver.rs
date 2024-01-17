@@ -85,26 +85,17 @@ impl<R: Config> ReceiveErrorHandler<R> for () {}
 
 /// A receiver which deals with inbound notifies / requests.
 #[derive(Debug)]
-pub struct Receiver<R: Config> {
+pub struct Receiver<R: Config, Rx> {
     pub(super) context: Arc<RpcCore<R>>,
 
     /// Even if all receivers are dropped, the background task possibly retain if there's any
     /// present [`crate::RequestSender`] instance.
-    pub(super) channel: mpsc::Receiver<InboundDelivery>,
+    pub(super) read: Rx,
 }
 
 // ==== impl:Receiver ====
 
-impl<R: Config> Clone for Receiver<R> {
-    fn clone(&self) -> Self {
-        Self {
-            context: Arc::clone(&self.context),
-            channel: self.channel.clone(),
-        }
-    }
-}
-
-impl<R: Config> Receiver<R> {
+impl<R: Config, Rx> Receiver<R, Rx> {
     pub fn user_data(&self) -> &R::UserData {
         self.context.user_data()
     }
@@ -114,15 +105,8 @@ impl<R: Config> Receiver<R> {
     }
 
     /// Receive an inbound message from remote.
-    pub async fn recv(&self) -> Option<Inbound<'_, R>> {
-        self.channel
-            .recv()
-            .await
-            .map(|inner| Inbound {
-                owner: Cow::Borrowed(&self.context),
-                inner,
-            })
-            .ok()
+    pub async fn recv(&self) -> Option<Inbound<R>> {
+        todo!()
     }
 
     /// Creates a new notify channel from this receiver.
@@ -133,23 +117,8 @@ impl<R: Config> Receiver<R> {
     }
 
     /// Tries to receive an inbound message from remote.
-    pub async fn try_recv(&self) -> Result<Inbound<'_, R>, TryRecvError> {
-        self.channel
-            .try_recv()
-            .map(|inner| Inbound::new(Cow::Borrowed(&self.context), inner))
-            .map_err(|e| match e {
-                mpsc::TryRecvError::Empty => TryRecvError::Empty,
-                mpsc::TryRecvError::Closed => TryRecvError::Closed,
-            })
-    }
-
-    /// Change this channel into a stream. It'll return self-contained references of inbound. It'll
-    /// a bit more inefficient than calling `recv` since it clones single [`Arc`] for each inbound
-    /// message.
-    pub fn into_stream(self) -> impl futures::Stream<Item = Inbound<'static, R>> {
-        let Self { channel, context } = self;
-
-        channel.map(move |item| Inbound::new(Cow::Owned(context.clone()), item))
+    pub async fn try_recv(&self) -> Result<Inbound<R>, TryRecvError> {
+        todo!()
     }
 
     /// Closes inbound channel. Except for messages that were already pushed into the channel, no
@@ -159,7 +128,7 @@ impl<R: Config> Receiver<R> {
     ///
     /// To immediately close the background receiver task, all handles need to be dropped.
     pub fn close_inbound_channel(self) {
-        self.channel.close();
+        todo!()
     }
 }
 
@@ -204,8 +173,8 @@ fn req_id_to_inner(range: Option<NonZeroRangeType>) -> LongSizeType {
 // ========================================================== Inbound ===|
 
 /// A inbound message that was received from remote. It is either a notification or a request.
-pub struct Inbound<'a, R: Config> {
-    owner: Cow<'a, Arc<RpcCore<R>>>,
+pub struct Inbound<R: Config> {
+    owner: Arc<RpcCore<R>>,
     inner: InboundDelivery,
 }
 
@@ -225,8 +194,8 @@ pub struct ResponsePayload<T: serde::Serialize>(Result<T, (ResponseError, Option
 
 // ==== impl:Inbound ====
 
-impl<'a, R: Config> Inbound<'a, R> {
-    pub(super) fn new(owner: Cow<'a, Arc<RpcCore<R>>>, inner: InboundDelivery) -> Self {
+impl<R: Config> Inbound<R> {
+    pub(super) fn new(owner: Arc<RpcCore<R>>, inner: InboundDelivery) -> Self {
         Self { owner, inner }
     }
 
@@ -246,29 +215,11 @@ impl<'a, R: Config> Inbound<'a, R> {
         }
     }
 
-    /// Consumes this struct and returns an owned version of it.
-    ///
-    /// If what you only have is a reference to this struct, you can use [`Inbound::clone_notify`]
-    ///
-    /// ```
-    /// use rpc_it::Inbound;
-    ///
-    /// fn elevate_inbound<'a, R: rpc_it::Config>(ib: &mut Inbound<'a, R>) {
-    ///   let owned = ib.take().into_owned();
-    /// }
-    /// ```
-    pub fn into_owned(mut self) -> Inbound<'static, R> {
-        Inbound {
-            owner: Cow::Owned(Arc::clone(&self.owner)),
-            inner: take(&mut self.inner),
-        }
-    }
-
     /// Retrieves message out of the reference. Remaining reference will be invalidated.
-    pub fn take(&mut self) -> Inbound<'_, R> {
+    pub fn take(&mut self) -> Inbound<R> {
         let req_id = self.atomic_take_req_range();
         Inbound {
-            owner: Cow::Borrowed(&self.owner),
+            owner: self.owner.clone(),
             inner: InboundDelivery {
                 buffer: take(&mut self.inner.buffer),
                 method: take(&mut self.inner.method),
@@ -287,7 +238,7 @@ impl<'a, R: Config> Inbound<'a, R> {
     ///
     /// If `task_request` is true, it'll retrieve out the request ownership from the inbound
     /// message.
-    pub fn clone_message(&self, take_request: bool) -> Inbound<'a, R> {
+    pub fn clone_message(&self, take_request: bool) -> Inbound<R> {
         Inbound {
             owner: self.owner.clone(),
             inner: InboundDelivery {
@@ -352,7 +303,7 @@ impl<'a, R: Config> Inbound<'a, R> {
     /// ```no_run
     /// use rpc_it::{Inbound, ResponseError, BytesMut, Codec};
     ///
-    /// async fn response_examples<R: rpc_it::Config>(b: &mut BytesMut, ib: &mut Inbound<'_, R>) {
+    /// async fn response_examples<R: rpc_it::Config>(b: &mut BytesMut, ib: &mut Inbound< R>) {
     ///   // This returns plain ok response, with parameter "hello, world!"
     ///   ib.response(b, Ok("hello, world!"));
     ///
@@ -501,7 +452,7 @@ impl InboundDelivery {
     }
 }
 
-impl<'a, R: Config> Drop for Inbound<'a, R> {
+impl<R: Config> Drop for Inbound<R> {
     fn drop(&mut self) {
         // Sends 'unhandled' message to remote if it's still an unhandled request message until it's
         // being dropped. This is default behavior to prevent reducing remote side's request timeout
@@ -513,7 +464,7 @@ impl<'a, R: Config> Drop for Inbound<'a, R> {
     }
 }
 
-impl<'a, R: Config> ParseMessage<R::Codec> for Inbound<'a, R> {
+impl<R: Config> ParseMessage<R::Codec> for Inbound<R> {
     fn codec_payload_pair(&self) -> (&R::Codec, &[u8]) {
         (&self.owner.codec, self.payload_bytes())
     }

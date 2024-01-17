@@ -290,13 +290,8 @@ where
     pub fn build_server(
         self,
         enable_request: bool,
-    ) -> (
-        Receiver<R>,
-        impl Future<Output = ReadRunnerResult>,
-        impl Future<Output = WriteRunnerResult>,
-    ) {
+    ) -> (Receiver<R, Rd>, impl Future<Output = WriteRunnerResult>) {
         let (tx_w, rx_w) = self.cfg.make_write_channel();
-        let (tx_ib, rx_ib) = self.cfg.make_inbound_channel();
         let context = Arc::new(RpcCore {
             user_data: self.user_data,
             reqs: enable_request.then(|| RequestContext::new(self.codec.fork())),
@@ -309,14 +304,12 @@ where
 
         let w_context = Arc::downgrade(&context);
         let task_write = write_runner(self.writer, rx_w, w_context.clone());
-        let task_read = read_runner(self.reader, self.read_event_handler, Some(tx_ib), w_context);
 
         (
             Receiver {
                 context,
-                channel: rx_ib,
+                read: self.reader,
             },
-            task_read,
             task_write,
         )
     }
@@ -329,7 +322,7 @@ where
 {
     /// Creates read-only service. The receiver may never take any request.
     #[must_use = must_use_message!()]
-    pub fn build_read_only(self) -> (Receiver<R>, impl Future) {
+    pub fn build_read_only(self) -> Receiver<R, Rd> {
         let Self {
             reader,
             read_event_handler,
@@ -339,7 +332,6 @@ where
             ..
         } = self;
 
-        let (tx_ib, rx_ib) = cfg.make_inbound_channel();
         let context = Arc::new(RpcCore {
             user_data,
             codec,
@@ -348,20 +340,10 @@ where
             recv_ctx: Some(Default::default()),
         });
 
-        let task = read_runner(
-            reader,
-            read_event_handler,
-            Some(tx_ib),
-            Arc::downgrade(&context),
-        );
-
-        (
-            Receiver {
-                context,
-                channel: rx_ib,
-            },
-            task,
-        )
+        Receiver {
+            context,
+            read: reader,
+        }
     }
 }
 
@@ -568,7 +550,7 @@ where
 
                     handler.on_unhandled_notify_or_request(
                         &ctx.user_data,
-                        Inbound::new(Cow::Borrowed(&ctx), unhandled_delivery),
+                        Inbound::new(ctx.clone(), unhandled_delivery),
                     )?;
                 }
                 Ok(None) => break Ok(ReadRunnerExitType::AllHandleDropped),

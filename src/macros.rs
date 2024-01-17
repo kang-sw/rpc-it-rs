@@ -6,10 +6,8 @@ pub mod route {
     use crate::{codec::DeserializeError, rpc::Config, Inbound};
 
     /// A function which actually deals with inbound message.
-    pub type ExecFunc<R> = dyn for<'a> Fn(&mut Option<Inbound<'a, R>>) -> Result<(), ExecError>
-        + Send
-        + Sync
-        + 'static;
+    pub type ExecFunc<R> =
+        dyn Fn(&mut Option<Inbound<R>>) -> Result<(), ExecError> + Send + Sync + 'static;
 
     /// Error from execution function
     #[derive(Error, Debug)]
@@ -82,10 +80,7 @@ pub mod route {
 
         pub fn push_handler<F>(&mut self, func: F)
         where
-            F: for<'a> Fn(&mut Option<Inbound<'a, C>>) -> Result<(), ExecError>
-                + Send
-                + Sync
-                + 'static,
+            F: Fn(&mut Option<Inbound<C>>) -> Result<(), ExecError> + Send + Sync + 'static,
         {
             self.inner.funcs.push(Box::new(func));
         }
@@ -137,7 +132,7 @@ pub mod route {
         /// This function panics if the inbound message is [`None`].
         pub fn route(
             &self,
-            inbound_revoked_on_error: &mut Option<Inbound<'_, C>>,
+            inbound_revoked_on_error: &mut Option<Inbound<C>>,
         ) -> Result<(), ExecError> {
             let opt_inbound = inbound_revoked_on_error;
 
@@ -324,7 +319,7 @@ pub mod inbound {
         ///
         ///
         /// This field should never be exposed as mutable reference.
-        ib: Inbound<'static, R>,
+        ib: Inbound<R>,
     }
 
     struct F;
@@ -350,8 +345,8 @@ pub mod inbound {
         /// buffer of the inbound message.
         #[doc(hidden)]
         pub unsafe fn __internal_create(
-            msg: Inbound<'static, R>,
-        ) -> Result<Self, (Inbound<'static, R>, DeserializeError)> {
+            msg: Inbound<R>,
+        ) -> Result<Self, (Inbound<R>, DeserializeError)> {
             Ok(Self {
                 inner: CachedNotify::__internal_create(msg)?,
             })
@@ -401,8 +396,8 @@ pub mod inbound {
     {
         #[doc(hidden)]
         pub unsafe fn __internal_create(
-            msg: Inbound<'static, R>,
-        ) -> Result<Self, (Inbound<'static, R>, DeserializeError)> {
+            msg: Inbound<R>,
+        ) -> Result<Self, (Inbound<R>, DeserializeError)> {
             Ok(Self {
                 // SAFETY:
                 // * The borrowed lifetime `'de` is bound to the payload of the inbound message, not
@@ -412,7 +407,7 @@ pub mod inbound {
                 //   reference is valid, the buffer of the inbound message won't be dropped during
                 //   `v`'s lifetime.
                 v: unsafe {
-                    let msg_ptr = &msg as *const Inbound<'static, R>;
+                    let msg_ptr = &msg as *const Inbound<R>;
                     transmute(match (*msg_ptr).parse::<M::ParamRecv<'_>>() {
                         Ok(ok) => ok,
                         Err(err) => return Err((msg, err)),
@@ -434,7 +429,7 @@ pub mod inbound {
         R: Config,
         M: NotifyMethod,
     {
-        type Target = Inbound<'static, R>;
+        type Target = Inbound<R>;
 
         fn deref(&self) -> &Self::Target {
             &self.ib
