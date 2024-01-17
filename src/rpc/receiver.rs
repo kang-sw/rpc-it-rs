@@ -327,6 +327,12 @@ impl<R: Config> Inbound<R> {
         &self.owner.codec
     }
 
+    /// Gets request ID of this inbound message. As request ID can be taken from constant reference,
+    /// you only can get the request ID through mutable reference.
+    pub fn request_id(&mut self) -> Option<&[u8]> {
+        Self::to_req_range(self.inner.req_id).map(|x| self.retrieve_req_id(x))
+    }
+
     /// Creates a new notify channel from this inbound message. It is not guaranteed that the writer
     /// channel exist or not(i.e. handle may not be valid).
     pub fn create_sender_handle(&self) -> NotifySender<R> {
@@ -376,14 +382,20 @@ impl<R: Config> Inbound<R> {
 
     /// Retrieve request atomicly.
     fn atomic_take_req_range(&self) -> Option<NonZeroRangeType> {
-        // SAFETY: Just byte mucking
-        let [begin, end] = unsafe {
+        // SAFETY: For const reference ptr is guaranteed to be atomicly accessed, always.
+        let value = unsafe {
             let ptr = &self.inner.req_id as *const _ as *mut _;
             let atomic = AtomicLongSizeType::from_ptr(ptr);
-            let value = atomic.swap(0, std::sync::atomic::Ordering::Acquire);
+            atomic.swap(0, std::sync::atomic::Ordering::Acquire)
+        };
 
-            // The value was
-            transmute::<_, [SizeType; 2]>(value)
+        Self::to_req_range(value)
+    }
+
+    fn to_req_range(i: u64) -> Option<NonZeroRangeType> {
+        let [begin, end] = unsafe {
+            // SAFETY: Just byte mucking
+            transmute::<_, [SizeType; 2]>(i)
         };
 
         NonzeroSizeType::new(end).map(|x| NonZeroRangeType::new(begin, x))
