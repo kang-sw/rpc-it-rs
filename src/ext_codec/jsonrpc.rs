@@ -66,10 +66,6 @@ impl crate::Codec for Codec {
         ADDR
     }
 
-    fn fork(&self) -> Self {
-        Self
-    }
-
     fn encode_notify<S: Serialize>(
         &self,
         method: &str,

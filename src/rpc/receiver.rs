@@ -2,124 +2,66 @@ use std::{
     mem::{take, transmute},
     pin::Pin,
     sync::Arc,
+    task::Poll,
 };
 
 use bytes::{Bytes, BytesMut};
+use futures::FutureExt;
 
 use crate::{
-    codec::{
-        error::{DecodeError, EncodeError},
-        EncodeResponsePayload,
-    },
+    codec::{error::EncodeError, EncodeResponsePayload},
     defs::{
         AtomicLongSizeType, LongSizeType, NonZeroRangeType, NonzeroSizeType, RangeType, SizeType,
     },
-    error::ReadRunnerError,
     rpc::WriterDirective,
     AsyncFrameRead, Codec, NotifySender, ParseMessage, ResponseError,
 };
 
 use super::{
     core::RpcCore,
-    error::{SendMsgError, SendResponseError, TryRecvError, TrySendMsgError, TrySendResponseError},
+    error::{SendMsgError, SendResponseError, TrySendMsgError, TrySendResponseError},
     Config, PreparedPacket, ReadRunnerExitType,
 };
 
 pub use rx_inner::Error as ReceiveError;
-
-/// Handles error during receiving inbound messages inside runner.
-///
-/// By result of handled error, it can determine whether to continue receiving inbound(i.e. maintain
-/// the connection) or not.
-pub trait ReceiveErrorHandler<R: Config>: 'static + Send {
-    /// Error during decoding received inbound message.
-    fn on_inbound_decode_error(
-        &mut self,
-        user_data: &R::UserData,
-        codec: &R::Codec,
-        unparsed_frame: &[u8],
-        error_type: DecodeError,
-    ) -> Result<(), ReadRunnerError> {
-        let _ = (user_data, unparsed_frame, error_type, codec);
-        Ok(())
-    }
-
-    /// Called when response is received, when the request feature is not enabled, which is ideally
-    /// impossible to happen; You can treat this as remote protocol violation to disconnect the
-    /// remote peer, or just ignore it.
-    fn on_impossible_response_inbound(
-        &mut self,
-        user_data: &R::UserData,
-    ) -> Result<(), ReadRunnerError> {
-        let _ = user_data;
-        Ok(())
-    }
-
-    /// Called when the inbound message is not a valid UTF-8 string.
-    fn on_inbound_method_invalid_utf8(
-        &mut self,
-        user_data: &R::UserData,
-        method_bytes: &[u8],
-    ) -> Result<(), ReadRunnerError> {
-        let _ = (user_data, method_bytes);
-        Ok(())
-    }
-
-    /// When all receiver channels are dropped but since there are still [`crate::RequestSender`]
-    /// instances, the background receiver task is still able to handle inbound messages to deal
-    /// with responses from remote peer.
-    ///
-    /// This method is called when the background receiver task receives a inbound message other
-    /// than response, but there are no [`crate::Receiver`] instances to handle it.
-    fn on_unhandled_notify_or_request(
-        &mut self,
-        user_data: &R::UserData,
-        inbound: Inbound<R>,
-    ) -> Result<(), ReadRunnerError> {
-        let _ = (user_data, inbound);
-        Ok(())
-    }
-}
-
-/// Default implementation for any type of user data. It ignores every error.
-impl<R: Config> ReceiveErrorHandler<R> for () {}
 
 /// A receiver task that receives inbound messages from remote.
 ///
 ///
 #[derive(Debug)]
 pub struct Receiver<R: Config, Rx> {
-    core: Arc<RpcCore<R>>,
+    core: Option<Arc<RpcCore<R>>>,
 
     /// Even if all receivers are dropped, the background task possibly retain if there's any
     /// present [`crate::RequestSender`] instance.
     read: Rx,
-
-    /// Context for receiving inbound messages.
-    context: rx_inner::RecvContext,
 }
 
 // ==== impl:Receiver ====
 
 impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
-    pub(super) fn new(context: Arc<RpcCore<R>>, read: Rx) -> Self {
+    pub(super) fn new(core: Arc<RpcCore<R>>, read: Rx) -> Self {
         Self {
-            core: context,
+            core: Some(core),
             read,
-            context: Default::default(),
         }
     }
 
+    fn core(&self) -> &Arc<RpcCore<R>> {
+        // SAFETY: Core is always valid.
+        unsafe { self.core.as_ref().unwrap_unchecked() }
+    }
+
     pub fn user_data(&self) -> &R::UserData {
-        self.core.user_data()
+        self.core().user_data()
     }
 
     pub fn codec(&self) -> &R::Codec {
-        &self.core.codec
+        &self.core().codec
     }
 
     /// Receive an inbound message from remote.
-    pub async fn recv(&mut self) -> Result<Inbound<R>, ReceiveError> {
+    pub async fn recv(&mut self) -> Result<Inbound<R>, ReceiveError<R::Codec>> {
         // SAFETY: We won't move the memory within visible scope.
         let mut read = unsafe { Pin::new_unchecked(&mut self.read) };
 
@@ -129,9 +71,11 @@ impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
         loop {
             let inbound = read.as_mut().next().await?.ok_or(ReceiveError::Eof)?;
 
-            if let Some(rx) =
-                rx_inner::handle_inbound_once(&self.core, &mut self.context, inbound).await?
-            {
+            // SAFETY: Core is always valid unless we call `into_response_only_task`
+            let core = unsafe { self.core.as_ref().unwrap_unchecked() };
+            let task_rx = rx_inner::handle_inbound_once(core, inbound);
+
+            if let Some(rx) = task_rx.await? {
                 break Ok(rx);
             }
         }
@@ -144,7 +88,7 @@ impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
     /// If you need to send request, try upgrade returned handle to request sender.
     pub fn create_notify_sender(&self) -> crate::NotifySender<R> {
         crate::NotifySender {
-            context: Arc::clone(&self.core),
+            context: Arc::clone(self.core()),
         }
     }
 
@@ -154,11 +98,62 @@ impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
     /// be dropped on next message receive.
     ///
     /// To immediately close the background receiver task, all handles need to be dropped.
-    pub async fn into_response_only_task(self) -> Result<ReadRunnerExitType, ReceiveError> {
-        todo!()
+    pub async fn into_weak_runner_task(
+        mut self,
+        on_inbound: impl Fn(Result<Inbound<R>, ReceiveError<R::Codec>>),
+    ) -> std::io::Result<ReadRunnerExitType> {
+        // SAFETY: We won't move the memory within visible scope.
+        let mut read = unsafe { Pin::new_unchecked(&mut self.read) };
+        let wctx = Arc::downgrade(&self.core.take().unwrap());
+
+        let task_receive_loop = async {
+            loop {
+                let Some(inbound) = read.as_mut().next().await? else {
+                    return Ok(ReadRunnerExitType::Eof);
+                };
+
+                let Some(core) = wctx.upgrade() else {
+                    return Ok(ReadRunnerExitType::AllHandleDropped);
+                };
+
+                if let Some(ib) = rx_inner::handle_inbound_once(&core, inbound)
+                    .await
+                    .transpose()
+                {
+                    on_inbound(ib);
+                }
+            }
+        };
+
+        let task_signal_all_handle_dropped = std::future::poll_fn(|cx| {
+            let Some(context) = wctx.upgrade() else {
+                return Poll::Ready(());
+            };
+
+            context.register_wake_on_drop(cx.waker());
+            Poll::Pending
+        });
+
+        futures::select! {
+            result = task_receive_loop.fuse() => {
+                result
+            }
+            _ = task_signal_all_handle_dropped.fuse() => {
+                Ok(ReadRunnerExitType::AllHandleDropped)
+            }
+        }
     }
 
     // ==== Internals ====
+}
+
+impl<R: Config, Rx> Drop for Receiver<R, Rx> {
+    fn drop(&mut self) {
+        if let Some(reqs) = self.core.as_ref().and_then(|x| x.request_context()) {
+            // As receiver is being dropped, outbound request is no longer possible.
+            reqs.mark_expired();
+        }
+    }
 }
 
 mod rx_inner {
@@ -166,28 +161,86 @@ mod rx_inner {
 
     use bytes::Bytes;
 
-    use crate::{rpc::core::RpcCore, Config, Inbound};
-
-    #[derive(Debug, Default)]
-    pub(super) struct RecvContext {}
+    use crate::{
+        codec::error::DecodeError,
+        defs::{NonZeroRangeType, RangeType},
+        rpc::{core::RpcCore, make_response, ErrorResponse, InboundDelivery},
+        Codec, Config, Inbound, Response,
+    };
 
     #[derive(thiserror::Error, Debug)]
-    pub enum Error {
+    pub enum Error<C: Codec> {
         #[error("End of file")]
         Eof,
 
-        #[error("IO error from channel")]
+        #[error("IO error from channel. Channel highly likely to be closed. \n -- Error: {0}")]
         IoError(#[from] std::io::Error),
+
+        #[error("Failed to decode inbound")]
+        DecodeFailed(DecodeError, Bytes),
+
+        #[error("Unexpected response error")]
+        UnhandledResponse(Result<Response<C>, ErrorResponse<C>>),
     }
 
     // ==== Impls ====
 
     pub(super) async fn handle_inbound_once<R: Config>(
         core: &Arc<RpcCore<R>>,
-        ctx: &mut RecvContext,
         ib: Bytes,
-    ) -> Result<Option<Inbound<R>>, Error> {
-        todo!()
+    ) -> Result<Option<Inbound<R>>, Error<R::Codec>> {
+        let frame_type = match core.codec.decode_inbound(&ib[..]) {
+            Ok(x) => x,
+            Err(e) => return Err(Error::DecodeFailed(e, ib)),
+        };
+
+        use crate::codec::InboundFrameType as IFT;
+        match frame_type {
+            IFT::Request {
+                req_id_raw: std::ops::Range { start, end },
+                method,
+                params,
+            } => {
+                let ib = InboundDelivery::new_request(
+                    ib,
+                    method.into(),
+                    params.into(),
+                    NonZeroRangeType::new(start, end.try_into().unwrap()),
+                );
+
+                Ok(Some(Inbound::new(core.clone(), ib)))
+            }
+            IFT::Notify { method, params } => {
+                let ib = InboundDelivery::new_notify(ib, method.into(), params.into());
+                Ok(Some(Inbound::new(core.clone(), ib)))
+            }
+            IFT::Response {
+                req_id,
+                errc,
+                payload,
+            } => {
+                let payload = ib.slice(RangeType::from(payload).range());
+
+                let Some(reqs) = core.request_context() else {
+                    return Err(Error::UnhandledResponse(make_response(
+                        core.codec.clone(),
+                        payload,
+                        errc,
+                    )));
+                };
+
+                if let Err(payload) = reqs.set_response(req_id, payload, errc) {
+                    return Err(Error::UnhandledResponse(make_response(
+                        core.codec.clone(),
+                        payload,
+                        errc,
+                    )));
+                };
+
+                // For request handling; We don't need to return inbound message.
+                Ok(None)
+            }
+        }
     }
 }
 

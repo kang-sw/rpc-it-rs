@@ -1,7 +1,7 @@
 #![cfg(feature = "in-memory-io")]
 
 use futures::task::{Spawn, SpawnExt};
-use rpc_it::{io::InMemoryRx, rpc::Config, Codec, ReceiveErrorHandler};
+use rpc_it::{io::InMemoryRx, rpc::Config, Codec};
 
 #[derive(Clone, Debug)]
 pub struct ConnectionConfig {
@@ -32,8 +32,6 @@ pub fn create_default_rpc_pair<R: Config>(
         spawner,
         server_user_data,
         client_user_data,
-        (),
-        (),
         codec(),
         codec(),
         Default::default(),
@@ -45,8 +43,6 @@ pub fn create_rpc_pair<RS: Config, RC: Config>(
     spawner: &impl Spawn,
     server_user_data: RS::UserData,
     client_user_data: RC::UserData,
-    server_rh: impl ReceiveErrorHandler<RS>,
-    client_rh: impl ReceiveErrorHandler<RC>,
     server_codec: RS::Codec,
     client_codec: RC::Codec,
     cfg: ConnectionConfig,
@@ -62,7 +58,6 @@ pub fn create_rpc_pair<RS: Config, RC: Config>(
             .with_user_data(client_user_data)
             .with_inbound_queue_capacity(cfg.client_rx_queue_cap)
             .with_outbound_queue_capacity(cfg.client_tx_queue_cap)
-            .with_read_event_handler(client_rh)
             .build_client();
 
         spawner
@@ -87,7 +82,6 @@ pub fn create_rpc_pair<RS: Config, RC: Config>(
             .with_user_data(server_user_data)
             .with_inbound_queue_capacity(cfg.server_rx_queue_cap)
             .with_outbound_queue_capacity(cfg.server_tx_queue_cap)
-            .with_read_event_handler(server_rh)
             .build_server(false);
 
         spawner

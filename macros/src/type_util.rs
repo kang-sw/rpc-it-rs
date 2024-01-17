@@ -6,7 +6,6 @@ use syn::GenericArgument;
 use syn::PathSegment;
 use syn::Token;
 use syn::Type;
-use tap::Pipe;
 
 pub(crate) fn type_path_as_mono_seg(ty: &Type) -> Option<&syn::PathSegment> {
     match ty {
@@ -92,14 +91,13 @@ pub(crate) fn retr_ser_de_params(ty: &Type) -> Option<(Type, Type)> {
     // ---
 
     // Detect if type starts with `__<>`, which separates serialization/deserialization types.
-    let split_ser_de_type = ty
-        .pipe(|x| {
-            if let Type::Path(syn::TypePath { path, .. }) = x {
-                Some(path)
-            } else {
-                None
-            }
-        })
+    let type_path = if let Type::Path(syn::TypePath { path, .. }) = ty {
+        Some(path)
+    } else {
+        None
+    };
+
+    let split_ser_de_type = type_path
         .and_then(|x| x.segments.first().filter(|_| x.segments.len() == 1))
         .filter(|x| x.ident == "__")
         .and_then(|x| {

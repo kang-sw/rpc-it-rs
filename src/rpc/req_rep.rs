@@ -112,17 +112,7 @@ where
                 drop(lc_slot);
                 drop(lc_entry);
 
-                let codec = reqs.codec.fork();
-
-                return Poll::Ready(if let Some(errc) = errc {
-                    Err(Some(ErrorResponse {
-                        errc,
-                        codec,
-                        payload,
-                    }))
-                } else {
-                    Ok(Response { codec, payload })
-                });
+                return Poll::Ready(make_response(reqs.codec.clone(), payload, errc).map_err(Some));
             }
 
             ResponseData::Unreachable => panic!("Polled after ready"),
@@ -202,6 +192,22 @@ impl<C: Codec> ErrorResponse<C> {
 impl<C: Codec> ParseMessage<C> for ErrorResponse<C> {
     fn codec_payload_pair(&self) -> (&C, &[u8]) {
         (&self.codec, self.payload.as_ref())
+    }
+}
+
+pub(super) fn make_response<C: Codec>(
+    codec: C,
+    payload: Bytes,
+    errc: Option<ResponseError>,
+) -> Result<Response<C>, ErrorResponse<C>> {
+    if let Some(errc) = errc {
+        Err(ErrorResponse {
+            codec,
+            payload,
+            errc,
+        })
+    } else {
+        Ok(Response { codec, payload })
     }
 }
 
@@ -285,15 +291,20 @@ impl<C: Codec> RequestContext<C> {
     /// Sets the response for the request ID.
     ///
     /// Called from the background receive runner.
-    pub fn set_response(&self, id: RequestId, data: Bytes, errc: Option<ResponseError>) -> bool {
+    pub fn set_response(
+        &self,
+        id: RequestId,
+        payload: Bytes,
+        errc: Option<ResponseError>,
+    ) -> Result<(), Bytes> {
         let table = self.pending_tasks.read();
         let Some(mut slot) = table.get(&id).map(|x| x.lock()) else {
             // User canceled the request before the response was received.
-            return false;
+            return Err(payload);
         };
 
-        slot.set_then_wake(ResponseData::Ready(data, errc));
-        true
+        slot.set_then_wake(ResponseData::Ready(payload, errc));
+        Ok(())
     }
 
     /// Invalidate all pending requests. This is called when the connection is closed.

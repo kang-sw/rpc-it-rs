@@ -120,7 +120,7 @@ pub trait AsDeserializer<'de> {
     fn is_human_readable(&self) -> bool;
 }
 
-pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
+pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
     /// Returns the hash value of this codec. If two codec instances return same hash, their
     /// notification result can be safely reused over multiple message transfer. If notification
     /// encoding is stateful(e.g. contextually encrypted), this method should return `None`.
@@ -148,11 +148,6 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
     fn codec_type_hash_ptr(&self) -> *const () {
         std::ptr::null()
     }
-
-    /// Fork codec instance. This differs from cloning, where it creates a new instance of the
-    /// codec, which outputs the same result as the original codec, however, won't duplicate any
-    /// internal scratches for encoding/decoding.
-    fn fork(&self) -> Self;
 
     fn encode_notify<S: serde::Serialize>(
         &self,
@@ -439,10 +434,6 @@ mod dynamic {
             frame: &[u8],
         ) -> Result<super::InboundFrameType, super::DecodeError> {
             <dyn DynCodec>::decode_inbound(self.as_ref(), frame)
-        }
-
-        fn fork(&self) -> Self {
-            Arc::clone(self)
         }
     }
 

@@ -694,7 +694,7 @@ impl DataModel {
                             ___handler(
                                 #ident_this :: #ident (
                                     ___crate::cached:: #type_path ::__internal_create(
-                                        ___ib.into_owned(),
+                                        ___ib,
                                     ).map_err(|(___ib, ___err)| {
                                         *___inbound = Some(___ib);
                                         ___err

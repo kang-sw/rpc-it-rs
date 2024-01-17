@@ -17,15 +17,15 @@ use futures::{task::AtomicWaker, AsyncWrite, AsyncWriteExt, Future, FutureExt};
 use crate::{
     codec::{Codec, InboundFrameType},
     defs::{NonZeroRangeType, RangeType},
-    error::{ReadRunnerResult, WriteRunnerResult},
+    error::WriteRunnerResult,
     io::{AsyncFrameRead, AsyncFrameWrite},
     Inbound, NotifySender,
 };
 
 use super::{
-    error::{ReadRunnerError, ReadRunnerExitType, WriteRunnerError, WriteRunnerExitType},
+    error::{ReadRunnerExitType, WriteRunnerError, WriteRunnerExitType},
     req_rep::RequestContext,
-    Config, InboundDelivery, ReceiveErrorHandler, Receiver, RequestSender, WriterDirective,
+    Config, InboundDelivery, Receiver, RequestSender, WriterDirective,
 };
 
 ///
@@ -44,6 +44,7 @@ pub(super) struct RpcCore<R: Config> {
     user_data: R::UserData,
     reqs: Option<RequestContext<R::Codec>>,
     send_ctx: Option<SenderContext>,
+    r_wake_on_drop: AtomicWaker,
 }
 
 struct SenderContext {
@@ -78,6 +79,10 @@ impl<R: Config> RpcCore<R> {
 
     pub fn request_context(&self) -> Option<&RequestContext<R::Codec>> {
         self.reqs.as_ref()
+    }
+
+    pub(super) fn register_wake_on_drop(&self, waker: &std::task::Waker) {
+        self.r_wake_on_drop.register(waker);
     }
 }
 
@@ -247,7 +252,6 @@ impl<R: Config, Wr, Rd, RH> Builder<R, Wr, Rd, R::UserData, R::Codec, RH>
 where
     Wr: AsyncFrameWrite,
     Rd: AsyncFrameRead,
-    RH: ReceiveErrorHandler<R>,
 {
     /// Create a bidirectional RPC connection in client mode; which won't create inbound receiver
     /// channel, but spawns reader task to enable receiving responses.
@@ -256,22 +260,23 @@ where
         self,
     ) -> (
         RequestSender<R>,
-        impl Future<Output = ReadRunnerResult>,
+        impl Future<Output = std::io::Result<ReadRunnerExitType>>,
         impl Future<Output = WriteRunnerResult>,
     ) {
         let (tx_w, rx_w) = self.cfg.make_write_channel();
         let context = Arc::new(RpcCore {
             user_data: self.user_data,
-            reqs: Some(RequestContext::new(self.codec.fork())),
+            reqs: Some(RequestContext::new(self.codec.clone())),
             codec: self.codec,
             send_ctx: Some(SenderContext {
                 tx_deferred: tx_w.clone(),
             }),
+            r_wake_on_drop: Default::default(),
         });
 
         let w_context = Arc::downgrade(&context);
         let task_write = write_runner(self.writer, rx_w, w_context.clone());
-        let task_read = async move { todo!("receiver.into_response_only_task()") };
+        let task_read = Receiver::new(context.clone(), self.reader).into_weak_runner_task(drop);
 
         (
             RequestSender {
@@ -292,11 +297,12 @@ where
         let (tx_w, rx_w) = self.cfg.make_write_channel();
         let context = Arc::new(RpcCore {
             user_data: self.user_data,
-            reqs: enable_request.then(|| RequestContext::new(self.codec.fork())),
+            reqs: enable_request.then(|| RequestContext::new(self.codec.clone())),
             codec: self.codec,
             send_ctx: Some(SenderContext {
                 tx_deferred: tx_w.clone(),
             }),
+            r_wake_on_drop: Default::default(),
         });
 
         let w_context = Arc::downgrade(&context);
@@ -309,7 +315,6 @@ where
 impl<R: Config, Wr, Rd, RH> Builder<R, Wr, Rd, R::UserData, R::Codec, RH>
 where
     Rd: AsyncFrameRead,
-    RH: ReceiveErrorHandler<R>,
 {
     /// Creates read-only service. The receiver may never take any request.
     #[must_use = must_use_message!()]
@@ -328,6 +333,7 @@ where
             codec,
             reqs: None,
             send_ctx: None,
+            r_wake_on_drop: Default::default(),
         });
 
         Receiver::new(context, reader)
@@ -363,6 +369,7 @@ where
             send_ctx: Some(SenderContext {
                 tx_deferred: tx_directive.clone(),
             }),
+            r_wake_on_drop: Default::default(),
         });
 
         (
@@ -405,155 +412,6 @@ impl Drop for ReceiverContext {
 }
 
 // ========================================================== Runners ===|
-
-#[cfg(any())]
-async fn read_runner<Rd, RH, R>(
-    reader: Rd,
-    handler: RH,
-    tx_inbound: Option<mpsc::Sender<InboundDelivery>>,
-    wctx: Weak<RpcCore<R>>,
-) -> ReadRunnerResult
-where
-    Rd: AsyncFrameRead,
-    RH: ReceiveErrorHandler<R>,
-    R: Config,
-{
-    // - Already expired: This case is not an error!
-    // - `ReceiverContext` is missing: this is an error!
-    debug_assert!(wctx.upgrade().map(|x| x.recv_ctx.is_some()).unwrap_or(true));
-
-    // Two tasks:
-    // - Reads frames from the reader and decode it into inbound message
-    //   - During handling, when error occurs; it should be reported to the handler.
-    // - Awaits finish signal of rpc context.
-
-    let task_await_finish = poll_fn(|cx| {
-        let Some(context) = wctx.upgrade() else {
-            return Poll::Ready(());
-        };
-
-        context.unwrap_recv().drop_waker.register(cx.waker());
-        Poll::Pending
-    });
-
-    let task_read_loop = async {
-        let mut handler = handler;
-        let mut opt_tx_inbound = tx_inbound;
-        futures::pin_mut!(reader);
-
-        loop {
-            match reader.as_mut().next().await {
-                Ok(Some(bytes)) => {
-                    let Some(ctx) = wctx.upgrade() else {
-                        break Ok(ReadRunnerExitType::AllHandleDropped);
-                    };
-
-                    let ib = match ctx.codec.decode_inbound(&bytes) {
-                        Ok(ib) => ib,
-                        Err(e) => {
-                            handler.on_inbound_decode_error(
-                                &ctx.user_data,
-                                &ctx.codec,
-                                &bytes,
-                                e,
-                            )?;
-                            continue;
-                        }
-                    };
-
-                    let delivery = match ib {
-                        InboundFrameType::Request {
-                            req_id_raw,
-                            method,
-                            params,
-                        } => InboundDelivery::new_request(bytes, method.into(), params.into(), {
-                            NonZeroRangeType::new(
-                                req_id_raw.start,
-                                req_id_raw.end.try_into().unwrap(),
-                            )
-                        }),
-                        InboundFrameType::Notify { method, params } => {
-                            InboundDelivery::new_notify(bytes, method.into(), params.into())
-                        }
-                        InboundFrameType::Response {
-                            req_id,
-                            errc,
-                            payload,
-                        } => {
-                            let Some(reqs) = ctx.reqs.as_ref() else {
-                                handler.on_impossible_response_inbound(&ctx.user_data)?;
-                                continue;
-                            };
-
-                            let data = bytes.slice(RangeType::from(payload).range());
-                            if !reqs.set_response(req_id, data, errc) {
-                                // XXX: Do we need 'handler.on_BLAHBLAH'?
-                                // - Would forwarding request ID to user be meaningful?
-                                // - Would forwarding request payload to user be meaningful?
-                                // - Should the user know that the request was already expired?
-                            }
-
-                            continue;
-                        }
-                    };
-
-                    if std::str::from_utf8(delivery.method_bytes()).is_err() {
-                        // Method name *MUST* be valid UTF-8 string.
-                        //
-                        // XXX: Should we remove this constraint, allowing arbitrary bytes?
-                        handler.on_inbound_method_invalid_utf8(
-                            &ctx.user_data,
-                            delivery.method_bytes(),
-                        )?;
-                        continue;
-                    }
-
-                    let unhandled_delivery = if let Some(tx) = opt_tx_inbound.as_ref() {
-                        if let Err(delivery) = tx.send(delivery).await {
-                            // Here, all receiver handles were dropped.
-
-                            if ctx.reqs.as_ref().is_some_and(|x| !x.is_expired()) {
-                                // Still, we have to deal with response inbounds
-                                opt_tx_inbound = None;
-                                delivery.0
-                            } else {
-                                // Request feature is already disabled,
-                                break Ok(ReadRunnerExitType::AllHandleDropped);
-                            }
-                        } else {
-                            continue;
-                        }
-                    } else {
-                        // From the very next loop of `tx_inbound` drop, all inbound delivery will
-                        // be forwarded to user registered handler.
-                        delivery
-                    };
-
-                    handler.on_unhandled_notify_or_request(
-                        &ctx.user_data,
-                        Inbound::new(ctx.clone(), unhandled_delivery),
-                    )?;
-                }
-                Ok(None) => break Ok(ReadRunnerExitType::AllHandleDropped),
-                Err(io_error) => break Err(ReadRunnerError::from(io_error)),
-            }
-        }
-    };
-
-    let result = futures::select_biased! {
-        r = task_read_loop.fuse() => r,
-        _ = task_await_finish.fuse() => Ok(ReadRunnerExitType::AllHandleDropped),
-    };
-
-    if let Some(ctx) = wctx.upgrade().as_deref().and_then(|x| x.reqs.as_ref()) {
-        // The reader channel was expired, but seems there's still alive senders who can send
-        // request. Therefore, we have to explcitly mark that request feature is unavailable anymore
-        // as the receiver runner is being terminated.
-        ctx.mark_expired();
-    }
-
-    result
-}
 
 async fn write_runner<Wr, R>(
     writer: Wr,

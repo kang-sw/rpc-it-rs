@@ -104,9 +104,6 @@ pub struct ErrorResponse<C: Codec> {
 
 // ========================================================== Runner Enums ===|
 
-/// Result of the read runner
-pub type ReadRunnerResult = Result<ReadRunnerExitType, ReadRunnerError>;
-
 /// Result of the write runner
 pub type WriteRunnerResult = Result<WriteRunnerExitType, WriteRunnerError>;
 
@@ -139,15 +136,5 @@ pub enum WriteRunnerError {
 #[derive(Debug)]
 pub enum ReadRunnerExitType {
     AllHandleDropped,
-    EOF,
-}
-
-/// Describes what kind of error occurred during read runner execution.
-#[derive(Error, Debug)]
-pub enum ReadRunnerError {
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
-
-    #[error("User handler terminated this connection: {0}")]
-    UserHandlerError(#[from] Box<dyn std::error::Error + Send + Sync + 'static>),
+    Eof,
 }
