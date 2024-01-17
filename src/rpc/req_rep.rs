@@ -2,7 +2,8 @@ use std::{
     borrow::Cow,
     future::Future,
     mem::replace,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    num::NonZeroU64,
+    sync::atomic::{AtomicBool, Ordering},
     task::{Poll, Waker},
 };
 
@@ -29,11 +30,6 @@ pub struct Response<C> {
 pub(crate) struct RequestContext<C> {
     /// Codec of owning RPC connection.
     codec: C,
-
-    /// Request ID generator. Rotates every 2^32 requests.
-    ///
-    /// It naively expects that the request ID is not reused until 2^32 requests are made.
-    req_id_gen: AtomicU64,
 
     /// A set of pending requests that are waiting to be responded.        
     pending_tasks: RwLock<HashMap<RequestId, Mutex<PendingTask>>>,
@@ -217,7 +213,6 @@ impl<C: Codec> RequestContext<C> {
     pub(super) fn new(codec: C) -> Self {
         Self {
             codec,
-            req_id_gen: Default::default(),
             pending_tasks: Default::default(),
             expired: Default::default(),
         }
@@ -240,20 +235,8 @@ impl<C: Codec> RequestContext<C> {
         }
 
         loop {
-            let Ok(id) = self
-                .req_id_gen
-                .fetch_add(1, Ordering::Relaxed)
-                .wrapping_add(1)
-                .try_into()
-            else {
-                // It should be noted that this branch is rarely used; the rotation of IDs is not
-                // expected to occur frequently.
+            let id = RequestId::new(rand::random::<NonZeroU64>());
 
-                crate::cold_path();
-                continue;
-            };
-
-            let id = RequestId::new(id);
             let mut duplicated = false;
             table
                 .entry(id)
