@@ -555,11 +555,14 @@ impl<R: Config> Inbound<R> {
         ))
     }
 
-    // TODO: fn forward_request(self, other: &RequestSender) -> ...
+    // TODO: async fn forward_request(self, other: &RequestSender) -> ...
     //
     // - Tries to forward the request to the other remote.
     // - If the request is already responded, it'll return error.
     // - Maybe implemented via request id table mapping ..?
+    //
+    // IMPL => Forward to remote -> await -> receive response -> send response to source
+    //   - seems we need a way to register custom rpc id on mapping table.
 }
 
 impl InboundInner {

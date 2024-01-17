@@ -37,17 +37,8 @@ pub(super) struct RpcCore<R: Config> {
     pub(super) codec: R::Codec,
     user_data: R::UserData,
     reqs: Option<RequestContext<R::Codec>>,
-    send_ctx: Option<SenderContext>,
+    t_tx_deferred: Option<mpsc::Sender<WriterDirective>>,
     r_wake_on_drop: AtomicWaker,
-}
-
-struct SenderContext {
-    tx_deferred: mpsc::Sender<WriterDirective>,
-}
-
-#[derive(Default)]
-struct ReceiverContext {
-    drop_waker: AtomicWaker,
 }
 
 /// Non-generic configuration for [`Builder`].
@@ -65,7 +56,7 @@ impl<R: Config> RpcCore<R> {
     }
 
     pub fn tx_deferred(&self) -> Option<&mpsc::Sender<WriterDirective>> {
-        self.send_ctx.as_ref().map(|x| &x.tx_deferred)
+        self.t_tx_deferred.as_ref()
     }
 
     pub fn request_context(&self) -> Option<&RequestContext<R::Codec>> {
@@ -231,9 +222,7 @@ where
             user_data: self.user_data,
             reqs: Some(RequestContext::new(self.codec.clone())),
             codec: self.codec,
-            send_ctx: Some(SenderContext {
-                tx_deferred: tx_w.clone(),
-            }),
+            t_tx_deferred: Some(tx_w.clone()),
             r_wake_on_drop: Default::default(),
         });
 
@@ -262,9 +251,7 @@ where
             user_data: self.user_data,
             reqs: enable_request.then(|| RequestContext::new(self.codec.clone())),
             codec: self.codec,
-            send_ctx: Some(SenderContext {
-                tx_deferred: tx_w.clone(),
-            }),
+            t_tx_deferred: Some(tx_w.clone()),
             r_wake_on_drop: Default::default(),
         });
 
@@ -293,7 +280,7 @@ where
             user_data,
             codec,
             reqs: None,
-            send_ctx: None,
+            t_tx_deferred: None,
             r_wake_on_drop: Default::default(),
         });
 
@@ -327,9 +314,7 @@ where
             user_data,
             codec,
             reqs: None,
-            send_ctx: Some(SenderContext {
-                tx_deferred: tx_directive.clone(),
-            }),
+            t_tx_deferred: Some(tx_directive),
             r_wake_on_drop: Default::default(),
         });
 
@@ -352,13 +337,9 @@ impl InitConfig {
     }
 }
 
-// ==== Context Utils ====
-
-impl Drop for ReceiverContext {
+impl<R: Config> Drop for RpcCore<R> {
     fn drop(&mut self) {
-        if let Some(w) = self.drop_waker.take() {
-            w.wake();
-        }
+        self.r_wake_on_drop.wake();
     }
 }
 
