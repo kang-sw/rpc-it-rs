@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     future::Future,
     mem::replace,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     task::{Poll, Waker},
 };
 
@@ -33,7 +33,7 @@ pub(crate) struct RequestContext<C> {
     /// Request ID generator. Rotates every 2^32 requests.
     ///
     /// It naively expects that the request ID is not reused until 2^32 requests are made.
-    req_id_gen: AtomicU32,
+    req_id_gen: AtomicU64,
 
     /// A set of pending requests that are waiting to be responded.        
     pending_tasks: RwLock<HashMap<RequestId, Mutex<PendingTask>>>,

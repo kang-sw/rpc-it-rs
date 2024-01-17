@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use bytes::BufMut;
+use bytes::{BufMut, Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue as RawJsonValue;
 
@@ -92,11 +92,11 @@ impl crate::Codec for Codec {
 
     fn encode_request<S: Serialize>(
         &self,
-        request_id: crate::defs::RequestId,
+        request_id: RequestId,
         method: &str,
         params: &S,
         buf: &mut bytes::BytesMut,
-    ) -> Result<(), EncodeError> {
+    ) -> Result<RequestId, EncodeError> {
         #[derive(serde::Serialize)]
         struct Encode<'a, S: Serialize> {
             jsonrpc: &'static str,
@@ -114,7 +114,8 @@ impl crate::Codec for Codec {
         .serialize(&mut serde_json::Serializer::new(buf.writer()))
         .map_err(DeserializeError::from)?;
 
-        Ok(())
+        // We won't modify the original request ID.
+        Ok(request_id)
     }
 
     fn encode_response<S: Serialize>(
@@ -209,7 +210,11 @@ impl crate::Codec for Codec {
         Ok(())
     }
 
-    fn decode_inbound(&self, frame: &[u8]) -> Result<codec::InboundFrameType, DecodeError> {
+    fn decode_inbound(
+        &self,
+        _scratch: &mut BytesMut,
+        frame: &mut Bytes,
+    ) -> Result<codec::InboundFrameType, DecodeError> {
         let frame = std::str::from_utf8(frame).map_err(|_| DecodeError::NonUtf8Input)?;
         let mut de = serde_json::Deserializer::from_str(frame);
         let raw = RawData::deserialize(&mut de).map_err(DeserializeError::from)?;
@@ -309,7 +314,8 @@ fn errc_to_error(errc: i64) -> ResponseError {
 
 fn req_id_from_str(s: &str) -> Result<RequestId, DecodeError> {
     Ok(RequestId::new(
-        atoi::atoi::<u32>(s.as_bytes())
+        <u64 as atoi::FromRadix16Checked>::from_radix_16_checked(s.as_bytes())
+            .0
             .ok_or(DecodeError::RequestIdRetrievalFailed)?
             .try_into()
             .map_err(|_| DecodeError::RequestIdRetrievalFailed)?,

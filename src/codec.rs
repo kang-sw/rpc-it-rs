@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use bytes::Bytes;
 use bytes::BytesMut;
 use serde::Deserialize;
 use thiserror::Error;
@@ -166,7 +167,7 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
         method: &str,
         params: &S,
         buf: &mut BytesMut,
-    ) -> Result<(), EncodeError>;
+    ) -> Result<RequestId, EncodeError>;
 
     /// This is called from server side, where it responds to the request with received request_id.
     ///
@@ -192,11 +193,19 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
 
     /// Given frame of the raw bytes, decode it into a message.
     ///
+    /// It passes an empty scratch buffer, which allows the modification of inbound frame.
+    /// This is useful when the codec implementation needs to modify the frame in order to
+    /// decode it. (e.g. compressed)
+    ///
     /// # NOTE
     ///
     /// The frame size is guaranteed to be shorter than 2^32-1 bytes. Therefore, any range in
     /// returned [`InboundFrameType`] should be able to be represented in `u32` type.
-    fn decode_inbound(&self, frame: &[u8]) -> Result<InboundFrameType, DecodeError>;
+    fn decode_inbound(
+        &self,
+        scratch: &mut BytesMut,
+        frame: &mut Bytes,
+    ) -> Result<InboundFrameType, DecodeError>;
 }
 
 /// Describes the inbound frame chunk.
@@ -325,9 +334,10 @@ fn err_to_de_error(e: impl std::error::Error) -> DeserializeError {
 mod dynamic {
     use std::{marker::PhantomData, sync::Arc};
 
+    use bytes::{Bytes, BytesMut};
     use serde::Deserializer;
 
-    use crate::Codec;
+    use crate::{defs::RequestId, Codec};
 
     use super::{AsDeserializer, DecodePayloadUnsupportedError, EncodeResponsePayload};
 
@@ -352,7 +362,7 @@ mod dynamic {
             method: &str,
             params: &dyn erased_serde::Serialize,
             buf: &mut bytes::BytesMut,
-        ) -> Result<(), super::EncodeError>;
+        ) -> Result<RequestId, super::EncodeError>;
 
         fn encode_response(
             &self,
@@ -363,7 +373,8 @@ mod dynamic {
 
         fn decode_inbound(
             &self,
-            frame: &[u8],
+            scratch: &mut BytesMut,
+            frame: &mut Bytes,
         ) -> Result<super::InboundFrameType, super::DecodeError>;
     }
 
@@ -406,7 +417,7 @@ mod dynamic {
             method: &str,
             params: &S,
             buf: &mut bytes::BytesMut,
-        ) -> Result<(), super::EncodeError> {
+        ) -> Result<RequestId, super::EncodeError> {
             <dyn DynCodec>::encode_request(self.as_ref(), request_id, method, params, buf)
         }
 
@@ -431,9 +442,10 @@ mod dynamic {
 
         fn decode_inbound(
             &self,
-            frame: &[u8],
+            scratch: &mut BytesMut,
+            frame: &mut Bytes,
         ) -> Result<super::InboundFrameType, super::DecodeError> {
-            <dyn DynCodec>::decode_inbound(self.as_ref(), frame)
+            <dyn DynCodec>::decode_inbound(self.as_ref(), scratch, frame)
         }
     }
 
@@ -534,7 +546,7 @@ mod dynamic {
             method: &str,
             params: &dyn erased_serde::Serialize,
             buf: &mut bytes::BytesMut,
-        ) -> Result<(), super::EncodeError> {
+        ) -> Result<RequestId, super::EncodeError> {
             <Self as Codec>::encode_request(self, request_id, method, &params, buf)
         }
 
@@ -549,9 +561,10 @@ mod dynamic {
 
         fn decode_inbound(
             &self,
-            frame: &[u8],
+            scratch: &mut BytesMut,
+            frame: &mut Bytes,
         ) -> Result<super::InboundFrameType, super::DecodeError> {
-            <Self as Codec>::decode_inbound(self, frame)
+            <Self as Codec>::decode_inbound(self, scratch, frame)
         }
     }
 }

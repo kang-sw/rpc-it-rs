@@ -35,6 +35,9 @@ pub struct Receiver<R: Config, Rx> {
     /// Even if all receivers are dropped, the background task possibly retain if there's any
     /// present [`crate::RequestSender`] instance.
     read: Rx,
+
+    /// Internal scratch buffer
+    scratch: BytesMut,
 }
 
 // ==== impl:Receiver ====
@@ -44,6 +47,7 @@ impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
         Self {
             core: Some(core),
             read,
+            scratch: Default::default(),
         }
     }
 
@@ -73,7 +77,7 @@ impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
 
             // SAFETY: Core is always valid unless we call `into_response_only_task`
             let core = unsafe { self.core.as_ref().unwrap_unchecked() };
-            let task_rx = rx_inner::handle_inbound_once(core, inbound);
+            let task_rx = rx_inner::handle_inbound_once(core, inbound, &mut self.scratch);
 
             if let Some(rx) = task_rx.await? {
                 break Ok(rx);
@@ -116,7 +120,7 @@ impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
                     return Ok(ReadRunnerExitType::AllHandleDropped);
                 };
 
-                if let Some(ib) = rx_inner::handle_inbound_once(&core, inbound)
+                if let Some(ib) = rx_inner::handle_inbound_once(&core, inbound, &mut self.scratch)
                     .await
                     .transpose()
                 {
@@ -159,7 +163,7 @@ impl<R: Config, Rx> Drop for Receiver<R, Rx> {
 mod rx_inner {
     use std::{ops::Range, str::Utf8Error, sync::Arc};
 
-    use bytes::Bytes;
+    use bytes::{Bytes, BytesMut};
 
     use crate::{
         codec::error::DecodeError,
@@ -190,9 +194,10 @@ mod rx_inner {
 
     pub(super) async fn handle_inbound_once<R: Config>(
         core: &Arc<RpcCore<R>>,
-        ib: Bytes,
+        mut ib: Bytes,
+        scratch: &mut BytesMut,
     ) -> Result<Option<Inbound<R>>, Error<R::Codec>> {
-        let frame_type = match core.codec.decode_inbound(&ib[..]) {
+        let frame_type = match core.codec.decode_inbound(scratch, &mut ib) {
             Ok(x) => x,
             Err(e) => return Err(Error::DecodeFailed(e, ib)),
         };

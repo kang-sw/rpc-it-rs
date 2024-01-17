@@ -5,7 +5,11 @@ pub mod defs {
 
     // ========================================================== Basic Types ===|
 
-    use std::{num::NonZeroU32, ops::Range, sync::atomic::AtomicU64};
+    use std::{
+        num::{NonZeroU32, NonZeroU64},
+        ops::Range,
+        sync::atomic::AtomicU64,
+    };
 
     pub type SizeType = u32;
     pub(crate) type LongSizeType = u64;
@@ -82,7 +86,7 @@ pub mod defs {
         ///
         /// This is basically incremental per connection, and rotates back to 1 after reaching the
         /// maximum value(2^32-1).
-        pub struct RequestId(NonZeroU32)
+        pub struct RequestId(NonZeroU64)
     }
 }
 
