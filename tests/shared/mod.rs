@@ -1,7 +1,7 @@
 #![cfg(feature = "in-memory-io")]
 
 use futures::task::{Spawn, SpawnExt};
-use rpc_it::{Codec, ReceiveErrorHandler};
+use rpc_it::{rpc::RpcConfig, Codec, ReceiveErrorHandler};
 
 #[derive(Clone, Debug)]
 pub struct ConnectionConfig {
@@ -22,48 +22,40 @@ impl Default for ConnectionConfig {
     }
 }
 
-pub fn create_default_rpc_pair<US, UC, C>(
+pub fn create_default_rpc_pair<R: RpcConfig>(
     spawner: &impl Spawn,
-    server_user_data: US,
-    client_user_data: UC,
-    codec: impl Fn() -> C,
-) -> (rpc_it::RequestSender<UC, C>, rpc_it::Receiver<US, C>)
-where
-    US: rpc_it::UserData,
-    UC: rpc_it::UserData,
-    C: Codec,
-{
+    server_user_data: R::UserData,
+    client_user_data: R::UserData,
+    codec: impl Fn() -> R::Codec,
+) -> (rpc_it::RequestSender<R>, rpc_it::Receiver<R>) {
     create_rpc_pair(
         spawner,
         server_user_data,
         client_user_data,
         (),
         (),
-        codec,
+        codec(),
+        codec(),
         Default::default(),
     )
 }
 
-pub fn create_rpc_pair<US, UC, C>(
+pub fn create_rpc_pair<RS: RpcConfig, RC: RpcConfig>(
     spawner: &impl Spawn,
-    server_user_data: US,
-    client_user_data: UC,
-    server_rh: impl ReceiveErrorHandler<US, C>,
-    client_rh: impl ReceiveErrorHandler<UC, C>,
-    codec: impl Fn() -> C,
+    server_user_data: RS::UserData,
+    client_user_data: RC::UserData,
+    server_rh: impl ReceiveErrorHandler<RS>,
+    client_rh: impl ReceiveErrorHandler<RC>,
+    server_codec: RS::Codec,
+    client_codec: RC::Codec,
     cfg: ConnectionConfig,
-) -> (rpc_it::RequestSender<UC, C>, rpc_it::Receiver<US, C>)
-where
-    US: rpc_it::UserData,
-    UC: rpc_it::UserData,
-    C: Codec,
-{
+) -> (rpc_it::RequestSender<RC>, rpc_it::Receiver<RS>) {
     let (tx_client, rx_server) = rpc_it::io::in_memory(1);
     let (tx_server, rx_client) = rpc_it::io::in_memory(1);
 
     let tx_rpc = {
         let (tx_rpc, task_1, task_2) = rpc_it::builder()
-            .with_codec(codec())
+            .with_codec(client_codec)
             .with_frame_writer(tx_client)
             .with_frame_reader(rx_client)
             .with_user_data(client_user_data)
@@ -88,7 +80,7 @@ where
 
     let rx_rpc = {
         let (rx_rpc, task_1, task_2) = rpc_it::builder()
-            .with_codec(codec())
+            .with_codec(server_codec)
             .with_frame_writer(tx_server)
             .with_frame_reader(rx_server)
             .with_user_data(server_user_data)

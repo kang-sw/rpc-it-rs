@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 pub mod route {
     use thiserror::Error;
 
-    use crate::{codec::DeserializeError, Codec, Inbound, UserData};
+    use crate::{codec::DeserializeError, rpc::RpcConfig, Codec, Inbound, UserData};
 
     /// A function which actually deals with inbound message.
-    pub type ExecFunc<U, C> = dyn for<'a> Fn(&mut Option<Inbound<'a, U, C>>) -> Result<(), ExecError>
+    pub type ExecFunc<R> = dyn for<'a> Fn(&mut Option<Inbound<'a, R>>) -> Result<(), ExecError>
         + Send
         + Sync
         + 'static;
@@ -42,21 +42,19 @@ pub mod route {
         fn finish(self) -> Self::Func;
     }
 
-    pub struct Router<U: UserData, C: Codec, R> {
+    pub struct Router<C: RpcConfig, R> {
         route_func: R,
-        funcs: Vec<Box<ExecFunc<U, C>>>,
+        funcs: Vec<Box<ExecFunc<C>>>,
     }
 
-    pub struct RouterBuilder<U: UserData, C: Codec, R> {
-        inner: Router<U, C, R>,
+    pub struct RouterBuilder<C: RpcConfig, R> {
+        inner: Router<C, R>,
     }
 
     // ==== Builder ====
 
-    impl<U, C, R> Default for RouterBuilder<U, C, R>
+    impl<C: RpcConfig, R> Default for RouterBuilder<C, R>
     where
-        U: UserData,
-        C: Codec,
         R: RouterFuncBuilder + Default,
     {
         fn default() -> Self {
@@ -69,10 +67,8 @@ pub mod route {
         }
     }
 
-    impl<U, C, R> RouterBuilder<U, C, R>
+    impl<C: RpcConfig, R> RouterBuilder<C, R>
     where
-        U: UserData,
-        C: Codec,
         R: RouterFuncBuilder,
     {
         pub fn new(builder: R) -> Self {
@@ -86,7 +82,7 @@ pub mod route {
 
         pub fn push_handler<F>(&mut self, func: F)
         where
-            F: for<'a> Fn(&mut Option<Inbound<'a, U, C>>) -> Result<(), ExecError>
+            F: for<'a> Fn(&mut Option<Inbound<'a, C>>) -> Result<(), ExecError>
                 + Send
                 + Sync
                 + 'static,
@@ -111,7 +107,7 @@ pub mod route {
 
         pub fn try_add_routed_handler<F>(&mut self, path: &str, func: F) -> Result<usize, R::Error>
         where
-            F: Into<Box<ExecFunc<U, C>>>,
+            F: Into<Box<ExecFunc<C>>>,
         {
             let value = self.inner.funcs.len();
             self.inner.route_func.add_route(path, value)?;
@@ -120,7 +116,7 @@ pub mod route {
             Ok(value)
         }
 
-        pub fn finish(self) -> Router<U, C, R::Func> {
+        pub fn finish(self) -> Router<C, R::Func> {
             Router {
                 route_func: self.inner.route_func.finish(),
                 funcs: self.inner.funcs,
@@ -130,10 +126,8 @@ pub mod route {
 
     // ==== Router ====
 
-    impl<U, C, R> Router<U, C, R>
+    impl<C: RpcConfig, R> Router<C, R>
     where
-        U: UserData,
-        C: Codec,
         R: RouterFunc,
     {
         /// Route received inbound to predefined handler function.
@@ -143,7 +137,7 @@ pub mod route {
         /// This function panics if the inbound message is [`None`].
         pub fn route(
             &self,
-            inbound_revoked_on_error: &mut Option<Inbound<'_, U, C>>,
+            inbound_revoked_on_error: &mut Option<Inbound<'_, C>>,
         ) -> Result<(), ExecError> {
             let opt_inbound = inbound_revoked_on_error;
 
@@ -305,17 +299,17 @@ pub mod inbound {
     use crate::{
         codec::{error::EncodeError, DeserializeError},
         error::ErrorResponse,
-        rpc::PreparedPacket,
-        Codec, Inbound, NotifySender, ParseMessage, RequestSender, UserData,
+        rpc::{PreparedPacket, RpcConfig},
+        Codec, Inbound, NotifySender, ParseMessage, RequestSender,
     };
 
     use super::{NotifyMethod, RequestMethod};
 
-    pub struct CachedRequest<U: UserData, C: Codec, N: NotifyMethod + RequestMethod> {
-        inner: CachedNotify<U, C, N>,
+    pub struct CachedRequest<R: RpcConfig, N: NotifyMethod + RequestMethod> {
+        inner: CachedNotify<R, N>,
     }
 
-    pub struct CachedNotify<U: UserData, C: Codec, M: NotifyMethod> {
+    pub struct CachedNotify<R: RpcConfig, M: NotifyMethod> {
         /// NOTE: Paramter order is important; `ib` must be dropped after `v` disposed, as it
         /// borrows the underlying buffer of inbound `ib`
         v: M::ParamRecv<'static>,
@@ -330,7 +324,7 @@ pub mod inbound {
         ///
         ///
         /// This field should never be exposed as mutable reference.
-        ib: Inbound<'static, U, C>,
+        ib: Inbound<'static, R>,
     }
 
     struct F;
@@ -344,10 +338,9 @@ pub mod inbound {
 
     // ==== RequestMessage ====
 
-    impl<U, C, M> CachedRequest<U, C, M>
+    impl<R, M> CachedRequest<R, M>
     where
-        U: UserData,
-        C: Codec,
+        R: RpcConfig,
         M: RequestMethod + NotifyMethod,
     {
         /// # Safety
@@ -357,8 +350,8 @@ pub mod inbound {
         /// buffer of the inbound message.
         #[doc(hidden)]
         pub unsafe fn __internal_create(
-            msg: Inbound<'static, U, C>,
-        ) -> Result<Self, (Inbound<'static, U, C>, DeserializeError)> {
+            msg: Inbound<'static, R>,
+        ) -> Result<Self, (Inbound<'static, R>, DeserializeError)> {
             Ok(Self {
                 inner: CachedNotify::__internal_create(msg)?,
             })
@@ -387,13 +380,12 @@ pub mod inbound {
         }
     }
 
-    impl<U, C, M> std::ops::Deref for CachedRequest<U, C, M>
+    impl<R, M> std::ops::Deref for CachedRequest<R, M>
     where
-        U: UserData,
-        C: Codec,
+        R: RpcConfig,
         M: RequestMethod + NotifyMethod,
     {
-        type Target = CachedNotify<U, C, M>;
+        type Target = CachedNotify<R, M>;
 
         fn deref(&self) -> &Self::Target {
             &self.inner
@@ -402,16 +394,15 @@ pub mod inbound {
 
     // ==== NotifyMessage ====
 
-    impl<U, C, M> CachedNotify<U, C, M>
+    impl<R, M> CachedNotify<R, M>
     where
-        U: UserData,
-        C: Codec,
+        R: RpcConfig,
         M: NotifyMethod,
     {
         #[doc(hidden)]
         pub unsafe fn __internal_create(
-            msg: Inbound<'static, U, C>,
-        ) -> Result<Self, (Inbound<'static, U, C>, DeserializeError)> {
+            msg: Inbound<'static, R>,
+        ) -> Result<Self, (Inbound<'static, R>, DeserializeError)> {
             Ok(Self {
                 // SAFETY:
                 // * The borrowed lifetime `'de` is bound to the payload of the inbound message, not
@@ -421,7 +412,7 @@ pub mod inbound {
                 //   reference is valid, the buffer of the inbound message won't be dropped during
                 //   `v`'s lifetime.
                 v: unsafe {
-                    let msg_ptr = &msg as *const Inbound<'static, U, C>;
+                    let msg_ptr = &msg as *const Inbound<'static, R>;
                     transmute(match (*msg_ptr).parse::<M::ParamRecv<'_>>() {
                         Ok(ok) => ok,
                         Err(err) => return Err((msg, err)),
@@ -438,13 +429,12 @@ pub mod inbound {
         }
     }
 
-    impl<U, C, M> std::ops::Deref for CachedNotify<U, C, M>
+    impl<R, M> std::ops::Deref for CachedNotify<R, M>
     where
-        U: UserData,
-        C: Codec,
+        R: RpcConfig,
         M: NotifyMethod,
     {
-        type Target = Inbound<'static, U, C>;
+        type Target = Inbound<'static, R>;
 
         fn deref(&self) -> &Self::Target {
             &self.ib
@@ -453,8 +443,8 @@ pub mod inbound {
 
     // ========================================================== Response Wait ===|
 
-    pub struct CachedWaitResponse<'a, U: UserData, C: Codec, M: RequestMethod>(
-        crate::ReceiveResponse<'a, U, C>,
+    pub struct CachedWaitResponse<'a, R: RpcConfig, M: RequestMethod>(
+        crate::ReceiveResponse<'a, R>,
         PhantomData<M>,
     );
 
@@ -468,13 +458,13 @@ pub mod inbound {
         Result<M::OkRecv<'static>, DeserializeError>,
     );
 
-    impl<'a, U, C, M> std::future::Future for CachedWaitResponse<'a, U, C, M>
+    impl<'a, R, M> std::future::Future for CachedWaitResponse<'a, R, M>
     where
-        U: UserData,
-        C: Codec,
+        R: RpcConfig,
         M: RequestMethod,
     {
-        type Output = Result<CachedOkayResponse<C, M>, Option<CachedErrorResponse<C, M>>>;
+        type Output =
+            Result<CachedOkayResponse<R::Codec, M>, Option<CachedErrorResponse<R::Codec, M>>>;
 
         fn poll(
             self: std::pin::Pin<&mut Self>,
@@ -486,12 +476,14 @@ pub mod inbound {
             // SAFETY: See the comment in `CachedNotify::__internal_create`
             futures::ready!(inner.poll(cx))
                 .map(|x| unsafe {
-                    let parsed = (*(&x as *const crate::Response<C>)).parse::<M::OkRecv<'_>>();
+                    let parsed =
+                        (*(&x as *const crate::Response<R::Codec>)).parse::<M::OkRecv<'_>>();
                     CachedOkayResponse(x, transmute(parsed))
                 })
                 .map_err(|x| {
                     x.map(|x| unsafe {
-                        let parsed = (*(&x as *const ErrorResponse<C>)).parse::<M::ErrRecv<'_>>();
+                        let parsed =
+                            (*(&x as *const ErrorResponse<R::Codec>)).parse::<M::ErrRecv<'_>>();
                         CachedErrorResponse(x, transmute(parsed))
                     })
                 })
@@ -545,10 +537,7 @@ pub mod inbound {
 
     // ========================================================== Extensions ===|
 
-    impl<U, C: Codec> NotifySender<U, C>
-    where
-        U: UserData,
-    {
+    impl<R: RpcConfig> NotifySender<R> {
         pub async fn noti<M>(
             &self,
             buf: &mut BytesMut,
@@ -575,7 +564,7 @@ pub mod inbound {
             &self,
             buf: &mut BytesMut,
             (_, p): (M, M::ParamSend<'_>),
-        ) -> Result<PreparedPacket<C>, EncodeError>
+        ) -> Result<PreparedPacket<R::Codec>, EncodeError>
         where
             M: NotifyMethod,
         {
@@ -583,15 +572,12 @@ pub mod inbound {
         }
     }
 
-    impl<U, C: Codec> RequestSender<U, C>
-    where
-        U: UserData,
-    {
+    impl<R: RpcConfig> RequestSender<R> {
         pub async fn call<M>(
             &self,
             buf: &mut BytesMut,
             (_, p): (M, M::ParamSend<'_>),
-        ) -> Result<CachedWaitResponse<'_, U, C, M>, crate::error::SendMsgError>
+        ) -> Result<CachedWaitResponse<'_, R, M>, crate::error::SendMsgError>
         where
             M: NotifyMethod + RequestMethod,
         {
@@ -604,7 +590,7 @@ pub mod inbound {
             &self,
             buf: &mut BytesMut,
             (_, p): (M, M::ParamSend<'_>),
-        ) -> Result<CachedWaitResponse<'_, U, C, M>, crate::error::TrySendMsgError>
+        ) -> Result<CachedWaitResponse<'_, R, M>, crate::error::TrySendMsgError>
         where
             M: NotifyMethod + RequestMethod,
         {

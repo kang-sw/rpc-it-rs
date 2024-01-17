@@ -13,10 +13,9 @@ use parking_lot::{Mutex, RwLock};
 use crate::{
     codec::{Codec, ParseMessage, ResponseError},
     defs::RequestId,
-    UserData,
 };
 
-use super::{error::ErrorResponse, ReceiveResponse};
+use super::{error::ErrorResponse, ReceiveResponse, RpcConfig};
 
 /// Response message from RPC server.
 #[derive(Debug)]
@@ -71,12 +70,11 @@ pub(super) enum ReceiveResponseState {
     Expired,
 }
 
-impl<'a, U, C> Future for ReceiveResponse<'a, U, C>
+impl<'a, R> Future for ReceiveResponse<'a, R>
 where
-    U: UserData,
-    C: Codec,
+    R: RpcConfig,
 {
-    type Output = Result<Response<C>, Option<ErrorResponse<C>>>;
+    type Output = Result<Response<R::Codec>, Option<ErrorResponse<R::Codec>>>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -156,7 +154,7 @@ where
     }
 }
 
-impl<'a, U, C> Drop for ReceiveResponse<'a, U, C> {
+impl<'a, R: RpcConfig> Drop for ReceiveResponse<'a, R> {
     fn drop(&mut self) {
         if matches!(self.state, ReceiveResponseState::Expired) {
             return;
@@ -172,9 +170,9 @@ impl<'a, U, C> Drop for ReceiveResponse<'a, U, C> {
 
 // ======== ReceiveResponse ======== //
 
-impl<'a, U, C> ReceiveResponse<'a, U, C> {
+impl<'a, R: RpcConfig> ReceiveResponse<'a, R> {
     /// Elevate the lifetime of the response to `'static`.
-    pub fn into_owned(mut self) -> ReceiveResponse<'static, U, C> {
+    pub fn into_owned(mut self) -> ReceiveResponse<'static, R> {
         ReceiveResponse {
             owner: Cow::Owned((*self.owner).clone()),
             req_id: self.req_id,

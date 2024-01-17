@@ -135,14 +135,12 @@ pub mod cached {
 pub mod router {
     use crate::{Router, RouterBuilder};
 
-    pub type StdHashMap<U, C> = Router<U, C, std::collections::HashMap<String, usize>>;
-    pub type StdHashMapBuilder<U, C> =
-        RouterBuilder<U, C, std::collections::HashMap<String, usize>>;
-    pub type StdBTreeMap<U, C> = Router<U, C, std::collections::BTreeMap<String, usize>>;
-    pub type StdBTreeMapBuilder<U, C> =
-        RouterBuilder<U, C, std::collections::BTreeMap<String, usize>>;
-    pub type HashbrownHashMap<U, C> = Router<U, C, hashbrown::HashMap<String, usize>>;
-    pub type HashbrownHashMapBuilder<U, C> = RouterBuilder<U, C, hashbrown::HashMap<String, usize>>;
+    pub type StdHashMap<R> = Router<R, std::collections::HashMap<String, usize>>;
+    pub type StdHashMapBuilder<R> = RouterBuilder<R, std::collections::HashMap<String, usize>>;
+    pub type StdBTreeMap<R> = Router<R, std::collections::BTreeMap<String, usize>>;
+    pub type StdBTreeMapBuilder<R> = RouterBuilder<R, std::collections::BTreeMap<String, usize>>;
+    pub type HashbrownHashMap<R> = Router<R, hashbrown::HashMap<String, usize>>;
+    pub type HashbrownHashMapBuilder<R> = RouterBuilder<R, hashbrown::HashMap<String, usize>>;
 }
 
 pub use codec::{Codec, ParseMessage, ResponseError};

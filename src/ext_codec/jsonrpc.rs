@@ -14,7 +14,7 @@ use crate::{
     ResponseError,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct Codec;
 
 #[derive(Debug, serde::Deserialize)]

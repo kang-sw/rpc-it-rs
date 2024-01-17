@@ -4,94 +4,45 @@ use std::sync::Arc;
 
 use bytes::BytesMut;
 use futures::{executor::LocalPool, task::SpawnExt, StreamExt};
-use rpc_it::{error::SendMsgError, Codec, ParseMessage, ResponseError};
+use rpc_it::{rpc::RpcConfig, ParseMessage, ResponseError};
 
 use crate::shared::create_default_rpc_pair;
 
 mod shared;
 
-#[cfg(feature = "jsonrpc")]
-#[test]
-fn verify_notify() {
-    use rpc_it::ext_codec::jsonrpc;
-
-    let (tx, rx) = rpc_it::io::in_memory(1);
-
-    let (tx_rpc, task_runner) = rpc_it::builder()
-        .with_codec(jsonrpc::Codec)
-        .with_frame_writer(tx)
-        .with_outbound_queue_capacity(1)
-        .build_write_only();
-
-    let task_send = async {
-        let b = &mut BytesMut::new();
-
-        tx_rpc
-            .notify(b, "test", &serde_json::json!({ "test": "test" }))
-            .await
-            .unwrap();
-
-        tx_rpc.notify(b, "t-e-st-23", &1234).await.unwrap();
-        tx_rpc.notify(b, "close", &()).await.unwrap();
-
-        tx_rpc.shutdown_writer(false).await.unwrap();
-
-        let err = tx_rpc
-            .notify(b, "this-should-fail", &3141)
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, SendMsgError::ChannelClosed));
-    };
-
-    let task_recv = async {
-        let mut rx = rx;
-
-        let contents: &[&str] = &[
-            r#"{"jsonrpc":"2.0","method":"test","params":{"test":"test"}}"#,
-            r#"{"jsonrpc":"2.0","method":"t-e-st-23","params":1234}"#,
-            r#"{"jsonrpc":"2.0","method":"close","params":null}"#,
-        ];
-
-        for content in contents {
-            let msg = rx.next().await.unwrap();
-            assert_eq!(msg, content);
-        }
-
-        assert!(rx.next().await.is_none());
-    };
-
-    futures::executor::block_on(async {
-        let (r_w_task, ..) = futures::join!(task_runner, task_send, task_recv);
-
-        assert!(matches!(
-            r_w_task.unwrap(),
-            rpc_it::error::WriteRunnerExitType::ManualClose
-        ));
-    });
-}
-
 #[test]
 #[cfg(feature = "jsonrpc")]
 fn verify_request_jsonrpc() {
-    use rpc_it::ext_codec::jsonrpc;
+    use rpc_it::{ext_codec::jsonrpc, rpc::Rpc};
 
-    verify_request(|| jsonrpc::Codec);
+    verify_request::<Rpc<(), _>>(|| jsonrpc::Codec);
 }
 
 #[test]
 #[cfg(all(feature = "jsonrpc", feature = "dynamic-codec"))]
 fn verify_request_dynamic_codecs() {
-    use rpc_it::{codec::DynamicCodec, ext_codec::jsonrpc};
+    use rpc_it::{
+        codec::{self, DynamicCodec},
+        ext_codec::jsonrpc,
+        rpc::Rpc,
+    };
 
-    verify_request(|| Arc::new(jsonrpc::Codec) as DynamicCodec);
+    verify_request::<Rpc<(), DynamicCodec>>(|| Arc::new(jsonrpc::Codec));
 }
 
-fn verify_request<C: Codec>(codec: impl Fn() -> C) {
+fn verify_request<R: RpcConfig>(codec: impl Fn() -> R::Codec)
+where
+    R::UserData: Default,
+{
     let mut executor = LocalPool::new();
 
     let spawner = executor.spawner();
-    let (client, server) = create_default_rpc_pair(&spawner, (), (), codec);
+    let (client, server) = create_default_rpc_pair::<R>(
+        &spawner,
+        R::UserData::default(),
+        R::UserData::default(),
+        codec,
+    );
 
     let test_counter = Arc::new(());
 

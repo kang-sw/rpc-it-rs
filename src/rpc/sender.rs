@@ -6,16 +6,16 @@ use super::*;
 
 /// A RPC client handle which can only send RPC notifications.
 #[repr(transparent)]
-pub struct NotifySender<U, C> {
-    pub(super) context: Arc<RpcCore<U, C>>,
+pub struct NotifySender<R: RpcConfig> {
+    pub(super) context: Arc<RpcCore<R>>,
 }
 
 /// A weak RPC client handle which can only send RPC notifications.
 ///
 /// Should be upgraded to [`NotifySender`] before use.
 #[derive(Debug)]
-pub struct WeakNotifySender<U, C> {
-    pub(super) context: Weak<RpcCore<U, C>>,
+pub struct WeakNotifySender<R: RpcConfig> {
+    pub(super) context: Weak<RpcCore<R>>,
 }
 
 // ==== Request Capability ====
@@ -23,21 +23,21 @@ pub struct WeakNotifySender<U, C> {
 /// A RPC client handle which can send RPC requests and notifications.
 ///
 /// It is super-set of [`NotifySender`].
-pub struct RequestSender<U, C> {
-    pub(super) inner: NotifySender<U, C>,
+pub struct RequestSender<R: RpcConfig> {
+    pub(super) inner: NotifySender<R>,
 }
 
 /// A weak RPC client handle which can send RPC requests and notifications.
 ///
 /// Should be upgraded to [`RequestSender`] before use.
 #[derive(Debug)]
-pub struct WeakRequestSender<U, C> {
-    inner: WeakNotifySender<U, C>,
+pub struct WeakRequestSender<R: RpcConfig> {
+    inner: WeakNotifySender<R>,
 }
 
 /// An awaitable response for a sent RPC request
-pub struct ReceiveResponse<'a, U, C> {
-    pub(super) owner: Cow<'a, RequestSender<U, C>>,
+pub struct ReceiveResponse<'a, R: RpcConfig> {
+    pub(super) owner: Cow<'a, RequestSender<R>>,
     pub(super) req_id: RequestId,
     pub(super) state: req_rep::ReceiveResponseState,
 }
@@ -70,7 +70,7 @@ pub(crate) enum DeferredDirective {
 // ==== Debug Trait Impls ====
 
 /// Implements notification methods for [`NotifySender`].
-impl<U: UserData, C: Codec> std::fmt::Debug for NotifySender<U, C> {
+impl<R: RpcConfig> std::fmt::Debug for NotifySender<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotifySender")
             .field("context", &self.context)
@@ -79,7 +79,7 @@ impl<U: UserData, C: Codec> std::fmt::Debug for NotifySender<U, C> {
 }
 
 /// Implements notification methods for [`NotifySender`].
-impl<U: UserData, C: Codec> std::fmt::Debug for RequestSender<U, C> {
+impl<R: RpcConfig> std::fmt::Debug for RequestSender<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotifySender")
             .field("context", &self.context)
@@ -89,7 +89,7 @@ impl<U: UserData, C: Codec> std::fmt::Debug for RequestSender<U, C> {
 
 // ========================================================== NotifySender ===|
 
-impl<U: UserData, C: Codec> NotifySender<U, C> {
+impl<R: RpcConfig> NotifySender<R> {
     pub async fn notify<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
@@ -135,16 +135,16 @@ impl<U: UserData, C: Codec> NotifySender<U, C> {
             .map_err(|_| SendMsgError::ChannelClosed)
     }
 
-    pub fn user_data(&self) -> &U {
+    pub fn user_data(&self) -> &R::UserData {
         self.context.user_data()
     }
 
-    pub fn codec(&self) -> &C {
+    pub fn codec(&self) -> &R::Codec {
         &self.context.codec
     }
 
     /// Upgrade this handle to request handle. Fails if request feature was not enabled at first.
-    pub fn try_into_request_sender(self) -> Result<RequestSender<U, C>, Self> {
+    pub fn try_into_request_sender(self) -> Result<RequestSender<R>, Self> {
         if self.context.request_context().is_some() {
             Ok(RequestSender { inner: self })
         } else {
@@ -210,14 +210,14 @@ impl<U: UserData, C: Codec> NotifySender<U, C> {
     }
 
     /// Downgrade this handle to a weak handle.
-    pub fn downgrade(&self) -> WeakNotifySender<U, C> {
+    pub fn downgrade(&self) -> WeakNotifySender<R> {
         WeakNotifySender {
             context: Arc::downgrade(&self.context),
         }
     }
 }
 
-impl<U, C> Clone for NotifySender<U, C> {
+impl<R: RpcConfig> Clone for NotifySender<R> {
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
@@ -225,16 +225,16 @@ impl<U, C> Clone for NotifySender<U, C> {
     }
 }
 
-impl<U, C> WeakNotifySender<U, C> {
+impl<R: RpcConfig> WeakNotifySender<R> {
     /// Upgrade this handle to a strong handle.
-    pub fn upgrade(&self) -> Option<NotifySender<U, C>> {
+    pub fn upgrade(&self) -> Option<NotifySender<R>> {
         self.context
             .upgrade()
             .map(|context| NotifySender { context })
     }
 }
 
-impl<U, C> Clone for WeakNotifySender<U, C> {
+impl<R: RpcConfig> Clone for WeakNotifySender<R> {
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
@@ -245,13 +245,13 @@ impl<U, C> Clone for WeakNotifySender<U, C> {
 // ========================================================== RequestSender ===|
 
 /// Implements request methods for [`RequestSender`].
-impl<U: UserData, C: Codec> RequestSender<U, C> {
+impl<R: RpcConfig> RequestSender<R> {
     pub async fn request<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<ReceiveResponse<U, C>, SendMsgError> {
+    ) -> Result<ReceiveResponse<R>, SendMsgError> {
         let resp = self
             .encode_request(buf, method, params)
             .ok_or(SendMsgError::ReceiverExpired)??;
@@ -271,7 +271,7 @@ impl<U: UserData, C: Codec> RequestSender<U, C> {
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Result<ReceiveResponse<U, C>, TrySendMsgError> {
+    ) -> Result<ReceiveResponse<R>, TrySendMsgError> {
         let resp = self
             .encode_request(buf, method, params)
             .ok_or(TrySendMsgError::ReceiverExpired)??;
@@ -290,7 +290,7 @@ impl<U: UserData, C: Codec> RequestSender<U, C> {
         buf: &mut BytesMut,
         method: &str,
         params: &T,
-    ) -> Option<Result<ReceiveResponse<U, C>, EncodeError>> {
+    ) -> Option<Result<ReceiveResponse<R>, EncodeError>> {
         buf.clear();
 
         let reqs = self.reqs();
@@ -309,22 +309,22 @@ impl<U: UserData, C: Codec> RequestSender<U, C> {
         }))
     }
 
-    pub fn downgrade(&self) -> WeakRequestSender<U, C> {
+    pub fn downgrade(&self) -> WeakRequestSender<R> {
         WeakRequestSender {
             inner: self.inner.downgrade(),
         }
     }
 }
 
-impl<U, C> RequestSender<U, C> {
+impl<R: RpcConfig> RequestSender<R> {
     /// Unwraps request context from this handle; This is valid since it's unconditionally defined
     /// when [`RequestSender`] is created.
-    pub(super) fn reqs(&self) -> &RequestContext<C> {
+    pub(super) fn reqs(&self) -> &RequestContext<R::Codec> {
         self.context.request_context().unwrap()
     }
 }
 
-impl<U, C> Clone for RequestSender<U, C> {
+impl<R: RpcConfig> Clone for RequestSender<R> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -333,21 +333,21 @@ impl<U, C> Clone for RequestSender<U, C> {
 }
 
 /// Provides handy way to access [`NotifySender`] methods in [`RequestSender`].
-impl<U, C> std::ops::Deref for RequestSender<U, C> {
-    type Target = NotifySender<U, C>;
+impl<R: RpcConfig> std::ops::Deref for RequestSender<R> {
+    type Target = NotifySender<R>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl<U, C> WeakRequestSender<U, C> {
-    pub fn upgrade(&self) -> Option<RequestSender<U, C>> {
+impl<R: RpcConfig> WeakRequestSender<R> {
+    pub fn upgrade(&self) -> Option<RequestSender<R>> {
         self.inner.upgrade().map(|inner| RequestSender { inner })
     }
 }
 
-impl<U, C> Clone for WeakRequestSender<U, C> {
+impl<R: RpcConfig> Clone for WeakRequestSender<R> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -399,10 +399,9 @@ impl<C> Clone for PreparedPacket<C> {
 
 // ==== Burst API ====
 
-impl<U, C> NotifySender<U, C>
+impl<R> NotifySender<R>
 where
-    U: UserData,
-    C: Codec,
+    R: RpcConfig,
 {
     /// Prepare pre-encoded notification message. Request can't be prepared as there's no concept of
     /// broadcast or reuse in request.
@@ -411,7 +410,7 @@ where
         buf: &mut BytesMut,
         method: &str,
         params: &S,
-    ) -> Result<PreparedPacket<C>, EncodeError> {
+    ) -> Result<PreparedPacket<R::Codec>, EncodeError> {
         buf.clear();
 
         let hash: NonZeroUsize = (self.context.codec.codec_type_hash_ptr() as usize)
@@ -430,7 +429,7 @@ where
     ///
     pub async fn burst(
         &self,
-        burst: impl Into<PacketWriteBurst<C>>,
+        burst: impl Into<PacketWriteBurst<R::Codec>>,
     ) -> Result<usize, SendMsgError> {
         let Some((count, msg)) = self.burst_into_directive(burst.into())? else {
             return Ok(0);
@@ -441,7 +440,7 @@ where
 
     pub fn try_burst(
         &self,
-        burst: impl Into<PacketWriteBurst<C>>,
+        burst: impl Into<PacketWriteBurst<R::Codec>>,
     ) -> Result<usize, TrySendMsgError> {
         let Some((count, msg)) = self.burst_into_directive(burst.into())? else {
             return Ok(0);
@@ -456,7 +455,7 @@ where
     /// - `Err(())` if burst codec hash mismatches
     fn burst_into_directive(
         &self,
-        burst: PacketWriteBurst<C>,
+        burst: PacketWriteBurst<R::Codec>,
     ) -> Result<Option<(usize, DeferredDirective)>, EncodeError> {
         let codec_hash = self.context.codec.codec_type_hash_ptr() as usize;
 

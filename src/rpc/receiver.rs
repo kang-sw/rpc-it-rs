@@ -17,25 +17,25 @@ use crate::{
     },
     error::ReadRunnerError,
     rpc::DeferredDirective,
-    Codec, NotifySender, ParseMessage, ResponseError, UserData,
+    Codec, NotifySender, ParseMessage, ResponseError,
 };
 
 use super::{
     core::RpcCore,
     error::{SendMsgError, SendResponseError, TryRecvError, TrySendMsgError, TrySendResponseError},
-    PreparedPacket,
+    PreparedPacket, RpcConfig,
 };
 
 /// Handles error during receiving inbound messages inside runner.
 ///
 /// By result of handled error, it can determine whether to continue receiving inbound(i.e. maintain
 /// the connection) or not.
-pub trait ReceiveErrorHandler<U: UserData, C: Codec>: 'static + Send {
+pub trait ReceiveErrorHandler<R: RpcConfig>: 'static + Send {
     /// Error during decoding received inbound message.
     fn on_inbound_decode_error(
         &mut self,
-        user_data: &U,
-        codec: &C,
+        user_data: &R::UserData,
+        codec: &R::Codec,
         unparsed_frame: &[u8],
         error_type: DecodeError,
     ) -> Result<(), ReadRunnerError> {
@@ -46,7 +46,10 @@ pub trait ReceiveErrorHandler<U: UserData, C: Codec>: 'static + Send {
     /// Called when response is received, when the request feature is not enabled, which is ideally
     /// impossible to happen; You can treat this as remote protocol violation to disconnect the
     /// remote peer, or just ignore it.
-    fn on_impossible_response_inbound(&mut self, user_data: &U) -> Result<(), ReadRunnerError> {
+    fn on_impossible_response_inbound(
+        &mut self,
+        user_data: &R::UserData,
+    ) -> Result<(), ReadRunnerError> {
         let _ = user_data;
         Ok(())
     }
@@ -54,7 +57,7 @@ pub trait ReceiveErrorHandler<U: UserData, C: Codec>: 'static + Send {
     /// Called when the inbound message is not a valid UTF-8 string.
     fn on_inbound_method_invalid_utf8(
         &mut self,
-        user_data: &U,
+        user_data: &R::UserData,
         method_bytes: &[u8],
     ) -> Result<(), ReadRunnerError> {
         let _ = (user_data, method_bytes);
@@ -69,8 +72,8 @@ pub trait ReceiveErrorHandler<U: UserData, C: Codec>: 'static + Send {
     /// than response, but there are no [`crate::Receiver`] instances to handle it.
     fn on_unhandled_notify_or_request(
         &mut self,
-        user_data: &U,
-        inbound: Inbound<U, C>,
+        user_data: &R::UserData,
+        inbound: Inbound<R>,
     ) -> Result<(), ReadRunnerError> {
         let _ = (user_data, inbound);
         Ok(())
@@ -78,17 +81,12 @@ pub trait ReceiveErrorHandler<U: UserData, C: Codec>: 'static + Send {
 }
 
 /// Default implementation for any type of user data. It ignores every error.
-impl<U, C> ReceiveErrorHandler<U, C> for ()
-where
-    U: UserData,
-    C: Codec,
-{
-}
+impl<R: RpcConfig> ReceiveErrorHandler<R> for () {}
 
 /// A receiver which deals with inbound notifies / requests.
 #[derive(Debug)]
-pub struct Receiver<U: UserData, C: Codec> {
-    pub(super) context: Arc<RpcCore<U, C>>,
+pub struct Receiver<R: RpcConfig> {
+    pub(super) context: Arc<RpcCore<R>>,
 
     /// Even if all receivers are dropped, the background task possibly retain if there's any
     /// present [`crate::RequestSender`] instance.
@@ -97,11 +95,7 @@ pub struct Receiver<U: UserData, C: Codec> {
 
 // ==== impl:Receiver ====
 
-impl<U, C> Clone for Receiver<U, C>
-where
-    U: UserData,
-    C: Codec,
-{
+impl<R: RpcConfig> Clone for Receiver<R> {
     fn clone(&self) -> Self {
         Self {
             context: Arc::clone(&self.context),
@@ -110,21 +104,17 @@ where
     }
 }
 
-impl<U, C> Receiver<U, C>
-where
-    U: UserData,
-    C: Codec,
-{
-    pub fn user_data(&self) -> &U {
+impl<R: RpcConfig> Receiver<R> {
+    pub fn user_data(&self) -> &R::UserData {
         self.context.user_data()
     }
 
-    pub fn codec(&self) -> &C {
+    pub fn codec(&self) -> &R::Codec {
         &self.context.codec
     }
 
     /// Receive an inbound message from remote.
-    pub async fn recv(&self) -> Option<Inbound<'_, U, C>> {
+    pub async fn recv(&self) -> Option<Inbound<'_, R>> {
         self.channel
             .recv()
             .await
@@ -136,14 +126,14 @@ where
     }
 
     /// Creates a new notify channel from this receiver.
-    pub fn notify_sender(&self) -> crate::NotifySender<U, C> {
+    pub fn notify_sender(&self) -> crate::NotifySender<R> {
         crate::NotifySender {
             context: Arc::clone(&self.context),
         }
     }
 
     /// Tries to receive an inbound message from remote.
-    pub async fn try_recv(&self) -> Result<Inbound<'_, U, C>, TryRecvError> {
+    pub async fn try_recv(&self) -> Result<Inbound<'_, R>, TryRecvError> {
         self.channel
             .try_recv()
             .map(|inner| Inbound::new(Cow::Borrowed(&self.context), inner))
@@ -156,7 +146,7 @@ where
     /// Change this channel into a stream. It'll return self-contained references of inbound. It'll
     /// a bit more inefficient than calling `recv` since it clones single [`Arc`] for each inbound
     /// message.
-    pub fn into_stream(self) -> impl futures::Stream<Item = Inbound<'static, U, C>> {
+    pub fn into_stream(self) -> impl futures::Stream<Item = Inbound<'static, R>> {
         let Self { channel, context } = self;
 
         channel.map(move |item| Inbound::new(Cow::Owned(context.clone()), item))
@@ -214,12 +204,8 @@ fn req_id_to_inner(range: Option<NonZeroRangeType>) -> LongSizeType {
 // ========================================================== Inbound ===|
 
 /// A inbound message that was received from remote. It is either a notification or a request.
-pub struct Inbound<'a, U, C>
-where
-    U: UserData,
-    C: Codec,
-{
-    owner: Cow<'a, Arc<RpcCore<U, C>>>,
+pub struct Inbound<'a, R: RpcConfig> {
+    owner: Cow<'a, Arc<RpcCore<R>>>,
     inner: InboundDelivery,
 }
 
@@ -239,26 +225,22 @@ pub struct ResponsePayload<T: serde::Serialize>(Result<T, (ResponseError, Option
 
 // ==== impl:Inbound ====
 
-impl<'a, U, C> Inbound<'a, U, C>
-where
-    U: UserData,
-    C: Codec,
-{
-    pub(super) fn new(owner: Cow<'a, Arc<RpcCore<U, C>>>, inner: InboundDelivery) -> Self {
+impl<'a, R: RpcConfig> Inbound<'a, R> {
+    pub(super) fn new(owner: Cow<'a, Arc<RpcCore<R>>>, inner: InboundDelivery) -> Self {
         Self { owner, inner }
     }
 
-    pub fn user_data(&self) -> &U {
+    pub fn user_data(&self) -> &R::UserData {
         self.owner.user_data()
     }
 
-    pub fn codec(&self) -> &C {
+    pub fn codec(&self) -> &R::Codec {
         &self.owner.codec
     }
 
     /// Creates a new notify channel from this inbound message. It is not guaranteed that the writer
     /// channel exist or not(i.e. handle may not be valid).
-    pub fn create_sender_handle(&self) -> NotifySender<U, C> {
+    pub fn create_sender_handle(&self) -> NotifySender<R> {
         NotifySender {
             context: Arc::clone(&self.owner),
         }
@@ -275,7 +257,7 @@ where
     ///   let owned = ib.take().into_owned();
     /// }
     /// ```
-    pub fn into_owned(mut self) -> Inbound<'static, U, C> {
+    pub fn into_owned(mut self) -> Inbound<'static, R> {
         Inbound {
             owner: Cow::Owned(Arc::clone(&self.owner)),
             inner: take(&mut self.inner),
@@ -283,7 +265,7 @@ where
     }
 
     /// Retrieves message out of the reference. Remaining reference will be invalidated.
-    pub fn take(&mut self) -> Inbound<'_, U, C> {
+    pub fn take(&mut self) -> Inbound<'_, R> {
         let req_id = self.atomic_take_req_range();
         Inbound {
             owner: Cow::Borrowed(&self.owner),
@@ -305,7 +287,7 @@ where
     ///
     /// If `task_request` is true, it'll retrieve out the request ownership from the inbound
     /// message.
-    pub fn clone_message(&self, take_request: bool) -> Inbound<'a, U, C> {
+    pub fn clone_message(&self, take_request: bool) -> Inbound<'a, R> {
         Inbound {
             owner: self.owner.clone(),
             inner: InboundDelivery {
@@ -495,7 +477,7 @@ where
     /// side might not use the same codec. Therefore, it is not advisable to use this method in
     /// scenarios where the remote side is not under your control, due to the potential for
     /// unexpected behavior or security risks.
-    pub fn clone_reusable_packet(&self) -> Option<PreparedPacket<C>> {
+    pub fn clone_reusable_packet(&self) -> Option<PreparedPacket<R::Codec>> {
         let Ok(hash) = (self.codec().codec_type_hash_ptr() as usize).try_into() else {
             return None;
         };
@@ -519,11 +501,7 @@ impl InboundDelivery {
     }
 }
 
-impl<'a, U, C> Drop for Inbound<'a, U, C>
-where
-    U: UserData,
-    C: Codec,
-{
+impl<'a, R: RpcConfig> Drop for Inbound<'a, R> {
     fn drop(&mut self) {
         // Sends 'unhandled' message to remote if it's still an unhandled request message until it's
         // being dropped. This is default behavior to prevent reducing remote side's request timeout
@@ -535,12 +513,8 @@ where
     }
 }
 
-impl<'a, U, C> ParseMessage<C> for Inbound<'a, U, C>
-where
-    U: UserData,
-    C: Codec,
-{
-    fn codec_payload_pair(&self) -> (&C, &[u8]) {
+impl<'a, R: RpcConfig> ParseMessage<R::Codec> for Inbound<'a, R> {
+    fn codec_payload_pair(&self) -> (&R::Codec, &[u8]) {
         (&self.owner.codec, self.payload_bytes())
     }
 }
