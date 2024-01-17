@@ -1,7 +1,7 @@
 #![cfg(feature = "in-memory-io")]
 
 use futures::task::{Spawn, SpawnExt};
-use rpc_it::{rpc::Config, Codec, ReceiveErrorHandler};
+use rpc_it::{io::InMemoryRx, rpc::Config, Codec, ReceiveErrorHandler};
 
 #[derive(Clone, Debug)]
 pub struct ConnectionConfig {
@@ -27,7 +27,7 @@ pub fn create_default_rpc_pair<R: Config>(
     server_user_data: R::UserData,
     client_user_data: R::UserData,
     codec: impl Fn() -> R::Codec,
-) -> (rpc_it::RequestSender<R>, rpc_it::Receiver<R>) {
+) -> (rpc_it::RequestSender<R>, rpc_it::Receiver<R, InMemoryRx>) {
     create_rpc_pair(
         spawner,
         server_user_data,
@@ -50,7 +50,7 @@ pub fn create_rpc_pair<RS: Config, RC: Config>(
     server_codec: RS::Codec,
     client_codec: RC::Codec,
     cfg: ConnectionConfig,
-) -> (rpc_it::RequestSender<RC>, rpc_it::Receiver<RS>) {
+) -> (rpc_it::RequestSender<RC>, rpc_it::Receiver<RS, InMemoryRx>) {
     let (tx_client, rx_server) = rpc_it::io::in_memory(1);
     let (tx_server, rx_client) = rpc_it::io::in_memory(1);
 
@@ -80,7 +80,7 @@ pub fn create_rpc_pair<RS: Config, RC: Config>(
     };
 
     let rx_rpc = {
-        let (rx_rpc, task_1, task_2) = rpc_it::builder()
+        let (rx_rpc, task_2) = rpc_it::builder()
             .with_codec(server_codec)
             .with_frame_writer(tx_server)
             .with_frame_reader(rx_server)
@@ -90,11 +90,6 @@ pub fn create_rpc_pair<RS: Config, RC: Config>(
             .with_read_event_handler(server_rh)
             .build_server(false);
 
-        spawner
-            .spawn(async move {
-                task_1.await.ok();
-            })
-            .unwrap();
         spawner
             .spawn(async move {
                 task_2.await.ok();

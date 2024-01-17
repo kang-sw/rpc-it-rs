@@ -44,7 +44,6 @@ pub(super) struct RpcCore<R: Config> {
     user_data: R::UserData,
     reqs: Option<RequestContext<R::Codec>>,
     send_ctx: Option<SenderContext>,
-    recv_ctx: Option<ReceiverContext>,
 }
 
 struct SenderContext {
@@ -268,12 +267,11 @@ where
             send_ctx: Some(SenderContext {
                 tx_deferred: tx_w.clone(),
             }),
-            recv_ctx: Some(ReceiverContext::default()),
         });
 
         let w_context = Arc::downgrade(&context);
         let task_write = write_runner(self.writer, rx_w, w_context.clone());
-        let task_read = read_runner(self.reader, self.read_event_handler, None, w_context);
+        let task_read = async move { todo!("receiver.into_response_only_task()") };
 
         (
             RequestSender {
@@ -299,19 +297,12 @@ where
             send_ctx: Some(SenderContext {
                 tx_deferred: tx_w.clone(),
             }),
-            recv_ctx: Some(ReceiverContext::default()),
         });
 
         let w_context = Arc::downgrade(&context);
         let task_write = write_runner(self.writer, rx_w, w_context.clone());
 
-        (
-            Receiver {
-                context,
-                read: self.reader,
-            },
-            task_write,
-        )
+        (Receiver::new(context, self.reader), task_write)
     }
 }
 
@@ -337,13 +328,9 @@ where
             codec,
             reqs: None,
             send_ctx: None,
-            recv_ctx: Some(Default::default()),
         });
 
-        Receiver {
-            context,
-            read: reader,
-        }
+        Receiver::new(context, reader)
     }
 }
 
@@ -376,7 +363,6 @@ where
             send_ctx: Some(SenderContext {
                 tx_deferred: tx_directive.clone(),
             }),
-            recv_ctx: None,
         });
 
         (
@@ -410,12 +396,6 @@ impl InitConfig {
 
 // ==== Context Utils ====
 
-impl<R: Config> RpcCore<R> {
-    fn unwrap_recv(&self) -> &ReceiverContext {
-        self.recv_ctx.as_ref().unwrap()
-    }
-}
-
 impl Drop for ReceiverContext {
     fn drop(&mut self) {
         if let Some(w) = self.drop_waker.take() {
@@ -426,6 +406,7 @@ impl Drop for ReceiverContext {
 
 // ========================================================== Runners ===|
 
+#[cfg(any())]
 async fn read_runner<Rd, RH, R>(
     reader: Rd,
     handler: RH,

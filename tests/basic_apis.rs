@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use bytes::BytesMut;
-use futures::{executor::LocalPool, task::SpawnExt};
+use futures::{executor::LocalPool, lock::Mutex, task::SpawnExt};
 use rpc_it::{rpc::Config, ParseMessage, ResponseError};
 
 use crate::shared::create_default_rpc_pair;
@@ -41,6 +41,7 @@ where
     );
 
     let test_counter = Arc::new(());
+    let server = Arc::new(Mutex::new(server));
 
     // Test basic request ping-pong
     {
@@ -51,6 +52,7 @@ where
         spawner
             .spawn(async move {
                 let b = &mut BytesMut::new();
+                let mut server = server.lock().await;
 
                 // Test plain request response
                 println!("I.client: sending request");
@@ -128,6 +130,7 @@ where
         spawner
             .spawn(async move {
                 let b = &mut BytesMut::new();
+                let mut server = server.lock().await;
 
                 let req1 = server.recv().await.unwrap();
                 let req2 = server.recv().await.unwrap();

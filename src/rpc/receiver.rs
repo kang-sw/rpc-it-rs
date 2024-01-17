@@ -1,11 +1,10 @@
 use std::{
-    borrow::Cow,
     mem::{take, transmute},
+    pin::Pin,
     sync::Arc,
 };
 
 use bytes::{Bytes, BytesMut};
-use futures::StreamExt;
 
 use crate::{
     codec::{
@@ -17,14 +16,16 @@ use crate::{
     },
     error::ReadRunnerError,
     rpc::WriterDirective,
-    Codec, NotifySender, ParseMessage, ResponseError,
+    AsyncFrameRead, Codec, NotifySender, ParseMessage, ResponseError,
 };
 
 use super::{
     core::RpcCore,
     error::{SendMsgError, SendResponseError, TryRecvError, TrySendMsgError, TrySendResponseError},
-    Config, PreparedPacket,
+    Config, PreparedPacket, ReadRunnerExitType,
 };
+
+pub use rx_inner::Error as ReceiveError;
 
 /// Handles error during receiving inbound messages inside runner.
 ///
@@ -83,42 +84,68 @@ pub trait ReceiveErrorHandler<R: Config>: 'static + Send {
 /// Default implementation for any type of user data. It ignores every error.
 impl<R: Config> ReceiveErrorHandler<R> for () {}
 
-/// A receiver which deals with inbound notifies / requests.
+/// A receiver task that receives inbound messages from remote.
+///
+///
 #[derive(Debug)]
 pub struct Receiver<R: Config, Rx> {
-    pub(super) context: Arc<RpcCore<R>>,
+    core: Arc<RpcCore<R>>,
 
     /// Even if all receivers are dropped, the background task possibly retain if there's any
     /// present [`crate::RequestSender`] instance.
-    pub(super) read: Rx,
+    read: Rx,
+
+    /// Context for receiving inbound messages.
+    context: rx_inner::RecvContext,
 }
 
 // ==== impl:Receiver ====
 
-impl<R: Config, Rx> Receiver<R, Rx> {
-    pub fn user_data(&self) -> &R::UserData {
-        self.context.user_data()
-    }
-
-    pub fn codec(&self) -> &R::Codec {
-        &self.context.codec
-    }
-
-    /// Receive an inbound message from remote.
-    pub async fn recv(&self) -> Option<Inbound<R>> {
-        todo!()
-    }
-
-    /// Creates a new notify channel from this receiver.
-    pub fn notify_sender(&self) -> crate::NotifySender<R> {
-        crate::NotifySender {
-            context: Arc::clone(&self.context),
+impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
+    pub(super) fn new(context: Arc<RpcCore<R>>, read: Rx) -> Self {
+        Self {
+            core: context,
+            read,
+            context: Default::default(),
         }
     }
 
-    /// Tries to receive an inbound message from remote.
-    pub async fn try_recv(&self) -> Result<Inbound<R>, TryRecvError> {
-        todo!()
+    pub fn user_data(&self) -> &R::UserData {
+        self.core.user_data()
+    }
+
+    pub fn codec(&self) -> &R::Codec {
+        &self.core.codec
+    }
+
+    /// Receive an inbound message from remote.
+    pub async fn recv(&mut self) -> Result<Inbound<R>, ReceiveError> {
+        // SAFETY: We won't move the memory within visible scope.
+        let mut read = unsafe { Pin::new_unchecked(&mut self.read) };
+
+        // As remote response and inbound message are both sent via the same channel, we need to
+        // handle both cases. Response is handled internally, and inbound message will be returned
+        // to caller.
+        loop {
+            let inbound = read.as_mut().next().await?.ok_or(ReceiveError::Eof)?;
+
+            if let Some(rx) =
+                rx_inner::handle_inbound_once(&self.core, &mut self.context, inbound).await?
+            {
+                break Ok(rx);
+            }
+        }
+    }
+
+    /// Creates a new notify channel from this receiver.
+    ///
+    /// This does not guarantee that the writer channel exist or not(i.e. handle may not be valid).
+    ///
+    /// If you need to send request, try upgrade returned handle to request sender.
+    pub fn create_notify_sender(&self) -> crate::NotifySender<R> {
+        crate::NotifySender {
+            context: Arc::clone(&self.core),
+        }
     }
 
     /// Closes inbound channel. Except for messages that were already pushed into the channel, no
@@ -127,7 +154,39 @@ impl<R: Config, Rx> Receiver<R, Rx> {
     /// be dropped on next message receive.
     ///
     /// To immediately close the background receiver task, all handles need to be dropped.
-    pub fn close_inbound_channel(self) {
+    pub async fn into_response_only_task(self) -> Result<ReadRunnerExitType, ReceiveError> {
+        todo!()
+    }
+
+    // ==== Internals ====
+}
+
+mod rx_inner {
+    use std::sync::Arc;
+
+    use bytes::Bytes;
+
+    use crate::{rpc::core::RpcCore, Config, Inbound};
+
+    #[derive(Debug, Default)]
+    pub(super) struct RecvContext {}
+
+    #[derive(thiserror::Error, Debug)]
+    pub enum Error {
+        #[error("End of file")]
+        Eof,
+
+        #[error("IO error from channel")]
+        IoError(#[from] std::io::Error),
+    }
+
+    // ==== Impls ====
+
+    pub(super) async fn handle_inbound_once<R: Config>(
+        core: &Arc<RpcCore<R>>,
+        ctx: &mut RecvContext,
+        ib: Bytes,
+    ) -> Result<Option<Inbound<R>>, Error> {
         todo!()
     }
 }
