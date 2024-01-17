@@ -11,8 +11,8 @@ use std::{
     task::Poll,
 };
 
-use bytes::{Buf, Bytes};
-use futures::{task::AtomicWaker, AsyncWrite, Future, FutureExt};
+use bytes::Bytes;
+use futures::{task::AtomicWaker, AsyncWrite, AsyncWriteExt, Future, FutureExt};
 
 use crate::{
     codec::{Codec, InboundFrameType},
@@ -82,16 +82,6 @@ impl<R: Config> RpcCore<R> {
     }
 }
 
-impl<R: Config> RpcCore<R> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RpcContextImpl")
-            .field("user_data", &self.user_data)
-            .field("codec", &self.codec)
-            .field("request_enabled", &self.recv_ctx.is_some())
-            .finish()
-    }
-}
-
 impl<R: Config> std::fmt::Debug for RpcCore<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RpcCore")
@@ -139,7 +129,6 @@ impl<R: Config, Wr, Rd, U, C, RH> Builder<R, Wr, Rd, U, C, RH> {
         Wr2: AsyncWrite,
     {
         use std::pin::Pin;
-        use std::task::Context;
 
         #[repr(transparent)]
         struct WriterAdapter<Wr2>(Wr2);
@@ -155,33 +144,11 @@ impl<R: Config, Wr, Rd, U, C, RH> Builder<R, Wr, Rd, U, C, RH> {
         where
             Wr2: 'static + AsyncWrite + Send,
         {
-            fn poll_write_frame(
-                self: Pin<&mut Self>,
-                cx: &mut Context<'_>,
-                buf: &mut Bytes,
-            ) -> Poll<std::io::Result<()>> {
-                let mut this = self.as_inner_pinned();
-
-                while !buf.is_empty() {
-                    match futures::ready!(this.as_mut().poll_write(cx, buf))? {
-                        0 => {
-                            return Poll::Ready(Err(std::io::Error::from(
-                                std::io::ErrorKind::WriteZero,
-                            )))
-                        }
-                        nwrite => buf.advance(nwrite),
-                    }
-                }
-
-                Poll::Ready(Ok(()))
-            }
-
-            fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-                self.as_inner_pinned().poll_flush(cx)
-            }
-
-            fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-                self.as_inner_pinned().poll_close(cx)
+            async fn write_frame<'this>(
+                self: Pin<&'this mut Self>,
+                buf: Bytes,
+            ) -> std::io::Result<()> {
+                self.as_inner_pinned().write_all(&buf[..]).await
             }
         }
 
@@ -649,8 +616,9 @@ where
                     // This can return false(already closed), where the sender closes the
                     // channel preemptively to block channel as soon as possible.
                     rx_directive.close();
-
-                    poll_fn(|cx| writer.as_mut().poll_close(cx))
+                    writer
+                        .as_mut()
+                        .close()
                         .await
                         .map_err(WriteRunnerError::WriterCloseFailed)?;
 
@@ -665,27 +633,27 @@ where
                     exit_type = WriteRunnerExitType::ManualClose;
                 }
                 DeferredDirective::Flush => {
-                    poll_fn(|cx| writer.as_mut().poll_flush(cx))
+                    writer
+                        .as_mut()
+                        .flush()
                         .await
                         .map_err(WriteRunnerError::WriterFlushFailed)?;
                 }
-                DeferredDirective::WriteMsg(mut payload) => {
+                DeferredDirective::WriteMsg(payload) => {
                     writer
                         .as_mut()
-                        .start_frame()
-                        .map_err(WriteRunnerError::WriteFailed)?;
-
-                    poll_fn(|cx| writer.as_mut().poll_write_frame(cx, &mut payload))
+                        .write_frame(payload)
                         .await
                         .map_err(WriteRunnerError::WriteFailed)?;
                 }
                 DeferredDirective::WriteMsgBurst(_) => todo!(),
 
-                DeferredDirective::WriteReqMsg(mut payload, req_id) => {
-                    let write_result =
-                        poll_fn(|cx| writer.as_mut().poll_write_frame(cx, &mut payload))
-                            .await
-                            .map_err(WriteRunnerError::WriteFailed);
+                DeferredDirective::WriteReqMsg(payload, req_id) => {
+                    let write_result = writer
+                        .as_mut()
+                        .write_frame(payload)
+                        .await
+                        .map_err(WriteRunnerError::WriteFailed);
 
                     let Some(context) = w_ctx.upgrade() else {
                         // If all request handles were dropped, it means there's no awaiting

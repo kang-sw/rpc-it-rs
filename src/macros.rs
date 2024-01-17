@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 pub mod route {
     use thiserror::Error;
 
-    use crate::{codec::DeserializeError, rpc::Config, Codec, Inbound, UserData};
+    use crate::{codec::DeserializeError, rpc::Config, Inbound};
 
     /// A function which actually deals with inbound message.
     pub type ExecFunc<R> = dyn for<'a> Fn(&mut Option<Inbound<'a, R>>) -> Result<(), ExecError>

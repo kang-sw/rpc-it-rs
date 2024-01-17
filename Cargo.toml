@@ -43,7 +43,16 @@ default-features = false
 serde = { version = "1.0", features = ["derive"] }
 
 [features]
-default = ["proc-macro", "de-error-detail", "dynamic-codec"]
+default = ["proc-macro", "de-error-detail"]
+
+# Enable full RPC support
+full = [
+	"jsonrpc",
+	"msgpack-rpc",
+	"dynamic-codec",
+	"unstable-rawbyte-rpc",
+	"in-memory-io",
+]
 
 # Enable dynamic codec support
 dynamic-codec = ["dep:erased-serde"]
@@ -64,10 +73,10 @@ jsonrpc = ["dep:serde_json", "dep:itoa", "dep:atoi"]
 # Add msgpack-rpc support to the library
 msgpack-rpc = []
 
-# Add msgpack-rpc as postcard support to the library
-#
-# This feature implements postcard serialization in msgpack-rpc scheme. See [https://github.com/msgpack-rpc/msgpack-rpc]
-mspack-rpc-postcard = []
+# This utilizes internal protocol, which isn't stable and backward-compatible between crate minor
+# versions. Use this only if you're compiling both client and server with the same version of the
+# crate.
+unstable-rawbyte-rpc = []
 
 # Adds in-memory-io default IO support
 in-memory-io = ["dep:crossbeam-queue"]

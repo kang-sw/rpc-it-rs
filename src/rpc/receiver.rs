@@ -253,7 +253,7 @@ impl<'a, R: Config> Inbound<'a, R> {
     /// ```
     /// use rpc_it::Inbound;
     ///
-    /// fn elevate_inbound<'a, C: rpc_it::Codec>(ib: &mut Inbound<'a, (), C>) {
+    /// fn elevate_inbound<'a, R: rpc_it::Config>(ib: &mut Inbound<'a, R>) {
     ///   let owned = ib.take().into_owned();
     /// }
     /// ```
@@ -352,7 +352,7 @@ impl<'a, R: Config> Inbound<'a, R> {
     /// ```no_run
     /// use rpc_it::{Inbound, ResponseError, BytesMut, Codec};
     ///
-    /// async fn response_examples<C: Codec>(b: &mut BytesMut, ib: &mut Inbound<'_, (), C>) {
+    /// async fn response_examples<R: rpc_it::Config>(b: &mut BytesMut, ib: &mut Inbound<'_, R>) {
     ///   // This returns plain ok response, with parameter "hello, world!"
     ///   ib.response(b, Ok("hello, world!"));
     ///

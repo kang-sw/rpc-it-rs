@@ -4,33 +4,42 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures::{Sink, Stream};
+use futures::{Future, Sink, SinkExt, Stream};
 
 /// [`AsyncFrameWrite`] is a trait defining the interface for writing data frames
 /// to the underlying transport. This trait can either be a straightforward wrapper
 /// around the `AsyncWrite` interface or an optimized custom implementation.
 /// It may collect [`Bytes`] and flush them in batches to minimize buffer copies.
 pub trait AsyncFrameWrite: 'static + Send {
-    /// Notifies the underlying transport about a new frame.
-    fn start_frame(self: Pin<&mut Self>) -> std::io::Result<()> {
-        Ok(())
+    fn write_frame<'this>(
+        self: Pin<&'this mut Self>,
+        buf: Bytes,
+    ) -> impl Future<Output = std::io::Result<()>> + Send + 'this;
+
+    fn write_frame_burst<'this>(
+        mut self: Pin<&'this mut Self>,
+        bufs: Vec<Bytes>,
+    ) -> impl Future<Output = std::io::Result<()>> + Send + 'this {
+        async move {
+            for buf in bufs {
+                self.as_mut().write_frame(buf).await?;
+            }
+
+            Ok(())
+        }
     }
 
-    /// Writes a frame to the underlying transport.
-    ///
-    /// Type of the parameter `buffer` is reference to help this method to easily deal with
-    /// remaining byte count in the buffer.
-    fn poll_write_frame(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buffer: &mut Bytes,
-    ) -> Poll<std::io::Result<()>>;
+    fn flush<'this>(
+        self: Pin<&'this mut Self>,
+    ) -> impl Future<Output = std::io::Result<()>> + Send + 'this {
+        async { Ok(()) }
+    }
 
-    /// Flushes the underlying transport, writing any pending data.
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>>;
-
-    /// Closes the underlying transport.
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>>;
+    fn close<'this>(
+        self: Pin<&'this mut Self>,
+    ) -> impl Future<Output = std::io::Result<()>> + Send + 'this {
+        async { Ok(()) }
+    }
 }
 
 /// [`AsyncFrameRead`] is a trait defining the interface for reading data frames from the
@@ -55,21 +64,9 @@ where
     T: Sink<Bytes, Error = E> + Send + 'static,
     E: std::error::Error + Send + Sync + 'static,
 {
-    fn poll_write_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut Bytes,
-    ) -> Poll<std::io::Result<()>> {
-        futures::ready!(self.as_mut().poll_ready(cx)).map_err(error_mapping)?;
-        Poll::Ready(self.start_send(buf.split_off(0)).map_err(error_mapping))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Sink::poll_flush(self, cx).map_err(error_mapping)
-    }
-
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Sink::poll_close(self, cx).map_err(error_mapping)
+    async fn write_frame<'this>(mut self: Pin<&'this mut Self>, buf: Bytes) -> std::io::Result<()> {
+        self.send(buf).await.map_err(error_mapping)?;
+        Ok(())
     }
 }
 
