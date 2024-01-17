@@ -25,7 +25,7 @@ use crate::{
 use super::{
     error::{ReadRunnerError, ReadRunnerExitType, WriteRunnerError, WriteRunnerExitType},
     req_rep::RequestContext,
-    Config, DeferredDirective, InboundDelivery, ReceiveErrorHandler, Receiver, RequestSender,
+    Config, InboundDelivery, ReceiveErrorHandler, Receiver, RequestSender, WriterDirective,
 };
 
 ///
@@ -48,7 +48,7 @@ pub(super) struct RpcCore<R: Config> {
 }
 
 struct SenderContext {
-    tx_deferred: mpsc::Sender<DeferredDirective>,
+    tx_deferred: mpsc::Sender<WriterDirective>,
 }
 
 #[derive(Default)]
@@ -73,7 +73,7 @@ impl<R: Config> RpcCore<R> {
         &self.user_data
     }
 
-    pub fn tx_deferred(&self) -> Option<&mpsc::Sender<DeferredDirective>> {
+    pub fn tx_deferred(&self) -> Option<&mpsc::Sender<WriterDirective>> {
         self.send_ctx.as_ref().map(|x| &x.tx_deferred)
     }
 
@@ -408,8 +408,8 @@ impl InitConfig {
     fn make_write_channel(
         &self,
     ) -> (
-        mpsc::Sender<DeferredDirective>,
-        mpsc::Receiver<DeferredDirective>,
+        mpsc::Sender<WriterDirective>,
+        mpsc::Receiver<WriterDirective>,
     ) {
         self.writer_channel_capacity
             .map_or_else(mpsc::unbounded, |x| mpsc::bounded(x.get()))
@@ -594,7 +594,7 @@ where
 
 async fn write_runner<Wr, R>(
     writer: Wr,
-    rx_directive: mpsc::Receiver<DeferredDirective>,
+    rx_directive: mpsc::Receiver<WriterDirective>,
     w_ctx: Weak<RpcCore<R>>,
 ) -> WriteRunnerResult
 where
@@ -609,7 +609,7 @@ where
         let mut exit_type = WriteRunnerExitType::AllHandleDropped;
         while let Ok(msg) = rx_directive.recv().await {
             match msg {
-                DeferredDirective::CloseImmediately => {
+                WriterDirective::CloseImmediately => {
                     // Prevent further messages from being sent immediately. This is basically
                     // best-effort attempt, which simply neglects remaining messages in the queue.
                     //
@@ -624,7 +624,7 @@ where
 
                     return Ok(WriteRunnerExitType::ManualCloseImmediate);
                 }
-                DeferredDirective::CloseAfterFlush => {
+                WriterDirective::CloseAfterFlush => {
                     rx_directive.close(); // Same as above.
 
                     // To flush rest of the messages, just continue the loop. Since we closed the
@@ -632,23 +632,28 @@ where
                     // remaining messages.
                     exit_type = WriteRunnerExitType::ManualClose;
                 }
-                DeferredDirective::Flush => {
+                WriterDirective::Flush => {
                     writer
                         .as_mut()
                         .flush()
                         .await
                         .map_err(WriteRunnerError::WriterFlushFailed)?;
                 }
-                DeferredDirective::WriteMsg(payload) => {
+                WriterDirective::WriteMsg(payload) => {
                     writer
                         .as_mut()
                         .write_frame(payload)
                         .await
                         .map_err(WriteRunnerError::WriteFailed)?;
                 }
-                DeferredDirective::WriteMsgBurst(_) => todo!(),
-
-                DeferredDirective::WriteReqMsg(payload, req_id) => {
+                WriterDirective::WriteMsgBurst(chunks) => {
+                    writer
+                        .as_mut()
+                        .write_frame_burst(chunks)
+                        .await
+                        .map_err(WriteRunnerError::WriteFailed)?;
+                }
+                WriterDirective::WriteReqMsg(payload, req_id) => {
                     let write_result = writer
                         .as_mut()
                         .write_frame(payload)

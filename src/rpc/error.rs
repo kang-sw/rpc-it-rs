@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::codec::{self, Codec};
 
-use super::DeferredDirective;
+use super::WriterDirective;
 
 // ========================================================== Send Errors ===|
 
@@ -67,16 +67,16 @@ pub enum TrySendResponseError {
 
 // ==== Utils for deferred ====
 
-pub(crate) fn convert_deferred_write_err(e: TrySendError<DeferredDirective>) -> TrySendMsgError {
+pub(crate) fn convert_deferred_write_err(e: TrySendError<WriterDirective>) -> TrySendMsgError {
     match e {
         TrySendError::Closed(_) => TrySendMsgError::ChannelClosed,
         // XXX: In future, we should deal with re-sending failed message.
-        TrySendError::Full(DeferredDirective::WriteMsg(_)) => TrySendMsgError::ChannelAtCapacity,
+        TrySendError::Full(WriterDirective::WriteMsg(_)) => TrySendMsgError::ChannelAtCapacity,
         TrySendError::Full(_) => unreachable!(),
     }
 }
 
-pub(crate) fn convert_deferred_action_err(e: TrySendError<DeferredDirective>) -> TrySendMsgError {
+pub(crate) fn convert_deferred_action_err(e: TrySendError<WriterDirective>) -> TrySendMsgError {
     match e {
         TrySendError::Closed(_) => TrySendMsgError::ChannelClosed,
         TrySendError::Full(_) => TrySendMsgError::ChannelAtCapacity,

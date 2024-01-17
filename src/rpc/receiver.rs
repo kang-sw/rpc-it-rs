@@ -16,7 +16,7 @@ use crate::{
         AtomicLongSizeType, LongSizeType, NonZeroRangeType, NonzeroSizeType, RangeType, SizeType,
     },
     error::ReadRunnerError,
-    rpc::DeferredDirective,
+    rpc::WriterDirective,
     Codec, NotifySender, ParseMessage, ResponseError,
 };
 
@@ -385,7 +385,7 @@ impl<'a, R: Config> Inbound<'a, R> {
         self.owner
             .tx_deferred()
             .ok_or(SendMsgError::ChannelClosed)?
-            .send(DeferredDirective::WriteMsg(buf.split().freeze()))
+            .send(WriterDirective::WriteMsg(buf.split().freeze()))
             .await
             .map_err(|_| SendMsgError::ChannelClosed.into())
     }
@@ -407,7 +407,7 @@ impl<'a, R: Config> Inbound<'a, R> {
         self.owner
             .tx_deferred()
             .ok_or(TrySendMsgError::ChannelClosed)?
-            .try_send(DeferredDirective::WriteMsg(buf.split().freeze()))
+            .try_send(WriterDirective::WriteMsg(buf.split().freeze()))
             .map_err(|e| {
                 match e {
                     mpsc::TrySendError::Full(_) => TrySendMsgError::ChannelAtCapacity,

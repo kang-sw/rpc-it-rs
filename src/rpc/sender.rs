@@ -43,7 +43,7 @@ pub struct ReceiveResponse<'a, R: Config> {
 }
 
 /// A message to be sent to the background dedicated writer task.
-pub(crate) enum DeferredDirective {
+pub(crate) enum WriterDirective {
     /// Close the writer transport immediately after receiving this message.
     CloseImmediately,
 
@@ -98,7 +98,7 @@ impl<R: Config> NotifySender<R> {
     ) -> Result<(), SendMsgError> {
         buf.clear();
         self.context.codec.encode_notify(method, params, buf)?;
-        self.send_frame(DeferredDirective::WriteMsg(buf.split().freeze()))
+        self.send_frame(WriterDirective::WriteMsg(buf.split().freeze()))
             .await?;
 
         Ok(())
@@ -112,23 +112,23 @@ impl<R: Config> NotifySender<R> {
     ) -> Result<(), TrySendMsgError> {
         buf.clear();
         self.context.codec.encode_notify(method, params, buf)?;
-        self.try_send_frame(DeferredDirective::WriteMsg(buf.split().freeze()))?;
+        self.try_send_frame(WriterDirective::WriteMsg(buf.split().freeze()))?;
 
         Ok(())
     }
 
-    fn tx_deferred(&self) -> &mpsc::Sender<DeferredDirective> {
+    fn tx_deferred(&self) -> &mpsc::Sender<WriterDirective> {
         // SAFETY: Once [`NotifySender`] is created, the writer channel is always defined.
         unsafe { self.context.tx_deferred().unwrap_unchecked() }
     }
 
-    fn try_send_frame(&self, buf: DeferredDirective) -> Result<(), TrySendMsgError> {
+    fn try_send_frame(&self, buf: WriterDirective) -> Result<(), TrySendMsgError> {
         self.tx_deferred()
             .try_send(buf)
             .map_err(error::convert_deferred_write_err)
     }
 
-    async fn send_frame(&self, buf: DeferredDirective) -> Result<(), SendMsgError> {
+    async fn send_frame(&self, buf: WriterDirective) -> Result<(), SendMsgError> {
         self.tx_deferred()
             .send(buf)
             .await
@@ -162,9 +162,9 @@ impl<R: Config> NotifySender<R> {
 
         tx_deferred
             .try_send(if drop_after_this {
-                DeferredDirective::CloseImmediately
+                WriterDirective::CloseImmediately
             } else {
-                DeferredDirective::CloseAfterFlush
+                WriterDirective::CloseAfterFlush
             })
             .map_err(error::convert_deferred_action_err)?;
 
@@ -180,9 +180,9 @@ impl<R: Config> NotifySender<R> {
 
         tx_deferred
             .send(if discard_unsent {
-                DeferredDirective::CloseImmediately
+                WriterDirective::CloseImmediately
             } else {
-                DeferredDirective::CloseAfterFlush
+                WriterDirective::CloseAfterFlush
             })
             .await
             .map_err(|_| TrySendMsgError::ChannelClosed)?;
@@ -197,14 +197,14 @@ impl<R: Config> NotifySender<R> {
     /// background writer task, you can't get the actual result of the flush operation.
     pub fn try_flush_writer(&self) -> Result<(), TrySendMsgError> {
         self.tx_deferred()
-            .try_send(DeferredDirective::Flush)
+            .try_send(WriterDirective::Flush)
             .map_err(error::convert_deferred_action_err)
     }
 
     /// See [`NotifySender::try_flush_writer`]
     pub async fn flush_writer(&self) -> Result<(), TrySendMsgError> {
         self.tx_deferred()
-            .send(DeferredDirective::Flush)
+            .send(WriterDirective::Flush)
             .await
             .map_err(|_| TrySendMsgError::ChannelClosed)
     }
@@ -257,7 +257,7 @@ impl<R: Config> RequestSender<R> {
             .ok_or(SendMsgError::ReceiverExpired)??;
         let request_id = resp.request_id();
 
-        self.send_frame(DeferredDirective::WriteReqMsg(
+        self.send_frame(WriterDirective::WriteReqMsg(
             buf.split().freeze(),
             request_id,
         ))
@@ -277,7 +277,7 @@ impl<R: Config> RequestSender<R> {
             .ok_or(TrySendMsgError::ReceiverExpired)??;
         let request_id = resp.request_id();
 
-        self.try_send_frame(DeferredDirective::WriteReqMsg(
+        self.try_send_frame(WriterDirective::WriteReqMsg(
             buf.split().freeze(),
             request_id,
         ))?;
@@ -456,7 +456,7 @@ where
     fn burst_into_directive(
         &self,
         burst: PacketWriteBurst<R::Codec>,
-    ) -> Result<Option<(usize, DeferredDirective)>, EncodeError> {
+    ) -> Result<Option<(usize, WriterDirective)>, EncodeError> {
         let codec_hash = self.context.codec.codec_type_hash_ptr() as usize;
 
         match burst {
@@ -464,17 +464,14 @@ where
             PacketWriteBurst::ErrHashMismatch => Err(EncodeError::NotReusable),
             PacketWriteBurst::Mono(pkt) => {
                 if pkt.hash.get() == codec_hash {
-                    Ok(Some((1, DeferredDirective::WriteMsg(pkt.data))))
+                    Ok(Some((1, WriterDirective::WriteMsg(pkt.data))))
                 } else {
                     Err(EncodeError::NotReusable)
                 }
             }
             PacketWriteBurst::Burst(hsah, chunks) => {
                 if hsah.get() == codec_hash {
-                    Ok(Some((
-                        chunks.len(),
-                        DeferredDirective::WriteMsgBurst(chunks),
-                    )))
+                    Ok(Some((chunks.len(), WriterDirective::WriteMsgBurst(chunks))))
                 } else {
                     Err(EncodeError::NotReusable)
                 }
