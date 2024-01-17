@@ -479,7 +479,7 @@ where
         futures::pin_mut!(reader);
 
         loop {
-            match poll_fn(|cx| reader.as_mut().poll_read_frame(cx)).await {
+            match reader.as_mut().next().await {
                 Ok(Some(bytes)) => {
                     let Some(ctx) = wctx.upgrade() else {
                         break Ok(ReadRunnerExitType::AllHandleDropped);

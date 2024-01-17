@@ -1,7 +1,4 @@
-use std::{
-    pin::Pin,
-    task::{Context, Poll},
-};
+use std::pin::Pin;
 
 use bytes::Bytes;
 use futures::{Future, Sink, SinkExt, Stream};
@@ -50,10 +47,9 @@ pub trait AsyncFrameRead {
     /// lies with the implementation of [`AsyncFrameRead`].
     ///
     /// It'll return [`Ok(None)`] if it was gracefully closed.
-    fn poll_read_frame(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<Option<Bytes>>>;
+    fn next<'this>(
+        self: Pin<&'this mut Self>,
+    ) -> impl Future<Output = std::io::Result<Option<Bytes>>> + Send + 'this;
 }
 
 // ==== AsyncFrameWrite ====
@@ -80,11 +76,10 @@ impl<T> AsyncFrameRead for T
 where
     T: Stream<Item = std::io::Result<Bytes>> + Unpin + Send + 'static,
 {
-    fn poll_read_frame(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<std::io::Result<Option<Bytes>>> {
-        Stream::poll_next(self, cx).map(|x| x.transpose())
+    async fn next<'this>(mut self: Pin<&'this mut Self>) -> std::io::Result<Option<Bytes>> {
+        std::future::poll_fn(move |cx| self.as_mut().poll_next(cx))
+            .await
+            .transpose()
     }
 }
 
@@ -239,6 +234,15 @@ mod in_memory {
     // ==== InMemoryRx ====
 
     impl AsyncFrameRead for InMemoryRx {
+        fn next<'this>(
+            mut self: Pin<&'this mut Self>,
+        ) -> impl futures::prelude::Future<Output = std::io::Result<Option<Bytes>>> + Send + 'this
+        {
+            std::future::poll_fn(move |cx| self.as_mut().poll_read_frame(cx))
+        }
+    }
+
+    impl InMemoryRx {
         fn poll_read_frame(
             self: Pin<&mut Self>,
             cx: &mut Context<'_>,
@@ -276,7 +280,7 @@ mod in_memory {
         type Item = Bytes;
 
         fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-            AsyncFrameRead::poll_read_frame(self, cx).map(|x| x.ok().flatten())
+            InMemoryRx::poll_read_frame(self, cx).map(|x| x.ok().flatten())
         }
     }
 
