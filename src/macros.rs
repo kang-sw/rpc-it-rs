@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 pub mod route {
     use thiserror::Error;
 
-    use crate::{codec::DeserializeError, rpc::RpcConfig, Codec, Inbound, UserData};
+    use crate::{codec::DeserializeError, rpc::Config, Codec, Inbound, UserData};
 
     /// A function which actually deals with inbound message.
     pub type ExecFunc<R> = dyn for<'a> Fn(&mut Option<Inbound<'a, R>>) -> Result<(), ExecError>
@@ -42,18 +42,18 @@ pub mod route {
         fn finish(self) -> Self::Func;
     }
 
-    pub struct Router<C: RpcConfig, R> {
+    pub struct Router<C: Config, R> {
         route_func: R,
         funcs: Vec<Box<ExecFunc<C>>>,
     }
 
-    pub struct RouterBuilder<C: RpcConfig, R> {
+    pub struct RouterBuilder<C: Config, R> {
         inner: Router<C, R>,
     }
 
     // ==== Builder ====
 
-    impl<C: RpcConfig, R> Default for RouterBuilder<C, R>
+    impl<C: Config, R> Default for RouterBuilder<C, R>
     where
         R: RouterFuncBuilder + Default,
     {
@@ -67,7 +67,7 @@ pub mod route {
         }
     }
 
-    impl<C: RpcConfig, R> RouterBuilder<C, R>
+    impl<C: Config, R> RouterBuilder<C, R>
     where
         R: RouterFuncBuilder,
     {
@@ -126,7 +126,7 @@ pub mod route {
 
     // ==== Router ====
 
-    impl<C: RpcConfig, R> Router<C, R>
+    impl<C: Config, R> Router<C, R>
     where
         R: RouterFunc,
     {
@@ -299,17 +299,17 @@ pub mod inbound {
     use crate::{
         codec::{error::EncodeError, DeserializeError},
         error::ErrorResponse,
-        rpc::{PreparedPacket, RpcConfig},
+        rpc::{Config, PreparedPacket},
         Codec, Inbound, NotifySender, ParseMessage, RequestSender,
     };
 
     use super::{NotifyMethod, RequestMethod};
 
-    pub struct CachedRequest<R: RpcConfig, N: NotifyMethod + RequestMethod> {
+    pub struct CachedRequest<R: Config, N: NotifyMethod + RequestMethod> {
         inner: CachedNotify<R, N>,
     }
 
-    pub struct CachedNotify<R: RpcConfig, M: NotifyMethod> {
+    pub struct CachedNotify<R: Config, M: NotifyMethod> {
         /// NOTE: Paramter order is important; `ib` must be dropped after `v` disposed, as it
         /// borrows the underlying buffer of inbound `ib`
         v: M::ParamRecv<'static>,
@@ -340,7 +340,7 @@ pub mod inbound {
 
     impl<R, M> CachedRequest<R, M>
     where
-        R: RpcConfig,
+        R: Config,
         M: RequestMethod + NotifyMethod,
     {
         /// # Safety
@@ -382,7 +382,7 @@ pub mod inbound {
 
     impl<R, M> std::ops::Deref for CachedRequest<R, M>
     where
-        R: RpcConfig,
+        R: Config,
         M: RequestMethod + NotifyMethod,
     {
         type Target = CachedNotify<R, M>;
@@ -396,7 +396,7 @@ pub mod inbound {
 
     impl<R, M> CachedNotify<R, M>
     where
-        R: RpcConfig,
+        R: Config,
         M: NotifyMethod,
     {
         #[doc(hidden)]
@@ -431,7 +431,7 @@ pub mod inbound {
 
     impl<R, M> std::ops::Deref for CachedNotify<R, M>
     where
-        R: RpcConfig,
+        R: Config,
         M: NotifyMethod,
     {
         type Target = Inbound<'static, R>;
@@ -443,7 +443,7 @@ pub mod inbound {
 
     // ========================================================== Response Wait ===|
 
-    pub struct CachedWaitResponse<'a, R: RpcConfig, M: RequestMethod>(
+    pub struct CachedWaitResponse<'a, R: Config, M: RequestMethod>(
         crate::ReceiveResponse<'a, R>,
         PhantomData<M>,
     );
@@ -460,7 +460,7 @@ pub mod inbound {
 
     impl<'a, R, M> std::future::Future for CachedWaitResponse<'a, R, M>
     where
-        R: RpcConfig,
+        R: Config,
         M: RequestMethod,
     {
         type Output =
@@ -537,7 +537,7 @@ pub mod inbound {
 
     // ========================================================== Extensions ===|
 
-    impl<R: RpcConfig> NotifySender<R> {
+    impl<R: Config> NotifySender<R> {
         pub async fn noti<M>(
             &self,
             buf: &mut BytesMut,
@@ -572,7 +572,7 @@ pub mod inbound {
         }
     }
 
-    impl<R: RpcConfig> RequestSender<R> {
+    impl<R: Config> RequestSender<R> {
         pub async fn call<M>(
             &self,
             buf: &mut BytesMut,

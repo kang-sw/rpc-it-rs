@@ -25,11 +25,11 @@ use crate::{
 use super::{
     error::{ReadRunnerError, ReadRunnerExitType, WriteRunnerError, WriteRunnerExitType},
     req_rep::RequestContext,
-    DeferredDirective, InboundDelivery, ReceiveErrorHandler, Receiver, RequestSender, RpcConfig,
+    Config, DeferredDirective, InboundDelivery, ReceiveErrorHandler, Receiver, RequestSender,
 };
 
 ///
-pub struct Builder<R: RpcConfig, Wr, Rd, U, C, RH> {
+pub struct Builder<R: Config, Wr, Rd, U, C, RH> {
     writer: Wr,
     reader: Rd,
     read_event_handler: RH,
@@ -39,7 +39,7 @@ pub struct Builder<R: RpcConfig, Wr, Rd, U, C, RH> {
     __: std::marker::PhantomData<R>,
 }
 
-pub(super) struct RpcCore<R: RpcConfig> {
+pub(super) struct RpcCore<R: Config> {
     pub(super) codec: R::Codec,
     user_data: R::UserData,
     reqs: Option<RequestContext<R::Codec>>,
@@ -68,7 +68,7 @@ struct InitConfig {
 
 // ========================================================== RpcContext ===|
 
-impl<R: RpcConfig> RpcCore<R> {
+impl<R: Config> RpcCore<R> {
     pub fn user_data(&self) -> &R::UserData {
         &self.user_data
     }
@@ -82,7 +82,7 @@ impl<R: RpcConfig> RpcCore<R> {
     }
 }
 
-impl<R: RpcConfig> RpcCore<R> {
+impl<R: Config> RpcCore<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RpcContextImpl")
             .field("user_data", &self.user_data)
@@ -92,7 +92,7 @@ impl<R: RpcConfig> RpcCore<R> {
     }
 }
 
-impl<R: RpcConfig> std::fmt::Debug for RpcCore<R> {
+impl<R: Config> std::fmt::Debug for RpcCore<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RpcCore")
             .field("codec", &self.codec)
@@ -104,7 +104,7 @@ impl<R: RpcConfig> std::fmt::Debug for RpcCore<R> {
 
 // ========================================================== Builder ===|
 
-pub fn builder<R: RpcConfig>() -> Builder<R, (), (), (), (), ()> {
+pub fn builder<R: Config>() -> Builder<R, (), (), (), (), ()> {
     Builder {
         writer: (),
         reader: (),
@@ -116,7 +116,7 @@ pub fn builder<R: RpcConfig>() -> Builder<R, (), (), (), (), ()> {
     }
 }
 
-impl<R: RpcConfig, Wr, Rd, U, C, RH> Builder<R, Wr, Rd, U, C, RH> {
+impl<R: Config, Wr, Rd, U, C, RH> Builder<R, Wr, Rd, U, C, RH> {
     // TODO: Add documentation for these methods.
 
     pub fn with_frame_writer<Wr2>(self, writer: Wr2) -> Builder<R, Wr2, Rd, U, C, RH>
@@ -277,7 +277,7 @@ macro_rules! must_use_message {
     };
 }
 
-impl<R: RpcConfig, Wr, Rd, RH> Builder<R, Wr, Rd, R::UserData, R::Codec, RH>
+impl<R: Config, Wr, Rd, RH> Builder<R, Wr, Rd, R::UserData, R::Codec, RH>
 where
     Wr: AsyncFrameWrite,
     Rd: AsyncFrameRead,
@@ -355,7 +355,7 @@ where
     }
 }
 
-impl<R: RpcConfig, Wr, Rd, RH> Builder<R, Wr, Rd, R::UserData, R::Codec, RH>
+impl<R: Config, Wr, Rd, RH> Builder<R, Wr, Rd, R::UserData, R::Codec, RH>
 where
     Rd: AsyncFrameRead,
     RH: ReceiveErrorHandler<R>,
@@ -398,7 +398,7 @@ where
     }
 }
 
-impl<R: RpcConfig, Wr, Rd, RH> Builder<R, Wr, Rd, R::UserData, R::Codec, RH>
+impl<R: Config, Wr, Rd, RH> Builder<R, Wr, Rd, R::UserData, R::Codec, RH>
 where
     Wr: AsyncFrameWrite,
 {
@@ -461,7 +461,7 @@ impl InitConfig {
 
 // ==== Context Utils ====
 
-impl<R: RpcConfig> RpcCore<R> {
+impl<R: Config> RpcCore<R> {
     fn unwrap_recv(&self) -> &ReceiverContext {
         self.recv_ctx.as_ref().unwrap()
     }
@@ -486,7 +486,7 @@ async fn read_runner<Rd, RH, R>(
 where
     Rd: AsyncFrameRead,
     RH: ReceiveErrorHandler<R>,
-    R: RpcConfig,
+    R: Config,
 {
     // - Already expired: This case is not an error!
     // - `ReceiverContext` is missing: this is an error!
@@ -632,7 +632,7 @@ async fn write_runner<Wr, R>(
 ) -> WriteRunnerResult
 where
     Wr: AsyncFrameWrite,
-    R: RpcConfig,
+    R: Config,
 {
     // Implements bulk receive to minimize number of polls on the channel
 

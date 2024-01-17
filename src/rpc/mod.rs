@@ -22,14 +22,14 @@ pub use self::req_rep::Response;
 
 use core::RpcCore;
 
-pub trait RpcConfig: 'static {
+pub trait Config: 'static {
     type Codec: Codec;
     type UserData: UserData;
 }
 
-pub struct Rpc<U, C>(std::marker::PhantomData<(U, C)>);
+pub struct DefaultConfig<U, C>(std::marker::PhantomData<(U, C)>);
 
-impl<U, C> RpcConfig for Rpc<U, C>
+impl<U, C> Config for DefaultConfig<U, C>
 where
     U: UserData,
     C: Codec,

@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use bytes::BytesMut;
-use futures::{executor::LocalPool, task::SpawnExt, StreamExt};
-use rpc_it::{rpc::RpcConfig, ParseMessage, ResponseError};
+use futures::{executor::LocalPool, task::SpawnExt};
+use rpc_it::{rpc::Config, ParseMessage, ResponseError};
 
 use crate::shared::create_default_rpc_pair;
 
@@ -13,24 +13,20 @@ mod shared;
 #[test]
 #[cfg(feature = "jsonrpc")]
 fn verify_request_jsonrpc() {
-    use rpc_it::{ext_codec::jsonrpc, rpc::Rpc};
+    use rpc_it::{ext_codec::jsonrpc, rpc::DefaultConfig};
 
-    verify_request::<Rpc<(), _>>(|| jsonrpc::Codec);
+    verify_request::<DefaultConfig<(), _>>(|| jsonrpc::Codec);
 }
 
 #[test]
 #[cfg(all(feature = "jsonrpc", feature = "dynamic-codec"))]
 fn verify_request_dynamic_codecs() {
-    use rpc_it::{
-        codec::{self, DynamicCodec},
-        ext_codec::jsonrpc,
-        rpc::Rpc,
-    };
+    use rpc_it::{codec::DynamicCodec, ext_codec::jsonrpc, rpc::DefaultConfig};
 
-    verify_request::<Rpc<(), DynamicCodec>>(|| Arc::new(jsonrpc::Codec));
+    verify_request::<DefaultConfig<(), DynamicCodec>>(|| Arc::new(jsonrpc::Codec));
 }
 
-fn verify_request<R: RpcConfig>(codec: impl Fn() -> R::Codec)
+fn verify_request<R: Config>(codec: impl Fn() -> R::Codec)
 where
     R::UserData: Default,
 {

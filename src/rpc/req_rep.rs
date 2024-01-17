@@ -15,7 +15,7 @@ use crate::{
     defs::RequestId,
 };
 
-use super::{error::ErrorResponse, ReceiveResponse, RpcConfig};
+use super::{error::ErrorResponse, Config, ReceiveResponse};
 
 /// Response message from RPC server.
 #[derive(Debug)]
@@ -72,7 +72,7 @@ pub(super) enum ReceiveResponseState {
 
 impl<'a, R> Future for ReceiveResponse<'a, R>
 where
-    R: RpcConfig,
+    R: Config,
 {
     type Output = Result<Response<R::Codec>, Option<ErrorResponse<R::Codec>>>;
 
@@ -154,7 +154,7 @@ where
     }
 }
 
-impl<'a, R: RpcConfig> Drop for ReceiveResponse<'a, R> {
+impl<'a, R: Config> Drop for ReceiveResponse<'a, R> {
     fn drop(&mut self) {
         if matches!(self.state, ReceiveResponseState::Expired) {
             return;
@@ -170,7 +170,7 @@ impl<'a, R: RpcConfig> Drop for ReceiveResponse<'a, R> {
 
 // ======== ReceiveResponse ======== //
 
-impl<'a, R: RpcConfig> ReceiveResponse<'a, R> {
+impl<'a, R: Config> ReceiveResponse<'a, R> {
     /// Elevate the lifetime of the response to `'static`.
     pub fn into_owned(mut self) -> ReceiveResponse<'static, R> {
         ReceiveResponse {

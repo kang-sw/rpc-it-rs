@@ -114,8 +114,9 @@ pub use bytes::{Bytes, BytesMut};
 pub(crate) use inner::*;
 
 pub use rpc::{
-    builder, error, Inbound, NotifySender, ReceiveErrorHandler, ReceiveResponse, Receiver,
-    RequestSender, Response, UserData, WeakNotifySender, WeakRequestSender,
+    builder, error, Config, DefaultConfig, Inbound, NotifySender, ReceiveErrorHandler,
+    ReceiveResponse, Receiver, RequestSender, Response, UserData, WeakNotifySender,
+    WeakRequestSender,
 };
 
 pub use macros::route::{

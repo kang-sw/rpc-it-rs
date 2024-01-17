@@ -6,7 +6,7 @@ use super::*;
 
 /// A RPC client handle which can only send RPC notifications.
 #[repr(transparent)]
-pub struct NotifySender<R: RpcConfig> {
+pub struct NotifySender<R: Config> {
     pub(super) context: Arc<RpcCore<R>>,
 }
 
@@ -14,7 +14,7 @@ pub struct NotifySender<R: RpcConfig> {
 ///
 /// Should be upgraded to [`NotifySender`] before use.
 #[derive(Debug)]
-pub struct WeakNotifySender<R: RpcConfig> {
+pub struct WeakNotifySender<R: Config> {
     pub(super) context: Weak<RpcCore<R>>,
 }
 
@@ -23,7 +23,7 @@ pub struct WeakNotifySender<R: RpcConfig> {
 /// A RPC client handle which can send RPC requests and notifications.
 ///
 /// It is super-set of [`NotifySender`].
-pub struct RequestSender<R: RpcConfig> {
+pub struct RequestSender<R: Config> {
     pub(super) inner: NotifySender<R>,
 }
 
@@ -31,12 +31,12 @@ pub struct RequestSender<R: RpcConfig> {
 ///
 /// Should be upgraded to [`RequestSender`] before use.
 #[derive(Debug)]
-pub struct WeakRequestSender<R: RpcConfig> {
+pub struct WeakRequestSender<R: Config> {
     inner: WeakNotifySender<R>,
 }
 
 /// An awaitable response for a sent RPC request
-pub struct ReceiveResponse<'a, R: RpcConfig> {
+pub struct ReceiveResponse<'a, R: Config> {
     pub(super) owner: Cow<'a, RequestSender<R>>,
     pub(super) req_id: RequestId,
     pub(super) state: req_rep::ReceiveResponseState,
@@ -70,7 +70,7 @@ pub(crate) enum DeferredDirective {
 // ==== Debug Trait Impls ====
 
 /// Implements notification methods for [`NotifySender`].
-impl<R: RpcConfig> std::fmt::Debug for NotifySender<R> {
+impl<R: Config> std::fmt::Debug for NotifySender<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotifySender")
             .field("context", &self.context)
@@ -79,7 +79,7 @@ impl<R: RpcConfig> std::fmt::Debug for NotifySender<R> {
 }
 
 /// Implements notification methods for [`NotifySender`].
-impl<R: RpcConfig> std::fmt::Debug for RequestSender<R> {
+impl<R: Config> std::fmt::Debug for RequestSender<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NotifySender")
             .field("context", &self.context)
@@ -89,7 +89,7 @@ impl<R: RpcConfig> std::fmt::Debug for RequestSender<R> {
 
 // ========================================================== NotifySender ===|
 
-impl<R: RpcConfig> NotifySender<R> {
+impl<R: Config> NotifySender<R> {
     pub async fn notify<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
@@ -217,7 +217,7 @@ impl<R: RpcConfig> NotifySender<R> {
     }
 }
 
-impl<R: RpcConfig> Clone for NotifySender<R> {
+impl<R: Config> Clone for NotifySender<R> {
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
@@ -225,7 +225,7 @@ impl<R: RpcConfig> Clone for NotifySender<R> {
     }
 }
 
-impl<R: RpcConfig> WeakNotifySender<R> {
+impl<R: Config> WeakNotifySender<R> {
     /// Upgrade this handle to a strong handle.
     pub fn upgrade(&self) -> Option<NotifySender<R>> {
         self.context
@@ -234,7 +234,7 @@ impl<R: RpcConfig> WeakNotifySender<R> {
     }
 }
 
-impl<R: RpcConfig> Clone for WeakNotifySender<R> {
+impl<R: Config> Clone for WeakNotifySender<R> {
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
@@ -245,7 +245,7 @@ impl<R: RpcConfig> Clone for WeakNotifySender<R> {
 // ========================================================== RequestSender ===|
 
 /// Implements request methods for [`RequestSender`].
-impl<R: RpcConfig> RequestSender<R> {
+impl<R: Config> RequestSender<R> {
     pub async fn request<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
@@ -316,7 +316,7 @@ impl<R: RpcConfig> RequestSender<R> {
     }
 }
 
-impl<R: RpcConfig> RequestSender<R> {
+impl<R: Config> RequestSender<R> {
     /// Unwraps request context from this handle; This is valid since it's unconditionally defined
     /// when [`RequestSender`] is created.
     pub(super) fn reqs(&self) -> &RequestContext<R::Codec> {
@@ -324,7 +324,7 @@ impl<R: RpcConfig> RequestSender<R> {
     }
 }
 
-impl<R: RpcConfig> Clone for RequestSender<R> {
+impl<R: Config> Clone for RequestSender<R> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -333,7 +333,7 @@ impl<R: RpcConfig> Clone for RequestSender<R> {
 }
 
 /// Provides handy way to access [`NotifySender`] methods in [`RequestSender`].
-impl<R: RpcConfig> std::ops::Deref for RequestSender<R> {
+impl<R: Config> std::ops::Deref for RequestSender<R> {
     type Target = NotifySender<R>;
 
     fn deref(&self) -> &Self::Target {
@@ -341,13 +341,13 @@ impl<R: RpcConfig> std::ops::Deref for RequestSender<R> {
     }
 }
 
-impl<R: RpcConfig> WeakRequestSender<R> {
+impl<R: Config> WeakRequestSender<R> {
     pub fn upgrade(&self) -> Option<RequestSender<R>> {
         self.inner.upgrade().map(|inner| RequestSender { inner })
     }
 }
 
-impl<R: RpcConfig> Clone for WeakRequestSender<R> {
+impl<R: Config> Clone for WeakRequestSender<R> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -401,7 +401,7 @@ impl<C> Clone for PreparedPacket<C> {
 
 impl<R> NotifySender<R>
 where
-    R: RpcConfig,
+    R: Config,
 {
     /// Prepare pre-encoded notification message. Request can't be prepared as there's no concept of
     /// broadcast or reuse in request.

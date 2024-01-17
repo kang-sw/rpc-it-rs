@@ -1,7 +1,7 @@
 #![cfg(feature = "in-memory-io")]
 
 use futures::task::{Spawn, SpawnExt};
-use rpc_it::{rpc::RpcConfig, Codec, ReceiveErrorHandler};
+use rpc_it::{rpc::Config, Codec, ReceiveErrorHandler};
 
 #[derive(Clone, Debug)]
 pub struct ConnectionConfig {
@@ -22,7 +22,7 @@ impl Default for ConnectionConfig {
     }
 }
 
-pub fn create_default_rpc_pair<R: RpcConfig>(
+pub fn create_default_rpc_pair<R: Config>(
     spawner: &impl Spawn,
     server_user_data: R::UserData,
     client_user_data: R::UserData,
@@ -40,7 +40,8 @@ pub fn create_default_rpc_pair<R: RpcConfig>(
     )
 }
 
-pub fn create_rpc_pair<RS: RpcConfig, RC: RpcConfig>(
+#[allow(clippy::too_many_arguments)]
+pub fn create_rpc_pair<RS: Config, RC: Config>(
     spawner: &impl Spawn,
     server_user_data: RS::UserData,
     client_user_data: RC::UserData,

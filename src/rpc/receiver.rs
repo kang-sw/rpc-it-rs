@@ -23,14 +23,14 @@ use crate::{
 use super::{
     core::RpcCore,
     error::{SendMsgError, SendResponseError, TryRecvError, TrySendMsgError, TrySendResponseError},
-    PreparedPacket, RpcConfig,
+    Config, PreparedPacket,
 };
 
 /// Handles error during receiving inbound messages inside runner.
 ///
 /// By result of handled error, it can determine whether to continue receiving inbound(i.e. maintain
 /// the connection) or not.
-pub trait ReceiveErrorHandler<R: RpcConfig>: 'static + Send {
+pub trait ReceiveErrorHandler<R: Config>: 'static + Send {
     /// Error during decoding received inbound message.
     fn on_inbound_decode_error(
         &mut self,
@@ -81,11 +81,11 @@ pub trait ReceiveErrorHandler<R: RpcConfig>: 'static + Send {
 }
 
 /// Default implementation for any type of user data. It ignores every error.
-impl<R: RpcConfig> ReceiveErrorHandler<R> for () {}
+impl<R: Config> ReceiveErrorHandler<R> for () {}
 
 /// A receiver which deals with inbound notifies / requests.
 #[derive(Debug)]
-pub struct Receiver<R: RpcConfig> {
+pub struct Receiver<R: Config> {
     pub(super) context: Arc<RpcCore<R>>,
 
     /// Even if all receivers are dropped, the background task possibly retain if there's any
@@ -95,7 +95,7 @@ pub struct Receiver<R: RpcConfig> {
 
 // ==== impl:Receiver ====
 
-impl<R: RpcConfig> Clone for Receiver<R> {
+impl<R: Config> Clone for Receiver<R> {
     fn clone(&self) -> Self {
         Self {
             context: Arc::clone(&self.context),
@@ -104,7 +104,7 @@ impl<R: RpcConfig> Clone for Receiver<R> {
     }
 }
 
-impl<R: RpcConfig> Receiver<R> {
+impl<R: Config> Receiver<R> {
     pub fn user_data(&self) -> &R::UserData {
         self.context.user_data()
     }
@@ -204,7 +204,7 @@ fn req_id_to_inner(range: Option<NonZeroRangeType>) -> LongSizeType {
 // ========================================================== Inbound ===|
 
 /// A inbound message that was received from remote. It is either a notification or a request.
-pub struct Inbound<'a, R: RpcConfig> {
+pub struct Inbound<'a, R: Config> {
     owner: Cow<'a, Arc<RpcCore<R>>>,
     inner: InboundDelivery,
 }
@@ -225,7 +225,7 @@ pub struct ResponsePayload<T: serde::Serialize>(Result<T, (ResponseError, Option
 
 // ==== impl:Inbound ====
 
-impl<'a, R: RpcConfig> Inbound<'a, R> {
+impl<'a, R: Config> Inbound<'a, R> {
     pub(super) fn new(owner: Cow<'a, Arc<RpcCore<R>>>, inner: InboundDelivery) -> Self {
         Self { owner, inner }
     }
@@ -501,7 +501,7 @@ impl InboundDelivery {
     }
 }
 
-impl<'a, R: RpcConfig> Drop for Inbound<'a, R> {
+impl<'a, R: Config> Drop for Inbound<'a, R> {
     fn drop(&mut self) {
         // Sends 'unhandled' message to remote if it's still an unhandled request message until it's
         // being dropped. This is default behavior to prevent reducing remote side's request timeout
@@ -513,7 +513,7 @@ impl<'a, R: RpcConfig> Drop for Inbound<'a, R> {
     }
 }
 
-impl<'a, R: RpcConfig> ParseMessage<R::Codec> for Inbound<'a, R> {
+impl<'a, R: Config> ParseMessage<R::Codec> for Inbound<'a, R> {
     fn codec_payload_pair(&self) -> (&R::Codec, &[u8]) {
         (&self.owner.codec, self.payload_bytes())
     }
