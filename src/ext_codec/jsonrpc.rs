@@ -8,7 +8,7 @@ use crate::{
     codec::{
         self,
         error::{DecodeError, EncodeError},
-        CodecUtil, DeserializeError, EncodeResponsePayload, InboundFrameType,
+        DeserializeError, EncodeResponsePayload, InboundFrameType,
     },
     defs::{RequestId, SizeType},
     ResponseError,
@@ -61,6 +61,15 @@ mod errc {
 }
 
 impl crate::Codec for Codec {
+    fn codec_hash_ptr(&self) -> *const () {
+        const ADDR: *const () = &();
+        ADDR
+    }
+
+    fn fork(&self) -> Self {
+        Self
+    }
+
     fn encode_notify<S: Serialize>(
         &self,
         method: &str,
@@ -202,10 +211,6 @@ impl crate::Codec for Codec {
             .map_err(DeserializeError::from)?;
 
         Ok(())
-    }
-
-    fn codec_noti_hash(&self) -> Option<std::num::NonZeroU64> {
-        self.impl_codec_noti_hash()
     }
 
     fn decode_inbound(&self, frame: &[u8]) -> Result<codec::InboundFrameType, DecodeError> {

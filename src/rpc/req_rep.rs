@@ -114,7 +114,7 @@ where
                 drop(lc_slot);
                 drop(lc_entry);
 
-                let codec = reqs.codec.clone();
+                let codec = reqs.codec.fork();
 
                 return Poll::Ready(if let Some(errc) = errc {
                     Err(Some(ErrorResponse {

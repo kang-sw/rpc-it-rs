@@ -154,7 +154,6 @@ fn verify_request<C: Codec>(codec: impl Fn() -> C) {
 
         spawner
             .spawn(async move {
-                // TODO: test multiple requests
                 let b = &mut BytesMut::new();
                 let req1 = client.request(b, "pewpew", &(1, 2)).await.unwrap();
                 let req2 = client.request(b, "tewtew", &(3, 4)).await.unwrap();

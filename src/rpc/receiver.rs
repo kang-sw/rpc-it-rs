@@ -85,7 +85,7 @@ where
 }
 
 /// A receiver which deals with inbound notifies / requests.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Receiver<U: UserData, C: Codec> {
     pub(super) context: Arc<RpcCore<U, C>>,
 
@@ -95,6 +95,19 @@ pub struct Receiver<U: UserData, C: Codec> {
 }
 
 // ==== impl:Receiver ====
+
+impl<U, C> Clone for Receiver<U, C>
+where
+    U: UserData,
+    C: Codec,
+{
+    fn clone(&self) -> Self {
+        Self {
+            context: Arc::clone(&self.context),
+            channel: self.channel.clone(),
+        }
+    }
+}
 
 impl<U, C> Receiver<U, C>
 where

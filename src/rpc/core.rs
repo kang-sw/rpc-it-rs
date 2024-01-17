@@ -287,7 +287,7 @@ where
         let (tx_w, rx_w) = self.cfg.make_write_channel();
         let context = Arc::new(RpcCore {
             user_data: self.user_data,
-            reqs: Some(RequestContext::new(self.codec.clone())),
+            reqs: Some(RequestContext::new(self.codec.fork())),
             codec: self.codec,
             send_ctx: Some(SenderContext {
                 tx_deferred: tx_w.clone(),
@@ -323,7 +323,7 @@ where
         let (tx_ib, rx_ib) = self.cfg.make_inbound_channel();
         let context = Arc::new(RpcCore {
             user_data: self.user_data,
-            reqs: enable_request.then(|| RequestContext::new(self.codec.clone())),
+            reqs: enable_request.then(|| RequestContext::new(self.codec.fork())),
             codec: self.codec,
             send_ctx: Some(SenderContext {
                 tx_deferred: tx_w.clone(),
@@ -679,6 +679,8 @@ where
                         .await
                         .map_err(WriteRunnerError::WriteFailed)?;
                 }
+                DeferredDirective::WriteMsgBurst(_) => todo!(),
+
                 DeferredDirective::WriteReqMsg(mut payload, req_id) => {
                     let write_result =
                         poll_fn(|cx| writer.as_mut().poll_write_frame(cx, &mut payload))

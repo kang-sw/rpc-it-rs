@@ -1,4 +1,3 @@
-use std::num::NonZeroU64;
 use std::ops::Range;
 
 use bytes::BytesMut;
@@ -116,13 +115,39 @@ impl<T: std::error::Error> From<T> for DeserializeError {
 #[error("Decoding payload is not supported for codec {0}")]
 pub struct DecodePayloadUnsupportedError(pub &'static str);
 
-pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
+pub trait Codec: std::fmt::Debug + 'static + Send + Sync {
     /// Returns the hash value of this codec. If two codec instances return same hash, their
     /// notification result can be safely reused over multiple message transfer. If notification
     /// encoding is stateful(e.g. contextually encrypted), this method should return `None`.
     ///
+    /// Deterministic encoding result either means that you can forward received encoded chunk to
+    /// other RPC channel directly.
+    ///
     /// This method is primarily used for broadcasting notification over multiple rpc channels.
-    fn codec_noti_hash(&self) -> Option<NonZeroU64>;
+    ///
+    /// # Recommended Implementation for Deterministic Codec
+    ///
+    /// Following code guaranteed to return same hash value for same codec instance, and always
+    /// unique for different underlying codec type.
+    ///
+    /// ```no_run
+    /// struct MyCodec;
+    ///
+    /// impl MyCodec {
+    ///     fn codec_type_addr(&self) -> *const () {
+    ///         const ADDR: *const () = &();
+    ///         ADDR
+    ///     }
+    /// }
+    /// ```
+    fn codec_hash_ptr(&self) -> *const () {
+        std::ptr::null()
+    }
+
+    /// Fork codec instance. This differs from cloning, where it creates a new instance of the
+    /// codec, which outputs the same result as the original codec, however, won't duplicate any
+    /// internal scratches for encoding/decoding.
+    fn fork(&self) -> Self;
 
     fn encode_notify<S: serde::Serialize>(
         &self,
@@ -173,21 +198,6 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
     /// returned [`InboundFrameType`] should be able to be represented in `u32` type.
     fn decode_inbound(&self, frame: &[u8]) -> Result<InboundFrameType, DecodeError>;
 }
-
-/// Internal utilities for [`Codec`] implementations.
-#[doc(hidden)]
-pub trait CodecUtil: 'static {
-    fn impl_codec_noti_hash(&self) -> Option<std::num::NonZeroU64> {
-        let mut hasher = std::hash::BuildHasher::build_hasher(
-            &hashbrown::hash_map::DefaultHashBuilder::default(),
-        );
-
-        std::hash::Hash::hash(&std::any::TypeId::of::<Self>(), &mut hasher);
-        Some(std::hash::Hasher::finish(&hasher).try_into().unwrap())
-    }
-}
-
-impl<T> CodecUtil for T where T: Codec {}
 
 /// Describes the inbound frame chunk.
 #[derive(Clone)]
@@ -321,7 +331,7 @@ mod dynamic {
             payload: &'de [u8],
         ) -> Result<Box<dyn erased_serde::Deserializer<'de> + 'de>, DecodePayloadUnsupportedError>;
 
-        fn codec_noti_hash(&self) -> Option<std::num::NonZeroU64>;
+        fn codec_type_addr(&self) -> *const ();
 
         fn encode_notify(
             &self,
@@ -359,8 +369,8 @@ mod dynamic {
             <dyn DynCodec>::dynamic_payload_deserializer(self.as_ref(), payload)
         }
 
-        fn codec_noti_hash(&self) -> Option<std::num::NonZeroU64> {
-            <dyn DynCodec>::codec_noti_hash(self.as_ref())
+        fn codec_hash_ptr(&self) -> *const () {
+            <dyn DynCodec>::codec_type_addr(self.as_ref())
         }
 
         fn encode_notify<S: serde::Serialize>(
@@ -407,6 +417,10 @@ mod dynamic {
         ) -> Result<super::InboundFrameType, super::DecodeError> {
             <dyn DynCodec>::decode_inbound(self.as_ref(), frame)
         }
+
+        fn fork(&self) -> Self {
+            Arc::clone(self)
+        }
     }
 
     impl<T: Codec> DynCodec for T {
@@ -422,8 +436,8 @@ mod dynamic {
             Ok(boxed)
         }
 
-        fn codec_noti_hash(&self) -> Option<std::num::NonZeroU64> {
-            <Self as Codec>::codec_noti_hash(self)
+        fn codec_type_addr(&self) -> *const () {
+            <Self as Codec>::codec_hash_ptr(self)
         }
 
         fn encode_notify(

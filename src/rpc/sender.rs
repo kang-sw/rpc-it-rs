@@ -1,4 +1,7 @@
+use std::{marker::PhantomData, num::NonZeroUsize};
+
 use bytes::Bytes;
+use erased_serde::Serialize;
 
 use super::*;
 
@@ -57,9 +60,20 @@ pub(crate) enum DeferredDirective {
     /// Write a notification/response message.
     WriteMsg(Bytes),
 
+    /// Write burst of notification messages.
+    WriteMsgBurst(Vec<Bytes>),
+
     /// Write a request message. If the sending of the request is aborted by the writer, the
     /// request message will be revoked and will wake up the pending task.
     WriteReqMsg(Bytes, RequestId),
+}
+
+/// A message that was encoded but not yet sent to client.
+#[derive(Debug)]
+pub struct EncodedMessage<C> {
+    _c: PhantomData<C>,
+    data: Bytes,
+    hash: Option<NonZeroUsize>,
 }
 
 // ==== Debug Trait Impls ====
@@ -237,6 +251,16 @@ impl<U, C> Clone for WeakNotifySender<U, C> {
     }
 }
 
+impl<C> Clone for EncodedMessage<C> {
+    fn clone(&self) -> Self {
+        Self {
+            _c: PhantomData,
+            data: self.data.clone(),
+            hash: self.hash.clone(),
+        }
+    }
+}
+
 // ========================================================== RequestSender ===|
 
 /// Implements request methods for [`RequestSender`].
@@ -347,5 +371,33 @@ impl<U, C> Clone for WeakRequestSender<U, C> {
         Self {
             inner: self.inner.clone(),
         }
+    }
+}
+
+// ========================================================== Broadcast ===|
+
+pub enum NotifyMessageBurst<C> {
+    Mono(EncodedMessage<C>),
+    Burst(Vec<EncodedMessage<C>>),
+}
+
+impl<U, C> NotifySender<U, C>
+where
+    U: UserData,
+    C: Codec,
+{
+    /// Prepare pre-encoded notification message.
+    pub fn prepare<S: Serialize>(
+        &self,
+        buf: &mut BytesMut,
+        method: &str,
+        params: &S,
+    ) -> Result<EncodedMessage<C>, EncodeError> {
+        todo!()
+    }
+
+    ///
+    pub fn burst(&self) -> Result<NotifyMessageBurst<C>, EncodeError> {
+        todo!()
     }
 }
