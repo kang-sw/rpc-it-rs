@@ -19,7 +19,9 @@ use crate::{
     defs::RequestId,
 };
 
-use super::{error::ErrorResponse, Config, ReceiveResponse, TryRecvResponseError};
+use super::{
+    error::ErrorResponse, Config, ReceiveResponse, ReceiveResponseErrror, TryRecvResponseError,
+};
 
 /// Response message from RPC server.
 #[derive(Debug)]
@@ -73,7 +75,7 @@ impl<'a, R> Future for ReceiveResponse<'a, R>
 where
     R: Config,
 {
-    type Output = Result<Response<R::Codec>, Option<ErrorResponse<R::Codec>>>;
+    type Output = Result<Response<R::Codec>, ReceiveResponseErrror<ErrorResponse<R::Codec>>>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();

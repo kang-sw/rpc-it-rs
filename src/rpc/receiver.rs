@@ -6,7 +6,8 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use futures::FutureExt;
+use futures::{Future, FutureExt};
+use thiserror::Error;
 
 use crate::{
     codec::{error::EncodeError, EncodeResponsePayload},
@@ -14,13 +15,13 @@ use crate::{
         AtomicLongSizeType, LongSizeType, NonZeroRangeType, NonzeroSizeType, RangeType, SizeType,
     },
     rpc::WriterDirective,
-    AsyncFrameRead, Codec, NotifySender, ParseMessage, ResponseError,
+    AsyncFrameRead, Codec, NotifySender, ParseMessage, RequestSender, ResponseError,
 };
 
 use super::{
     core::RpcCore,
     error::{SendMsgError, SendResponseError, TrySendMsgError, TrySendResponseError},
-    Config, PreparedPacket, ReadRunnerExitType,
+    Config, PreparedPacket, ReadRunnerExitType, ReceiveResponseErrror,
 };
 
 pub use rx_inner::Error as ReceiveError;
@@ -574,15 +575,6 @@ impl<R: Config> Inbound<R> {
             hash,
         ))
     }
-
-    // TODO: async fn forward_request(self, other: &RequestSender) -> ...
-    //
-    // - Tries to forward the request to the other remote.
-    // - If the request is already responded, it'll return error.
-    // - Maybe implemented via request id table mapping ..?
-    //
-    // IMPL => Forward to remote -> await -> receive response -> send response to source
-    //   - seems we need a way to register custom rpc id on mapping table.
 }
 
 impl InboundInner {
@@ -635,5 +627,57 @@ where
 {
     fn from((code, obj): (ResponseError, T)) -> Self {
         Self(Err((code, Some(obj))))
+    }
+}
+
+// ========================================================== Request Forwarding ===|
+
+/// Forwarding request involves complicated steps, and following error types are defined to describe
+/// each errors possible during the process.
+#[derive(Error, Debug)]
+pub enum ForwardRequestError<RemoteCodec: Codec> {
+    #[error("This message is not request")]
+    InboundNotRequest,
+
+    #[error("Codec of self instance does not support packet reusability")]
+    SelfCodecNotReusable,
+
+    #[error("Codec reusability mismatch with target")]
+    CodecTypeMismatch,
+
+    #[error("Failed to retrieve request ID from inbound")]
+    RequestIdRetrievalFailed,
+
+    #[error("Request with the same ID already registered on wait list")]
+    RequestIdDuplicated,
+
+    #[error("Interrupted")]
+    Interrupted,
+
+    #[error("Failed to send request")]
+    ForwardingFailed(SendMsgError),
+
+    #[error("Failed to receive response from forwarded server")]
+    ReceiveFailed(ReceiveResponseErrror<RemoteCodec>),
+
+    #[error("Sending back the response failed")]
+    ResponseFailed(SendResponseError),
+}
+
+impl<R: Config> Inbound<R> {
+    // TODO: async fn forward_request(self, other: &RequestSender) -> ...
+    //
+    // - Tries to forward the request to the other remote.
+    // - If the request is already responded, it'll return error.
+    // - Maybe implemented via request id table mapping ..?
+    //
+    // IMPL => Forward to remote -> await -> receive response -> send response to source
+    //   - seems we need a way to register custom rpc id on mapping table.
+    pub async fn forward_request<Other: Config>(
+        self,
+        target: &RequestSender<Other>,
+        interrupt: impl Future<Output = ()>,
+    ) -> Result<(), ForwardRequestError<Other::Codec>> {
+        todo!()
     }
 }
