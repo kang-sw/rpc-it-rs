@@ -299,7 +299,18 @@ impl RequestContext {
         // allocate the response wait obejct to insert into the pending task list quickly.
         let wait_obj = Arc::new(TaskWaitObject::default());
 
-        if self.wait_list.lock().try_insert(id, wait_obj).is_ok() {
+        let mut wait_list = self.wait_list.lock();
+
+        if self.is_expired() {
+            // We can naively check for expiration here, as it is a valid operation to create a new
+            // awaiter task after the request context has expired. If this happens, the newly created
+            // `ReceiveResponse` object will check the expiration flag and unregister itself
+            // during its first `poll` or `try_recv` call.
+
+            return None;
+        }
+
+        if wait_list.try_insert(id, wait_obj).is_ok() {
             Some(ReceiveResponseState::new(id))
         } else {
             None
@@ -371,7 +382,7 @@ impl RequestContext {
         // Acquire lock first, to make
         let wait_list = self.wait_list.lock();
 
-        // Don't let the pending tasks to be registered anymore.
+        // Don't let the awaiters to be registered anymore.
         if self.expired.swap(true, Ordering::SeqCst) {
             return; // Already expired
         }

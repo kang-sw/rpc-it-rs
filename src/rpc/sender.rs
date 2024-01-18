@@ -296,6 +296,11 @@ impl<R: Config> RequestSender<R> {
         const MAX_RETRY_HEURISTIC: usize = 4;
 
         for _ in 0..MAX_RETRY_HEURISTIC {
+            if reqs.is_expired() {
+                // Check receiver expiration here firstly.
+                return None;
+            }
+
             let candidate_request_id = RequestId::generate();
             let actual_request_id =
                 match self
@@ -307,7 +312,11 @@ impl<R: Config> RequestSender<R> {
                 };
 
             let Some(wait_obj) = reqs.try_allocate_new_request(actual_request_id) else {
-                crate::cold_path(); // This should unlikely happen.
+                // This happens when:
+                // - Request ID duplicated
+                // - Request context was expired during encoding
+                // Both cases are unlikely to happen, but should be handled anyway.
+                crate::cold_path();
                 continue;
             };
 
