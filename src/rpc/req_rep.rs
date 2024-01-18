@@ -1,21 +1,18 @@
-use core::panic;
 use std::{
     borrow::Cow,
     future::Future,
     mem::replace,
-    num::NonZeroU64,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    task::{Poll, Waker},
+    task::Poll,
 };
 
 use bytes::Bytes;
 use futures::{future::FusedFuture, task::AtomicWaker};
 use hashbrown::HashMap;
 use parking_lot::Mutex;
-use thiserror::Error;
 
 use crate::{
     codec::{Codec, ParseMessage, ResponseError},
@@ -35,35 +32,35 @@ pub struct Response<C> {
 #[derive(Debug)]
 pub(crate) struct RequestContext {
     /// A set of pending requests that are waiting to be responded.        
-    wait_list: Mutex<HashMap<RequestId, Arc<TaskWaitObject>>>,
+    wait_list: Mutex<HashMap<RequestId, Arc<Waiter>>>,
 
     /// Is the request context still alive? This is to prevent further request allocations.
     expired: AtomicBool,
 }
 
 #[derive(Default, Debug)]
-struct TaskWaitObject {
+struct Waiter {
     waker: AtomicWaker,
-    response: Mutex<ResponseData>,
+    response: Mutex<ResponseState>,
 }
 
 #[derive(Default, Debug)]
-enum ResponseData {
+enum ResponseState {
     #[default]
     None,
     Ready(Bytes, Option<ResponseError>),
-    Closed,
+    WriteFailed,
     PendingRemove,
 }
 
 // ========================================================== ReceiveResponse ===|
 
-pub(super) struct ReceiveResponseState {
+pub(super) struct Receive {
     request_id: RequestId,
-    wait_obj: Arc<TaskWaitObject>,
+    wait_obj: Arc<Waiter>,
 }
 
-impl ReceiveResponseState {
+impl Receive {
     pub(super) fn new(id: RequestId) -> Self {
         Self {
             request_id: id,
@@ -209,23 +206,23 @@ impl<'a, R: Config> ReceiveResponse<'a, R> {
     }
 }
 
-impl ReceiveResponseState {
+impl Receive {
     fn poll(&self) -> Poll<Option<(Bytes, Option<ResponseError>)>> {
         let mut data_lock = self.wait_obj.response.lock();
         let data_ref = &mut *data_lock;
 
         match data_ref {
-            ResponseData::None => Poll::Pending,
-            x @ ResponseData::Ready(_, _) => {
-                let ResponseData::Ready(data, errc) = replace(x, ResponseData::PendingRemove)
+            ResponseState::None => Poll::Pending,
+            x @ ResponseState::Ready(_, _) => {
+                let ResponseState::Ready(data, errc) = replace(x, ResponseState::PendingRemove)
                 else {
                     unreachable!()
                 };
 
                 Poll::Ready(Some((data, errc)))
             }
-            ResponseData::Closed => Poll::Ready(None),
-            ResponseData::PendingRemove => {
+            ResponseState::WriteFailed => Poll::Ready(None),
+            ResponseState::PendingRemove => {
                 unreachable!("unreachable state")
             }
         }
@@ -294,10 +291,10 @@ impl RequestContext {
     /// # Returns
     ///
     /// The newly allocated request ID.
-    pub(super) fn try_allocate_new_request(&self, id: RequestId) -> Option<ReceiveResponseState> {
+    pub(super) fn try_allocate_new_request(&self, id: RequestId) -> Option<Receive> {
         // As it's nearly impossible to collide with the existing request ID, here we preemptively
         // allocate the response wait obejct to insert into the pending task list quickly.
-        let wait_obj = Arc::new(TaskWaitObject::default());
+        let wait_obj = Arc::new(Waiter::default());
 
         let mut wait_list = self.wait_list.lock();
 
@@ -311,7 +308,7 @@ impl RequestContext {
         }
 
         if wait_list.try_insert(id, wait_obj).is_ok() {
-            Some(ReceiveResponseState::new(id))
+            Some(Receive::new(id))
         } else {
             None
         }
@@ -349,24 +346,27 @@ impl RequestContext {
         {
             let mut data = wait_obj.response.lock();
 
-            // `ResponseData` is changed by:
-            // 1) here
-            // 2) client cancelation
-            // 3) individual invalidation
-            //
-            // It is allowed the response data is `Ready`, and it's trivial error as usually this
-            // means that the remote side sent duplicated response id, that is not our
-            // responsibility.
-            //
-            // Otherwise, if following abort fails, it means:
-            // - We're
-            #[cfg(debug_assertions)]
-            assert!(matches!(
-                *data,
-                ResponseData::None | ResponseData::Ready(..)
-            ));
+            // There are two scenarios where we receive a response with `data` not being `None`:
+            // - When `data` is `PendingRemove`:
+            //    - This is a valid case. It occurs when the user cancels the request, but the
+            //      background runner has already received the response before the user removed
+            //      the wait object from the wait list.
+            // - When `data` is `Ready` or `WriteFailed`:
+            //    - This might indicate a logic error from the remote server, as it implies
+            //      a response is sent for a request we never made. However, this can also
+            //      occur validly if we accidentally use a duplicated request ID (which is
+            //      possible since we rely on a random number generator), and the previous
+            //      request was cancelled before receiving its response. In such a case,
+            //      the server's response is valid for both the server and this client.
 
-            *data = ResponseData::Ready(payload, errc);
+            if matches!(*data, ResponseState::None | ResponseState::Ready(..)) {
+                // Based on the above reasoning, overwriting the current `Ready` data is
+                // likely more correct than retaining it.
+                *data = ResponseState::Ready(payload, errc);
+            } else {
+                // Despite the above reasoning, encountering this case is still quite rare.
+                crate::cold_path();
+            }
         }
 
         // Wakeup the task AFTER registering the response.
@@ -403,8 +403,29 @@ impl RequestContext {
     }
 
     /// Called by deferred runner, when the request is canceled due to write error
-    pub fn invalidate_request(&self, id: RequestId) {
-        todo!()
+    pub fn set_request_write_failed(&self, id: RequestId) {
+        let Some(wait_obj) = self.wait_list.lock().get(&id).cloned() else {
+            // This is valid case where the request is already canceled by the user, therefore the
+            // entry was removed from the wait list.
+            return;
+        };
+
+        {
+            let mut data = wait_obj.response.lock();
+
+            // Theoretically, here we should check if the current data variant is `None`. However,
+            // in practice, there's a possibility that the remote server might send a response that
+            // wasn't requested by this client, using a duplicated request ID.
+            //
+            // Therefore, we choose to naively overwrite the current data variant with the `Closed`
+            // variant, regardless of its current state. For the `ReceiveResponse`, it's crucial
+            // that the current variant is non-`None` to return `Poll::Ready`.
+
+            *data = ResponseState::WriteFailed;
+        }
+
+        // Wakeup the task AFTER modifying the response state.
+        wait_obj.waker.wake();
     }
 }
 

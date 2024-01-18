@@ -38,7 +38,7 @@ pub struct WeakRequestSender<R: Config> {
 /// An awaitable response for a sent RPC request
 pub struct ReceiveResponse<'a, R: Config> {
     pub(super) owner: Cow<'a, RequestSender<R>>,
-    pub(super) state: Option<req_rep::ReceiveResponseState>,
+    pub(super) state: Option<req_rep::Receive>,
 }
 
 /// A message to be sent to the background dedicated writer task.

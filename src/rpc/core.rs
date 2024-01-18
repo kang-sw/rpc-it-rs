@@ -431,7 +431,7 @@ where
                         .expect("disabled request feature; logic error!");
 
                     if let Err(e) = write_result {
-                        reqs.invalidate_request(req_id);
+                        reqs.set_request_write_failed(req_id);
                         return Err(e);
                     }
                 }
