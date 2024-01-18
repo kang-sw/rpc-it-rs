@@ -4,10 +4,10 @@ use rpc_it::{io::InMemoryRx, Codec, DefaultConfig};
 
 #[rpc_it::service(rename_all = "camelCase")]
 mod rpc {
+    #[install]
     pub const Route: Route = ALL_PASCAL_CASE;
 
     #[direct]
-    #[no_install]
     pub const DRoute: Route = ALL_PASCAL_CASE;
 
     pub fn zero_param() -> i32;

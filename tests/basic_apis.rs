@@ -97,9 +97,7 @@ where
             .unwrap();
     }
 
-    while executor.try_run_one() {
-        executor.run_until_stalled();
-    }
+    executor.run_until_stalled();
 
     {
         let client = client.clone();

@@ -109,8 +109,8 @@ mod type_util;
 ///
 /// - `[no_default_route]`
 ///     - Do not generate default route for methods listed in this router.
-/// - `[no_install]`
-///     - Do not generate `install` function
+/// - `[install]`
+///     - Generate `install` function
 /// - `[direct]`
 ///     - Generate `direct` mode router for this method.
 ///
@@ -152,6 +152,8 @@ mod type_util;
 ///   const MyRouterIdent: Route = ALL;
 ///
 ///   // You can also choose list of routed methods selectively:
+///   #[install]
+///   #[direct]
 ///   const MySelectiveRoute: Route = [
 ///     /// (Documentation comment is allowed)
 ///     ///
@@ -500,7 +502,7 @@ impl DataModel {
         // Parse const item attribute to get route name
         let mut all_attrs = item.attrs;
         let mut global_no_default_route = false;
-        let mut no_generate_install = false;
+        let mut generate_install = false;
         let mut generate_direct = false;
 
         all_attrs.retain(|x| {
@@ -508,8 +510,8 @@ impl DataModel {
                 Meta::Path(p) => {
                     if p.is_ident("no_default_route") {
                         global_no_default_route = true;
-                    } else if p.is_ident("no_install") {
-                        no_generate_install = true;
+                    } else if p.is_ident("install") {
+                        generate_install = true;
                     } else if p.is_ident("direct") {
                         generate_direct = true;
                     } else {
@@ -530,7 +532,7 @@ impl DataModel {
             syn::Expr::Path(syn::ExprPath {
                 path, qself: None, ..
             }) if path.is_ident("ALL") => {
-                if global_no_default_route && !no_generate_install && !generate_direct {
+                if global_no_default_route && (generate_install || generate_direct) {
                     emit_warning!(item_span, "ALL is specified, but no_default_route is set");
                 }
 
@@ -540,7 +542,7 @@ impl DataModel {
             syn::Expr::Path(syn::ExprPath {
                 path, qself: None, ..
             }) if path.is_ident("ALL_PASCAL_CASE") => {
-                if global_no_default_route && !no_generate_install && !generate_direct {
+                if global_no_default_route && (generate_install || generate_direct) {
                     emit_warning!(
                         item_span,
                         "ALL_PASCAL_CASE is specified, but no_default_route is set"
@@ -773,7 +775,7 @@ impl DataModel {
             },
         );
 
-        let tok_func_install = (!no_generate_install).then(|| {
+        let tok_func_install = generate_install.then(|| {
             quote_spanned!(item_span =>
                 #vis_this fn install<B, E>(
                     ___router: &mut ___route::RouterBuilder<R, B>,
