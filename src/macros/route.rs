@@ -127,30 +127,17 @@ where
     /// # Panics
     ///
     /// This function panics if the inbound message is [`None`].
-    pub fn route(
-        &self,
-        inbound_revoked_on_error: &mut Option<Inbound<C>>,
-    ) -> Result<(), ExecError> {
-        let opt_inbound = inbound_revoked_on_error;
-
-        let Some(inbound) = opt_inbound else {
-            panic!(
-                "Inbound message is None.\
-                     The inbound message is 'Option' to avoid unnecessary cloning, not for \
-                     indicating the message is optional!"
-            );
-        };
-
+    pub fn route(&self, inbound: Inbound<C>) -> Result<(), (Option<Inbound<C>>, ExecError)> {
         let Some(index) = self.route_func.route(inbound.method()) else {
-            return Err(ExecError::RouteFailed);
+            return Err((Some(inbound), ExecError::RouteFailed));
         };
 
-        self.funcs[index](opt_inbound)?;
-
-        // On successful invocation, the inbound message should be taken out.
-        opt_inbound.take();
-
-        Ok(())
+        let mut opt_inbound = Some(inbound);
+        if let Err(e) = self.funcs[index](&mut opt_inbound) {
+            Err((opt_inbound, e))
+        } else {
+            Ok(())
+        }
     }
 }
 
