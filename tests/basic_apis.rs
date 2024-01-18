@@ -95,7 +95,9 @@ where
             .unwrap();
     }
 
-    executor.run_until_stalled();
+    while executor.try_run_one() {
+        executor.run_until_stalled();
+    }
 
     {
         let client = client.clone();
@@ -163,7 +165,9 @@ where
             .unwrap();
     }
 
-    executor.run_until_stalled();
+    while executor.try_run_one() {
+        executor.run_until_stalled();
+    }
 
     // Check if all tests were executed/passed
     assert_eq!(Arc::strong_count(&test_counter), 1);

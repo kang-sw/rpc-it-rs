@@ -61,10 +61,10 @@ pub(super) struct Receive {
 }
 
 impl Receive {
-    pub(super) fn new(id: RequestId) -> Self {
+    fn new(id: RequestId, wait_obj: Arc<Waiter>) -> Self {
         Self {
             request_id: id,
-            wait_obj: Default::default(),
+            wait_obj,
         }
     }
 }
@@ -295,7 +295,6 @@ impl RequestContext {
         // As it's nearly impossible to collide with the existing request ID, here we preemptively
         // allocate the response wait obejct to insert into the pending task list quickly.
         let wait_obj = Arc::new(Waiter::default());
-
         let mut wait_list = self.wait_list.lock();
 
         if self.is_expired() {
@@ -307,8 +306,8 @@ impl RequestContext {
             return None;
         }
 
-        if wait_list.try_insert(id, wait_obj).is_ok() {
-            Some(Receive::new(id))
+        if wait_list.try_insert(id, wait_obj.clone()).is_ok() {
+            Some(Receive::new(id, wait_obj))
         } else {
             None
         }
