@@ -19,9 +19,7 @@ use crate::{
     defs::RequestId,
 };
 
-use super::{
-    error::ErrorResponse, Config, ReceiveResponse, ReceiveResponseErrror, TryRecvResponseError,
-};
+use super::{error::ErrorResponse, Config, ReceiveResponse, ResponseReceiveError};
 
 /// Response message from RPC server.
 #[derive(Debug)]
@@ -75,7 +73,7 @@ impl<'a, R> Future for ReceiveResponse<'a, R>
 where
     R: Config,
 {
-    type Output = Result<Response<R::Codec>, ReceiveResponseErrror<ErrorResponse<R::Codec>>>;
+    type Output = Result<Response<R::Codec>, ResponseReceiveError<R::Codec>>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
@@ -96,7 +94,7 @@ where
             // - We already retrieved the value using `try_recv`
             // Both of cases are just logic errors are can be detected in user-side,
             crate::cold_path();
-            return Poll::Ready(Err(None));
+            return Poll::Ready(Err(ResponseReceiveError::Empty));
         };
 
         // Don't let us miss the waker.
@@ -110,7 +108,7 @@ where
                 //         falsy-false when the task is woken up. See `ReqeustContext::mark_expired`
                 if context.is_expired_seq_cst() {
                     this.try_unregister();
-                    return Poll::Ready(Err(None));
+                    return Poll::Ready(Err(ResponseReceiveError::Closed));
                 }
 
                 Poll::Pending
@@ -118,11 +116,11 @@ where
             Poll::Ready(Some((payload, errc))) => {
                 let result = this.convert_result(payload, errc);
                 this.try_unregister();
-                Poll::Ready(result.map_err(Some))
+                Poll::Ready(result.map_err(ResponseReceiveError::Response))
             }
             Poll::Ready(None) => {
                 this.try_unregister();
-                Poll::Ready(Err(None))
+                Poll::Ready(Err(ResponseReceiveError::Closed))
             }
         }
     }
@@ -149,11 +147,11 @@ impl<'a, R: Config> ReceiveResponse<'a, R> {
         self.state.as_ref().unwrap().request_id
     }
 
-    pub fn try_recv(&mut self) -> Result<Response<R::Codec>, TryRecvResponseError<R::Codec>> {
+    pub fn try_recv(&mut self) -> Result<Response<R::Codec>, ResponseReceiveError<R::Codec>> {
         let context = self.owner.reqs();
 
         let Some(obj) = self.state.as_mut() else {
-            return Err(TryRecvResponseError::Retrieved);
+            return Err(ResponseReceiveError::Retrieved);
         };
 
         match obj.poll() {
@@ -161,19 +159,19 @@ impl<'a, R: Config> ReceiveResponse<'a, R> {
                 if context.is_expired() {
                     // There's no possible way to receive the response, as the context is already
                     // expired.
-                    return Err(TryRecvResponseError::Closed);
+                    return Err(ResponseReceiveError::Closed);
                 }
 
-                Err(TryRecvResponseError::Empty)
+                Err(ResponseReceiveError::Empty)
             }
             Poll::Ready(Some((payload, errc))) => {
                 let result = self.convert_result(payload, errc);
                 self.try_unregister();
-                result.map_err(TryRecvResponseError::Response)
+                result.map_err(ResponseReceiveError::Response)
             }
             Poll::Ready(None) => {
                 self.try_unregister();
-                Err(TryRecvResponseError::Closed)
+                Err(ResponseReceiveError::Closed)
             }
         }
     }

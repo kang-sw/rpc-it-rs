@@ -68,19 +68,7 @@ pub enum TrySendResponseError {
 // ========================================================== TryRecvResponseError ===|
 
 #[derive(Error, Debug)]
-pub enum ReceiveResponseErrror<C: Codec> {
-    #[error("A receive channel was closed. No more message to consume!")]
-    Closed,
-
-    #[error("Already retrieved the result.")]
-    Retrieved,
-
-    #[error("Remote peer respond with an error")]
-    Response(ErrorResponse<C>),
-}
-
-#[derive(Error, Debug)]
-pub enum TryRecvResponseError<C: Codec> {
+pub enum ResponseReceiveError<C: Codec> {
     #[error("A receive channel was closed. No more message to consume!")]
     Closed,
 
@@ -94,23 +82,7 @@ pub enum TryRecvResponseError<C: Codec> {
     Response(ErrorResponse<C>),
 }
 
-impl<C: Codec> ReceiveResponseErrror<C> {
-    pub fn into_response(self) -> Option<ErrorResponse<C>> {
-        match self {
-            Self::Response(e) => Some(e),
-            _ => None,
-        }
-    }
-
-    pub fn as_response(&self) -> Option<&ErrorResponse<C>> {
-        match self {
-            Self::Response(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl<C: Codec> TryRecvResponseError<C> {
+impl<C: Codec> ResponseReceiveError<C> {
     pub fn into_response(self) -> Option<ErrorResponse<C>> {
         match self {
             Self::Response(e) => Some(e),

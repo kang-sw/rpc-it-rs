@@ -21,7 +21,7 @@ use crate::{
 use super::{
     core::RpcCore,
     error::{SendMsgError, SendResponseError, TrySendMsgError, TrySendResponseError},
-    Config, PreparedPacket, ReadRunnerExitType, ReceiveResponseErrror,
+    Config, PreparedPacket, ReadRunnerExitType, ResponseReceiveError,
 };
 
 pub use rx_inner::Error as ReceiveError;
@@ -658,7 +658,7 @@ pub enum ForwardRequestError<RemoteCodec: Codec> {
     ForwardingFailed(SendMsgError),
 
     #[error("Failed to receive response from forwarded server")]
-    ReceiveFailed(ReceiveResponseErrror<RemoteCodec>),
+    ReceiveFailed(ResponseReceiveError<RemoteCodec>),
 
     #[error("Sending back the response failed")]
     ResponseFailed(SendResponseError),

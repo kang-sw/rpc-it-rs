@@ -85,7 +85,9 @@ where
 
                 println!("I.client: receiving response 2");
                 let err = response.await.unwrap_err();
-                let Some(err) = err else { panic!() };
+                let Some(err) = err.into_response() else {
+                    panic!()
+                };
 
                 assert_eq!(err.errc(), ResponseError::Unhandled);
 
@@ -114,7 +116,13 @@ where
                 let rep1 = req1.await.unwrap().parse::<i32>().unwrap();
                 let rep2 = req2.await.unwrap().parse::<i32>().unwrap();
                 let rep3 = req3.await.unwrap().parse::<i32>().unwrap();
-                let rep4 = req4.await.unwrap_err().unwrap().parse::<i32>().unwrap();
+                let rep4 = req4
+                    .await
+                    .unwrap_err()
+                    .into_response()
+                    .unwrap()
+                    .parse::<i32>()
+                    .unwrap();
 
                 assert_eq!(rep1, 3);
                 assert_eq!(rep2, 7);
