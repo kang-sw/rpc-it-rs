@@ -90,9 +90,6 @@ where
         */
 
         let context = this.owner.reqs();
-        if context.expired.load(Ordering::Acquire) {
-            return Poll::Ready(Err(None));
-        }
 
         let Some(obj) = this.state.as_mut() else {
             // There are two cases for this:
@@ -108,7 +105,17 @@ where
 
         // Try to get the response.
         match obj.poll() {
-            Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+                // Check if the context is expired
+                // * NOTE: This MUST BE placed after waker registration, prevent `expired` flag is
+                //         falsy-false when the task is woken up. See `ReqeustContext::mark_expired`
+                if context.is_expired_seq_cst() {
+                    this.try_unregister();
+                    return Poll::Ready(Err(None));
+                }
+
+                Poll::Pending
+            }
             Poll::Ready(Some((payload, errc))) => {
                 let result = this.convert_result(payload, errc);
                 this.try_unregister();
@@ -146,16 +153,20 @@ impl<'a, R: Config> ReceiveResponse<'a, R> {
     pub fn try_recv(&mut self) -> Result<Response<R::Codec>, TryRecvResponseError<R::Codec>> {
         let context = self.owner.reqs();
 
-        if context.expired.load(Ordering::Acquire) {
-            return Err(TryRecvResponseError::Closed);
-        }
-
         let Some(obj) = self.state.as_mut() else {
             return Err(TryRecvResponseError::Retrieved);
         };
 
         match obj.poll() {
-            Poll::Pending => Err(TryRecvResponseError::Empty),
+            Poll::Pending => {
+                if context.is_expired() {
+                    // There's no possible way to receive the response, as the context is already
+                    // expired.
+                    return Err(TryRecvResponseError::Closed);
+                }
+
+                Err(TryRecvResponseError::Empty)
+            }
             Poll::Ready(Some((payload, errc))) => {
                 let result = self.convert_result(payload, errc);
                 self.try_unregister();
@@ -315,19 +326,69 @@ impl RequestContext {
         payload: Bytes,
         errc: Option<ResponseError>,
     ) -> Result<(), Bytes> {
-        todo!()
+        let Some(wait_obj) = self.wait_list.lock().get(&id).cloned() else {
+            return Err(payload);
+        };
+
+        if self.is_expired() {
+            // Here we check if expired after acquiring wait_list lock;
+            return Err(payload);
+        }
+
+        {
+            let mut data = wait_obj.response.lock();
+
+            // `ResponseData` is changed by:
+            // 1) here
+            // 2) client cancelation
+            // 3) individual invalidation
+            //
+            // It is allowed the response data is `Ready`, and it's trivial error as usually this
+            // means that the remote side sent duplicated response id, that is not our
+            // responsibility.
+            //
+            // Otherwise, if following abort fails, it means:
+            // - We're
+            #[cfg(debug_assertions)]
+            assert!(matches!(
+                *data,
+                ResponseData::None | ResponseData::Ready(..)
+            ));
+
+            *data = ResponseData::Ready(payload, errc);
+        }
+
+        // Wakeup the task AFTER registering the response.
+        wait_obj.waker.wake();
+
+        Ok(())
     }
 
     /// Invalidate all pending requests. This is called when the connection is closed.
     ///
     /// This will be called either after when the deferred runner rx channel is closed.
     pub fn mark_expired(&self) {
+        // Acquire lock first, to make
+        let wait_list = self.wait_list.lock();
+
         // Don't let the pending tasks to be registered anymore.
         if self.expired.swap(true, Ordering::SeqCst) {
             return; // Already expired
         }
 
-        todo!()
+        // Wakeup all awaiting tasks. They must see the `expired` flag set as true and return
+        // immediately with error.
+        wait_list.iter().for_each(|(.., obj)| {
+            obj.waker.wake();
+        });
+    }
+
+    pub fn is_expired(&self) -> bool {
+        self.expired.load(Ordering::Acquire)
+    }
+
+    pub fn is_expired_seq_cst(&self) -> bool {
+        self.expired.load(Ordering::SeqCst)
     }
 
     /// Called by deferred runner, when the request is canceled due to write error
