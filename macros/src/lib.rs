@@ -36,15 +36,12 @@
 //! > feedback is invaluable in enhancing the accuracy and utility of this documentation.
 //!
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    mem::take,
-};
+use std::{collections::BTreeMap, mem::take};
 
 use convert_case::{Case, Casing};
 use proc_macro_error::{abort, emit_error, emit_warning, proc_macro_error};
 
-use proc_macro2::{Ident, TokenStream};
+use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned, ToTokens};
 use syn::{punctuated::Punctuated, spanned::Spanned, GenericArgument, Item, Meta, Token, Type};
 

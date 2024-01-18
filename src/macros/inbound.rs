@@ -1,12 +1,13 @@
 use std::{marker::PhantomData, mem::transmute};
 
 use bytes::BytesMut;
+use thiserror::Error;
 
 use crate::{
     codec::{error::EncodeError, DeserializeError},
-    error::ErrorResponse,
+    error::{ErrorResponse, ResponseReceiveError},
     rpc::{Config, PreparedPacket},
-    Codec, Inbound, NotifySender, ParseMessage, RequestSender,
+    Codec, Inbound, NotifySender, ParseMessage, RequestSender, Response,
 };
 
 use super::{NotifyMethod, RequestMethod};
@@ -101,23 +102,25 @@ where
 {
     #[doc(hidden)]
     pub fn __internal_create(msg: Inbound<R>) -> Result<Self, (Inbound<R>, DeserializeError)> {
-        Ok(Self {
-            // SAFETY:
-            // * The borrowed lifetime `'de` is bound to the payload of the inbound message, not
-            //   the object itself. Since `CachedNotify` holds the inbound message as long as
-            //   the object lives, the lifetime of the payload is also valid.
-            // * During the entire lifetime of the parsed object, to ensure that the borrowed
-            //   reference is valid, the buffer of the inbound message won't be dropped during
-            //   `v`'s lifetime.
-            v: unsafe {
-                let msg_ptr = &msg as *const Inbound<R>;
-                transmute(match (*msg_ptr).parse::<M::ParamRecv<'_>>() {
+        // SAFETY:
+        // * The borrowed lifetime `'de` is bound to the payload of the inbound message, not
+        //   the object itself. Since `CachedNotify` holds the inbound message as long as
+        //   the object lives, the lifetime of the payload is also valid.
+        // * During the entire lifetime of the parsed object, to ensure that the borrowed
+        //   reference is valid, the buffer of the inbound message won't be dropped during
+        //   `v`'s lifetime.
+        // * See the comment in `ref_as_static`
+        unsafe {
+            let (msg, parsed) = parsed_pair::<_, _, M::ParamRecv<'static>>(msg);
+
+            Ok(Self {
+                v: transmute(match parsed {
                     Ok(ok) => ok,
                     Err(err) => return Err((msg, err)),
-                })
-            },
-            ib: msg,
-        })
+                }),
+                ib: msg,
+            })
+        }
     }
 
     pub fn args(&self) -> &M::ParamRecv<'_> {
@@ -146,22 +149,34 @@ pub struct CachedWaitResponse<'a, R: Config, M: RequestMethod>(
     PhantomData<M>,
 );
 
-pub struct CachedErrorResponse<C: Codec, M: RequestMethod>(
-    ErrorResponse<C>,
-    Result<M::ErrRecv<'static>, DeserializeError>,
-);
+pub struct CachedErrorObj<C: Codec, M: RequestMethod>(ErrorResponse<C>, M::ErrRecv<'static>);
 
-pub struct CachedOkayResponse<C: Codec, M: RequestMethod>(
-    crate::Response<C>,
-    Result<M::OkRecv<'static>, DeserializeError>,
-);
+pub struct CachedOkayObj<C: Codec, M: RequestMethod>(crate::Response<C>, M::OkRecv<'static>);
+
+#[derive(Error)]
+pub enum CachedWaitError<C: Codec, M: RequestMethod> {
+    #[error("A receive channel was closed. No more message to consume!")]
+    Closed,
+
+    #[error("No message available")]
+    Empty,
+
+    #[error("Already retrieved the result.")]
+    Retrieved,
+
+    #[error("Remote peer respond with an error")]
+    Response(CachedErrorObj<C, M>),
+
+    #[error("Parse error during deserialization: {0:?}")]
+    DeserializeFailed(DeserializeError, Result<Response<C>, ErrorResponse<C>>),
+}
 
 impl<'a, R, M> std::future::Future for CachedWaitResponse<'a, R, M>
 where
     R: Config,
     M: RequestMethod,
 {
-    type Output = Result<CachedOkayResponse<R::Codec, M>, Option<CachedErrorResponse<R::Codec, M>>>;
+    type Output = Result<CachedOkayObj<R::Codec, M>, CachedWaitError<R::Codec, M>>;
 
     fn poll(
         self: std::pin::Pin<&mut Self>,
@@ -171,23 +186,40 @@ where
         let inner = unsafe { self.map_unchecked_mut(|x| &mut x.0) };
 
         // SAFETY: See the comment in `CachedNotify::__internal_create`
-        futures::ready!(inner.poll(cx))
-            .map(|x| unsafe {
-                let parsed = (*(&x as *const crate::Response<R::Codec>)).parse::<M::OkRecv<'_>>();
-                CachedOkayResponse(x, transmute(parsed))
-            })
-            .map_err(|x| {
-                x.into_response().map(|x| unsafe {
-                    let parsed =
-                        (*(&x as *const ErrorResponse<R::Codec>)).parse::<M::ErrRecv<'_>>();
-                    CachedErrorResponse(x, transmute(parsed))
-                })
-            })
-            .into()
+
+        match futures::ready!(inner.poll(cx)) {
+            Ok(resp) => unsafe {
+                let (resp, parse_result) = parsed_pair::<_, _, M::OkRecv<'static>>(resp);
+                match parse_result {
+                    Ok(parsed) => Ok(CachedOkayObj(resp, transmute(parsed))),
+                    Err(err) => Err(CachedWaitError::DeserializeFailed(err, Ok(resp))),
+                }
+            },
+            Err(err) => {
+                let err = match err {
+                    ResponseReceiveError::Closed => CachedWaitError::Closed,
+                    ResponseReceiveError::Empty => CachedWaitError::Empty,
+                    ResponseReceiveError::Retrieved => CachedWaitError::Retrieved,
+                    ResponseReceiveError::Response(resp) => unsafe {
+                        // SAFETY: See the comment in `CachedNotify::__internal_create`
+                        let (resp, parse_result) = parsed_pair::<_, _, M::ErrRecv<'static>>(resp);
+                        match parse_result {
+                            Ok(parsed) => {
+                                CachedWaitError::Response(CachedErrorObj(resp, transmute(parsed)))
+                            }
+                            Err(err) => CachedWaitError::DeserializeFailed(err, Err(resp)),
+                        }
+                    },
+                };
+
+                Err(err)
+            }
+        }
+        .into()
     }
 }
 
-impl<C, F> std::ops::Deref for CachedOkayResponse<C, F>
+impl<C, F> std::ops::Deref for CachedOkayObj<C, F>
 where
     C: Codec,
     F: RequestMethod,
@@ -199,7 +231,7 @@ where
     }
 }
 
-impl<C, F> std::ops::Deref for CachedErrorResponse<C, F>
+impl<C, F> std::ops::Deref for CachedErrorObj<C, F>
 where
     C: Codec,
     F: RequestMethod,
@@ -211,23 +243,59 @@ where
     }
 }
 
-impl<C: Codec, F> CachedOkayResponse<C, F>
+impl<C: Codec, F> CachedOkayObj<C, F>
 where
     F: RequestMethod,
 {
-    pub fn result(&self) -> &Result<F::OkRecv<'_>, DeserializeError> {
+    pub fn result(&self) -> &F::OkRecv<'_> {
         // SAFETY: See the comment in `CachedNotify::args`
         unsafe { transmute(&self.1) }
     }
 }
 
-impl<C: Codec, F> CachedErrorResponse<C, F>
+impl<C: Codec, F> CachedErrorObj<C, F>
 where
     F: RequestMethod,
 {
-    pub fn result(&self) -> &Result<F::ErrRecv<'_>, DeserializeError> {
+    pub fn result(&self) -> &F::ErrRecv<'_> {
         // SAFETY: See the comment in `CachedNotify::args`
         unsafe { transmute(&self.1) }
+    }
+}
+
+impl<C: Codec, F: RequestMethod> std::fmt::Debug for CachedWaitError<C, F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachedWaitResponseError").finish()
+    }
+}
+
+impl<C: Codec, F: RequestMethod> CachedWaitError<C, F> {
+    pub fn into_response(self) -> Option<CachedErrorObj<C, F>> {
+        if let Self::Response(e) = self {
+            Some(e)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_response(&self) -> Option<&CachedErrorObj<C, F>> {
+        if let Self::Response(e) = self {
+            Some(e)
+        } else {
+            None
+        }
+    }
+}
+
+impl<C: Codec, F: RequestMethod> std::fmt::Debug for CachedErrorObj<C, F>
+where
+    F::ErrRecv<'static>: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("CachedErrorResponse")
+            .field(&self.0)
+            .field(&self.1)
+            .finish()
     }
 }
 
@@ -256,6 +324,7 @@ impl<R: Config> NotifySender<R> {
         self.try_notify(buf, M::METHOD_NAME, &p)
     }
 
+    #[must_use = "Prepared packet won't do anything unless sent"]
     pub fn prepare<M>(
         &self,
         buf: &mut BytesMut,
@@ -266,6 +335,25 @@ impl<R: Config> NotifySender<R> {
     {
         self.encode_notify(buf, M::METHOD_NAME, &p)
     }
+}
+
+unsafe fn parsed_pair<
+    C: Codec,
+    P: ParseMessage<C> + 'static,
+    D: serde::de::Deserialize<'static>,
+>(
+    p: P,
+) -> (P, Result<D, DeserializeError>) {
+    // From the parser's perspective, the lifetime of original buffer is 'static until it
+    // gets dropped. It's not clear if the parsing behavior differentiates whether borrowing
+    // buffer is 'static or not, just to be safe, we're transmuting the lifetime to 'static
+    // here, let parser behave consistently.
+
+    let ptr: *const _ = &p;
+    let sref: &'static _ = &*ptr;
+
+    let de = sref.parse::<'static, D>();
+    (p, de)
 }
 
 impl<R: Config> RequestSender<R> {
