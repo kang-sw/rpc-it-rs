@@ -36,7 +36,7 @@ pub struct Builder<R: Config, Wr, Rd, U, C> {
 pub(super) struct RpcCore<R: Config> {
     pub(super) codec: R::Codec,
     user_data: R::UserData,
-    reqs: Option<RequestContext<R::Codec>>,
+    reqs: Option<RequestContext>,
     t_tx_deferred: Option<mpsc::Sender<WriterDirective>>,
     r_wake_on_drop: AtomicWaker,
 }
@@ -59,7 +59,7 @@ impl<R: Config> RpcCore<R> {
         self.t_tx_deferred.as_ref()
     }
 
-    pub fn request_context(&self) -> Option<&RequestContext<R::Codec>> {
+    pub fn request_context(&self) -> Option<&RequestContext> {
         self.reqs.as_ref()
     }
 
@@ -220,7 +220,7 @@ where
         let (tx_w, rx_w) = self.cfg.make_write_channel();
         let context = Arc::new(RpcCore {
             user_data: self.user_data,
-            reqs: Some(RequestContext::new(self.codec.clone())),
+            reqs: Some(RequestContext::new()),
             codec: self.codec,
             t_tx_deferred: Some(tx_w.clone()),
             r_wake_on_drop: Default::default(),
@@ -249,7 +249,7 @@ where
         let (tx_w, rx_w) = self.cfg.make_write_channel();
         let context = Arc::new(RpcCore {
             user_data: self.user_data,
-            reqs: enable_request.then(|| RequestContext::new(self.codec.clone())),
+            reqs: enable_request.then(RequestContext::new),
             codec: self.codec,
             t_tx_deferred: Some(tx_w.clone()),
             r_wake_on_drop: Default::default(),

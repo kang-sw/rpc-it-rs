@@ -33,19 +33,16 @@ pub struct Response<C> {
 
 /// A context for pending RPC requests.
 #[derive(Debug)]
-pub(crate) struct RequestContext<C> {
-    /// Codec of owning RPC connection.
-    codec: C,
-
+pub(crate) struct RequestContext {
     /// A set of pending requests that are waiting to be responded.        
-    wait_list: Mutex<HashMap<RequestId, Arc<PendingTask>>>,
+    wait_list: Mutex<HashMap<RequestId, Arc<TaskWaitObject>>>,
 
     /// Is the request context still alive? This is to prevent further request allocations.
     expired: AtomicBool,
 }
 
 #[derive(Default, Debug)]
-struct PendingTask {
+struct TaskWaitObject {
     waker: AtomicWaker,
     response: Mutex<ResponseData>,
 }
@@ -56,23 +53,22 @@ enum ResponseData {
     None,
     Ready(Bytes, Option<ResponseError>),
     Closed,
-    Retrieved,
+    PendingRemove,
 }
 
 // ========================================================== ReceiveResponse ===|
 
 pub(super) struct ReceiveResponseState {
     request_id: RequestId,
-    wait_obj: Arc<PendingTask>,
+    wait_obj: Arc<TaskWaitObject>,
 }
 
 impl ReceiveResponseState {
     pub(super) fn new(id: RequestId) -> Self {
-        todo!()
-    }
-
-    pub(super) fn request_id(&self) -> RequestId {
-        self.request_id
+        Self {
+            request_id: id,
+            wait_obj: Default::default(),
+        }
     }
 }
 
@@ -99,36 +95,28 @@ where
         }
 
         let Some(obj) = this.state.as_mut() else {
-            panic!("Polled after response is received")
+            // There are two cases for this:
+            // - Polled after `Ready`
+            // - We already retrieved the value using `try_recv`
+            // Both of cases are just logic errors are can be detected in user-side,
+            crate::cold_path();
+            return Poll::Ready(Err(None));
         };
 
         // Don't let us miss the waker.
         obj.wait_obj.waker.register(cx.waker());
 
         // Try to get the response.
-        let mut data_lock = obj.wait_obj.response.lock();
-        let data_ref = &mut *data_lock;
-
-        match data_ref {
-            ResponseData::None => Poll::Pending,
-            x @ ResponseData::Ready(_, _) => {
-                let ResponseData::Ready(data, errc) = replace(x, ResponseData::Retrieved) else {
-                    unreachable!()
-                };
-
-                drop(data_lock);
+        match obj.poll() {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Some((payload, errc))) => {
+                let result = this.convert_result(payload, errc);
                 this.try_unregister();
-
-                Poll::Ready(this.convert_result(data, errc).map_err(Some))
+                Poll::Ready(result.map_err(Some))
             }
-            ResponseData::Closed => {
-                drop(data_lock);
+            Poll::Ready(None) => {
                 this.try_unregister();
-
                 Poll::Ready(Err(None))
-            }
-            ResponseData::Retrieved => {
-                panic!("Polled after response is received")
             }
         }
     }
@@ -156,7 +144,28 @@ impl<'a, R: Config> ReceiveResponse<'a, R> {
     }
 
     pub fn try_recv(&mut self) -> Result<Response<R::Codec>, TryRecvResponseError<R::Codec>> {
-        todo!()
+        let context = self.owner.reqs();
+
+        if context.expired.load(Ordering::Acquire) {
+            return Err(TryRecvResponseError::Closed);
+        }
+
+        let Some(obj) = self.state.as_mut() else {
+            return Err(TryRecvResponseError::Retrieved);
+        };
+
+        match obj.poll() {
+            Poll::Pending => Err(TryRecvResponseError::Empty),
+            Poll::Ready(Some((payload, errc))) => {
+                let result = self.convert_result(payload, errc);
+                self.try_unregister();
+                result.map_err(TryRecvResponseError::Response)
+            }
+            Poll::Ready(None) => {
+                self.try_unregister();
+                Err(TryRecvResponseError::Closed)
+            }
+        }
     }
 
     fn convert_result(
@@ -185,6 +194,29 @@ impl<'a, R: Config> ReceiveResponse<'a, R> {
             // unregister
             let context = self.owner.reqs();
             context.free_request_id(obj.request_id);
+        }
+    }
+}
+
+impl ReceiveResponseState {
+    fn poll(&self) -> Poll<Option<(Bytes, Option<ResponseError>)>> {
+        let mut data_lock = self.wait_obj.response.lock();
+        let data_ref = &mut *data_lock;
+
+        match data_ref {
+            ResponseData::None => Poll::Pending,
+            x @ ResponseData::Ready(_, _) => {
+                let ResponseData::Ready(data, errc) = replace(x, ResponseData::PendingRemove)
+                else {
+                    unreachable!()
+                };
+
+                Poll::Ready(Some((data, errc)))
+            }
+            ResponseData::Closed => Poll::Ready(None),
+            ResponseData::PendingRemove => {
+                unreachable!("unreachable state")
+            }
         }
     }
 }
@@ -233,10 +265,9 @@ pub(super) fn make_response<C: Codec>(
 
 // ==== RequestContext ====
 
-impl<C: Codec> RequestContext<C> {
-    pub(super) fn new(codec: C) -> Self {
+impl RequestContext {
+    pub(super) fn new() -> Self {
         Self {
-            codec,
             wait_list: Default::default(),
             expired: Default::default(),
         }
@@ -253,7 +284,15 @@ impl<C: Codec> RequestContext<C> {
     ///
     /// The newly allocated request ID.
     pub(super) fn try_allocate_new_request(&self, id: RequestId) -> Option<ReceiveResponseState> {
-        todo!()
+        // As it's nearly impossible to collide with the existing request ID, here we preemptively
+        // allocate the response wait obejct to insert into the pending task list quickly.
+        let wait_obj = Arc::new(TaskWaitObject::default());
+
+        if self.wait_list.lock().try_insert(id, wait_obj).is_ok() {
+            Some(ReceiveResponseState::new(id))
+        } else {
+            None
+        }
     }
 
     /// Mark the request ID as free.
@@ -262,7 +301,9 @@ impl<C: Codec> RequestContext<C> {
     ///
     /// Panics if the request ID is not found from the registry
     pub(super) fn free_request_id(&self, id: RequestId) {
-        todo!()
+        // The remove operation must be successful, as the only manipulation of the pending task
+        // list is done by the `try_allocate_new_request` method.
+        assert!(self.wait_list.lock().remove(&id).is_some());
     }
 
     /// Sets the response for the request ID.
@@ -292,5 +333,16 @@ impl<C: Codec> RequestContext<C> {
     /// Called by deferred runner, when the request is canceled due to write error
     pub fn invalidate_request(&self, id: RequestId) {
         todo!()
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for RequestContext {
+    fn drop(&mut self) {
+        // As the `ReceiveResponse` instance is holding the reference to `RpcCore` object which
+        // contains this `RequestContext` object, it must be guaranteed that all `ReceiveResponse`
+        // objects are dropped before this `RequestContext` object is dropped; i.e. all pending
+        // waitlist is cleared by drop guard of each `ReceiveResponse`.
+        assert!(self.wait_list.lock().is_empty());
     }
 }

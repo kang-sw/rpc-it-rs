@@ -75,6 +75,9 @@ pub enum TryRecvResponseError<C: Codec> {
     #[error("No message available")]
     Empty,
 
+    #[error("Already retrieved the result.")]
+    Retrieved,
+
     #[error("Remote peer respond with an error")]
     Response(ErrorResponse<C>),
 }

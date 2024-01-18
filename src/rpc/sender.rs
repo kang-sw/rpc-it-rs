@@ -332,7 +332,7 @@ impl<R: Config> RequestSender<R> {
 impl<R: Config> RequestSender<R> {
     /// Unwraps request context from this handle; This is valid since it's unconditionally defined
     /// when [`RequestSender`] is created.
-    pub(super) fn reqs(&self) -> &RequestContext<R::Codec> {
+    pub(super) fn reqs(&self) -> &RequestContext {
         self.context.request_context().unwrap()
     }
 }

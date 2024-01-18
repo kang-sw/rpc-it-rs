@@ -108,6 +108,9 @@ impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
     ) -> std::io::Result<ReadRunnerExitType> {
         // SAFETY: We won't move the memory within visible scope.
         let mut read = unsafe { Pin::new_unchecked(&mut self.read) };
+
+        // Downgrade the core to weak reference; let the sender handles control the lifetime of
+        // background task.
         let wctx = Arc::downgrade(&self.core.take().unwrap());
 
         let task_receive_loop = async {
