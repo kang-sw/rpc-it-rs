@@ -102,6 +102,15 @@ mod type_util;
 /// - `[no_recv]`
 ///     - Do not define handler for this method.
 ///
+/// ### Router Attributes
+///
+/// - `[no_default_route]`  
+///     - Do not generate default route for methods listed in this router.
+/// - `[no_install]`
+///     - Do not generate `install` function
+/// - `[direct]`
+///     - Generate `direct` mode router for this method.
+///
 /// ## Serialization / Deserialization Rules
 ///
 /// - Single-argument methods: The argument is serialized as-is.
