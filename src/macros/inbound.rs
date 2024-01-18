@@ -50,14 +50,8 @@ where
     M: RequestMethod + NotifyMethod,
 {
     /// # Safety
-    ///
-    /// This function is unsafe because it transmutes received parsed value to static lifetime.
-    /// To ensure safety, any borrowed reference in the parsed value must be originated from the
-    /// buffer of the inbound message.
     #[doc(hidden)]
-    pub unsafe fn __internal_create(
-        msg: Inbound<R>,
-    ) -> Result<Self, (Inbound<R>, DeserializeError)> {
+    pub fn __internal_create(msg: Inbound<R>) -> Result<Self, (Inbound<R>, DeserializeError)> {
         Ok(Self {
             inner: CachedNotify::__internal_create(msg)?,
         })
@@ -106,9 +100,7 @@ where
     M: NotifyMethod,
 {
     #[doc(hidden)]
-    pub unsafe fn __internal_create(
-        msg: Inbound<R>,
-    ) -> Result<Self, (Inbound<R>, DeserializeError)> {
+    pub fn __internal_create(msg: Inbound<R>) -> Result<Self, (Inbound<R>, DeserializeError)> {
         Ok(Self {
             // SAFETY:
             // * The borrowed lifetime `'de` is bound to the payload of the inbound message, not

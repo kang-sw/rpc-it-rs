@@ -36,12 +36,15 @@
 //! > feedback is invaluable in enhancing the accuracy and utility of this documentation.
 //!
 
-use std::mem::take;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    mem::take,
+};
 
 use convert_case::{Case, Casing};
-use proc_macro_error::{abort, emit_error, proc_macro_error};
+use proc_macro_error::{abort, emit_error, emit_warning, proc_macro_error};
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Ident, TokenStream};
 use quote::{quote, quote_spanned, ToTokens};
 use syn::{punctuated::Punctuated, spanned::Spanned, GenericArgument, Item, Meta, Token, Type};
 
@@ -104,7 +107,7 @@ mod type_util;
 ///
 /// ### Router Attributes
 ///
-/// - `[no_default_route]`  
+/// - `[no_default_route]`
 ///     - Do not generate default route for methods listed in this router.
 /// - `[no_install]`
 ///     - Do not generate `install` function
@@ -170,7 +173,7 @@ mod type_util;
 ///         routes = ["OtherRoute", "AAaaaH"]
 ///     }
 ///   ];
-///   
+///
 /// }
 ///
 /// pub struct MyParam<'a> {
@@ -239,7 +242,7 @@ struct MethodDef {
     is_req: bool,
     method_ident: syn::Ident,
     name: String,
-    routes: Vec<String>,
+    routes: Vec<syn::LitStr>,
 }
 
 impl DataModel {
@@ -476,7 +479,7 @@ impl DataModel {
                                 continue;
                             };
 
-                            self.def.routes.push(lit.value());
+                            self.def.routes.push(lit);
                         }
                     } else {
                         emit_error!(field, "Unknown field");
@@ -489,17 +492,28 @@ impl DataModel {
             }
         }
 
+        // ==== Logic Begin ====
+
         let mut generate_targets = Vec::<GenDesc>::new();
+        let item_span = item.ident.span();
 
         // Parse const item attribute to get route name
         let mut all_attrs = item.attrs;
         let mut global_no_default_route = false;
+        let mut no_generate_install = false;
+        let mut generate_direct = false;
 
         all_attrs.retain(|x| {
             match &x.meta {
                 Meta::Path(p) => {
                     if p.is_ident("no_default_route") {
                         global_no_default_route = true;
+                    } else if p.is_ident("no_install") {
+                        no_generate_install = true;
+                    } else if p.is_ident("direct") {
+                        generate_direct = true;
+                    } else {
+                        return true;
                     }
                 }
                 _ => return true,
@@ -508,7 +522,7 @@ impl DataModel {
             false
         });
 
-        // -- Retrieve method definitions to generate
+        // ==== Method Definition Retrieval ====
 
         // If expr is `= ALL` then generate all methods. Otherwise, generate only specified methods.
         // This shoud be `[<<method_name>>, <<alias>> = <<method_name>>, ...]`
@@ -516,12 +530,23 @@ impl DataModel {
             syn::Expr::Path(syn::ExprPath {
                 path, qself: None, ..
             }) if path.is_ident("ALL") => {
+                if global_no_default_route && !no_generate_install && !generate_direct {
+                    emit_warning!(item_span, "ALL is specified, but no_default_route is set");
+                }
+
                 generate_targets.extend(self.handled_methods.iter().cloned().map(GenDesc::new));
             }
 
             syn::Expr::Path(syn::ExprPath {
                 path, qself: None, ..
             }) if path.is_ident("ALL_PASCAL_CASE") => {
+                if global_no_default_route && !no_generate_install && !generate_direct {
+                    emit_warning!(
+                        item_span,
+                        "ALL_PASCAL_CASE is specified, but no_default_route is set"
+                    );
+                }
+
                 generate_targets.extend(self.handled_methods.iter().map(|x| GenDesc {
                     variant_ident: {
                         let str = x.method_ident.to_string().to_case(Case::Pascal);
@@ -620,50 +645,8 @@ impl DataModel {
             }
         }
 
-        // -- Generate route definitions
+        // ==== Route Definition Generate ====
 
-        /*  NOTE
-
-            <<vis>> enum <<route_ident_name>> <U: ___crate::UserData> {
-                <<variant_ident>>(
-                    ___crate::cached::Cached<<Request|Notify>><U, <<method_name>>::Fn>
-                ),
-            }
-
-            impl<U: ___crate::UserData> <<route_ident_name>> <U> {
-                /// # Panics
-                ///
-                /// Router installation failed.
-                <<vis>> fn install<F>(
-                    ___router: &mut ___route::RouterBuilder<U, F>,
-                    ___handler: impl Fn(Self) + Send + Sync + 'static + Clone,
-                )
-                    where F: ___route::RouterFuncBuilder
-                {
-                    // <<method_name>>
-                    {
-                        let ___handler = ___handler.clone();
-                        ___router.push_handler(move |___inbound| {
-                            let ___ib = ___inbound.take();
-
-                            ___handler(
-                                ___crate::cached::Cached<<Request|Notify>>::__internal_create(
-                                    inbound.into_owned()
-                                ).map_err(|(___ib, ___err)| {
-                                    ___inbound = ___ib;
-                                    ___err.into()
-                                })
-                            );
-
-                            Ok(())
-                        });
-                    }
-
-                }
-            }
-        */
-
-        // Generate enum definition for route
         let vis_this = type_util::elevate_vis_level(item.vis.clone(), vis_offset);
         let ident_this = &item.ident;
 
@@ -701,6 +684,8 @@ impl DataModel {
             quote!(#(#tokens),*)
         };
 
+        // ========================================================== Install Contents ===|
+
         let handler_impl_clone = (generate_targets.len() > 1).then(|| quote!(+ Clone));
         let tok_install_contents = generate_targets.iter().enumerate().map(
             |(
@@ -726,8 +711,9 @@ impl DataModel {
                 };
 
                 let no_default_route = *no_default_route || global_no_default_route;
+                let name = syn::LitStr::new(name.as_str(), name.span());
                 let route_strs = (!no_default_route)
-                    .then_some(name)
+                    .then_some(&name)
                     .into_iter()
                     .chain(routes.iter())
                     .map(|x| quote!(#x));
@@ -751,19 +737,16 @@ impl DataModel {
 
                         #warn_req_on_noti
 
-                        #[allow(unsafe_code)]
-                        unsafe {
-                            ___handler(
-                                #ident_this :: #ident (
-                                    ___crate::cached:: #type_path ::__internal_create(
-                                        ___ib,
-                                    ).map_err(|(___ib, ___err)| {
-                                        *___inbound = Some(___ib);
-                                        ___err
-                                    })?
-                                )
-                            );
-                        }
+                        ___handler(
+                            #ident_this :: #ident (
+                                ___crate::cached:: #type_path ::__internal_create(
+                                    ___ib,
+                                ).map_err(|(___ib, ___err)| {
+                                    *___inbound = Some(___ib);
+                                    ___err
+                                })?
+                            )
+                        );
 
                         Ok(())
                     });
@@ -790,13 +773,8 @@ impl DataModel {
             },
         );
 
-        out.extend(quote!(
-            #(#all_attrs)*
-            #tok_enum_title<R: ___crate::Config> {
-                #tok_enum_variants
-            }
-
-            impl<R: ___crate::Config> #ident_this<R> {
+        let tok_func_install = (!no_generate_install).then(|| {
+            quote_spanned!(item_span =>
                 #vis_this fn install<B, E>(
                     ___router: &mut ___route::RouterBuilder<R, B>,
                     ___handler: impl Fn(Self) + Send + Sync + 'static #handler_impl_clone,
@@ -809,6 +787,155 @@ impl DataModel {
 
                     #(#tok_install_contents)*
                 }
+            )
+        });
+
+        // ========================================================== Direct Contents ===|
+
+        let tok_direct_contents = generate_targets.iter().enumerate().map(
+            |(
+                index,
+                GenDesc {
+                    variant_ident,
+                    no_default_route,
+                    attrs: _,
+                    def:
+                        MethodDef {
+                            is_req,
+                            method_ident,
+                            name,
+                            routes,
+                        },
+                },
+            )| {
+                let ident = variant_ident.as_ref().unwrap_or(method_ident);
+                let type_path = if *is_req {
+                    quote!(___RQ)
+                } else {
+                    quote!(___NT)
+                };
+
+                let no_default_route = *no_default_route || global_no_default_route;
+                let name = syn::LitStr::new(name.as_str(), name.span());
+                let type_name = quote!(
+                    #type_path :: <R, self:: #method_ident :: Fn>
+                );
+                let route_strs = (!no_default_route)
+                    .then_some(&name)
+                    .into_iter()
+                    .chain(routes.iter())
+                    .map(|x| quote!(#x));
+
+                (
+                    quote!(
+                        #(#route_strs)|* => #index,
+                    ),
+                    quote!(
+                        #index => Self::#ident(
+                            #type_name :: __internal_create(___ib)
+                                .map_err(|(___ib, ___err)| {
+                                    (___ib, ___err.into())
+                                })?
+                        )
+                    ),
+                )
+            },
+        );
+
+        let tok_func_direct = generate_direct.then(|| {
+            let (iter_match_index_fn, iter_route_fn): (Vec<_>, Vec<_>) =
+                tok_direct_contents.unzip();
+
+            quote!(
+                fn ___inner_match_index(___route: &str) -> Option<usize> {
+                    Some(match ___route {
+                        #(#iter_match_index_fn)*
+                        _ => return None
+                    })
+                }
+
+                #vis_this fn matches(___route: &str) -> bool {
+                    Self::___inner_match_index(___route).is_some()
+                }
+
+                #vis_this fn route(___ib: ___crate::Inbound<R>)
+                    -> Result<Self, (___crate::Inbound<R>, ___route::ExecError)>
+                {
+                    use ___crate::cached::Request as ___RQ;
+                    use ___crate::cached::Notify as ___NT;
+
+                    let Some(___index) = Self::___inner_match_index(___ib.method()) else {
+                        return Err((___ib, ___route::ExecError::RouteFailed));
+                    };
+
+                    let ___item = match ___index {
+                        #(#iter_route_fn,)*
+                        _ => unreachable!(),
+                    };
+
+                    Ok(___item)
+                }
+            )
+        });
+
+        // ==== Direct Routing Validity Check ====
+
+        generate_targets.iter().fold(
+            BTreeMap::new(),
+            |mut direct_routings,
+             GenDesc {
+                 def:
+                     MethodDef {
+                         method_ident,
+                         routes,
+                         name,
+                         ..
+                     },
+                 no_default_route,
+                 ..
+             }| {
+                let no_default_route = *no_default_route || global_no_default_route;
+                let name = syn::LitStr::new(name.as_str(), method_ident.span());
+                let route_strs = (!no_default_route)
+                    .then_some(&name)
+                    .into_iter()
+                    .chain(routes.iter());
+
+                for route in route_strs {
+                    if let Some((prev_route, prev_method)) =
+                        direct_routings.insert(route.value(), (route.clone(), method_ident))
+                    {
+                        let route_str = route.value();
+                        emit_error!(name, "Duplicated route '{}'", route_str);
+                        emit_error!(
+                            prev_route,
+                            "Duplicated route between '{}' and '{}'",
+                            method_ident,
+                            prev_method,
+                        );
+                        emit_error!(
+                            route,
+                            "Duplicated route between '{}' and '{}'",
+                            method_ident,
+                            prev_method,
+                        );
+                        emit_error!(item_span, "Failed to generate routes");
+                    }
+                }
+
+                direct_routings
+            },
+        );
+
+        out.extend(quote_spanned!(item_span =>
+            #(#all_attrs)*
+            #tok_enum_title<R: ___crate::Config> {
+                #tok_enum_variants
+            }
+
+            impl<R: ___crate::Config> #ident_this<R> {
+                #tok_func_install
+                #tok_func_direct
             }
         ))
     }
@@ -896,7 +1023,7 @@ impl DataModel {
                             continue 'outer;
                         };
 
-                        def.routes.push(lit.value());
+                        def.routes.push(lit);
                     } else {
                         break 'value Meta::NameValue(meta);
                     }

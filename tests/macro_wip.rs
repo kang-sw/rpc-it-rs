@@ -15,9 +15,7 @@ pub(crate) mod prods {
             routes: ["a", "b", "c"],
         },
         /// This is a comment 2222
-        eoo {
-            routes: ["a", "b", "c", "D"],
-        },
+        eoo { routes: ["D"] },
         /// This is a comment 33333
         baz = OtherAlias,
         /// This is a comment 4444
@@ -31,9 +29,7 @@ pub(crate) mod prods {
             routes: ["a", "b", "c"],
         },
         /// This is a comment 2222
-        eoo {
-            routes: ["a", "b", "c", "D"],
-        },
+        eoo { routes: ["D"] },
         /// This is a comment 33333
         baz = OtherAlias,
         /// This is a comment 4444
@@ -51,7 +47,6 @@ pub(crate) mod prods {
 
     /// dasf
     /// sagfa gsda
-    #[name = "dslaoi"]
     #[route = "hey dude"]
     fn eoo(s: __<i32, usize>, g: f32);
 

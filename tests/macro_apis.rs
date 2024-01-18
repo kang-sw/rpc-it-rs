@@ -4,7 +4,11 @@ use rpc_it::{io::InMemoryRx, Codec, DefaultConfig};
 
 #[rpc_it::service(rename_all = "camelCase")]
 mod rpc {
-    const Route: Route = ALL_PASCAL_CASE;
+    pub const Route: Route = ALL_PASCAL_CASE;
+
+    #[direct]
+    #[no_install]
+    pub const DRoute: Route = ALL_PASCAL_CASE;
 
     pub fn zero_param() -> i32;
 
@@ -18,13 +22,15 @@ mod rpc {
     #[route = "Param/Thre"]
     #[route = "Param/Thr"]
     #[route = "Param/Th"]
-    #[route = "Param/T"]
     pub fn three_param_concat(a: String, b: String, c: String) -> String;
 
     pub fn four_param_concat(a: String, b: i32, c: u64, d: String) -> String;
 
     pub fn one_param_split(x: __<i32, f32>) -> i32;
 }
+
+// Recursive expansion of service macro
+// =====================================
 
 type CodecCfg<C> = DefaultConfig<(), C>;
 
