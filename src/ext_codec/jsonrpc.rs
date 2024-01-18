@@ -110,7 +110,7 @@ impl crate::Codec for Codec {
             method,
             params,
 
-            // TODO: if performance matters, use stack allocated string buffer(e.g. `compact_str`).
+            // XXX: consider using stack allocated string buffer(e.g. `compact_str`).
             id: &format!("{:x}", request_id.value()),
         }
         .serialize(&mut serde_json::Serializer::new(buf.writer()))

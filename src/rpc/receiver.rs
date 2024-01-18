@@ -6,7 +6,7 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use futures::{Future, FutureExt};
+use futures::FutureExt;
 use thiserror::Error;
 
 use crate::{
@@ -15,7 +15,7 @@ use crate::{
         AtomicLongSizeType, LongSizeType, NonZeroRangeType, NonzeroSizeType, RangeType, SizeType,
     },
     rpc::WriterDirective,
-    AsyncFrameRead, Codec, NotifySender, ParseMessage, RequestSender, ResponseError,
+    AsyncFrameRead, Codec, NotifySender, ParseMessage, ResponseError,
 };
 
 use super::{
@@ -664,6 +664,7 @@ pub enum ForwardRequestError<RemoteCodec: Codec> {
     ResponseFailed(SendResponseError),
 }
 
+#[cfg(any(/* TODO */))]
 impl<R: Config> Inbound<R> {
     // TODO: async fn forward_request(self, other: &RequestSender) -> ...
     //
@@ -673,6 +674,7 @@ impl<R: Config> Inbound<R> {
     //
     // IMPL => Forward to remote -> await -> receive response -> send response to source
     //   - seems we need a way to register custom rpc id on mapping table.
+
     pub async fn forward_request<Other: Config>(
         self,
         target: &RequestSender<Other>,

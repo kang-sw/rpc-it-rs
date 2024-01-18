@@ -327,7 +327,7 @@ impl DataModel {
     fn main(&mut self, item: syn::ItemMod, out: &mut TokenStream) {
         let vis_level = 1;
 
-        // TODO: In future, find re-imported crate name
+        // TODO: Find way to use re-imported crate name
         let crate_name = quote!(rpc_it);
 
         // Create module name
