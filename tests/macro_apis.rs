@@ -93,56 +93,53 @@ async fn test_macro_ops_correct<C: Codec>(
 
     let task_client = async {
         let b = &mut Default::default();
-        assert_eq!(3, *client.try_call(b, rpc::zero_param())?.await?.result());
 
-        assert_eq!(
-            -2,
-            *client.try_call(b, rpc::one_param_flip(&2))?.await?.result()
+        let res_zero_param = client.call(b, rpc::zero_param()).await?;
+        let res_one_param_flip = client.call(b, rpc::one_param_flip(&2)).await?;
+        let res_pass_positive_value_only =
+            client.call(b, rpc::pass_positive_value_only(&-5)).await?;
+        let res_two_param_add = client.call(b, rpc::two_param_add(&1, &2)).await?;
+        let res_three_param_concat = client
+            .call(b, rpc::three_param_concat("a", "b", "c"))
+            .await?;
+        let res_four_param_concat = client
+            .call(b, rpc::four_param_concat("abc", &1, &23, "abc"))
+            .await?;
+        let res_one_param_fp = client.call(b, rpc::one_param_fp(&1.55)).await?;
+
+        let (
+            res_zero_param,
+            res_two_param_add,
+            res_one_param_flip,
+            res_three_param_concat,
+            res_four_param_concat,
+            res_one_param_fp,
+            res_pass_positive_value_only,
+        ) = futures::join!(
+            res_zero_param,
+            res_two_param_add,
+            res_one_param_flip,
+            res_three_param_concat,
+            res_four_param_concat,
+            res_one_param_fp,
+            res_pass_positive_value_only,
         );
 
+        assert_eq!(3, *res_zero_param?.result());
+        assert_eq!(-2, *res_one_param_flip?.result());
         assert_eq!(
             "-5 is Negative Value",
-            *client
-                .try_call(b, rpc::pass_positive_value_only(&-5))?
-                .await
+            *res_pass_positive_value_only
                 .map(drop)
                 .unwrap_err()
                 .into_response()
                 .unwrap()
                 .result()
         );
-
-        assert_eq!(
-            3,
-            *client
-                .try_call(b, rpc::two_param_add(&1, &2))?
-                .await?
-                .result()
-        );
-
-        assert_eq!(
-            "abc",
-            *client
-                .try_call(b, rpc::three_param_concat("a", "b", "c"))?
-                .await?
-                .result()
-        );
-
-        assert_eq!(
-            "abc123abc",
-            *client
-                .try_call(b, rpc::four_param_concat("abc", &1, &23, "abc"))?
-                .await?
-                .result()
-        );
-
-        assert_eq!(
-            -1.0,
-            *client
-                .try_call(b, rpc::one_param_fp(&1.55))?
-                .await?
-                .result()
-        );
+        assert_eq!(3, *res_two_param_add?.result());
+        assert_eq!("abc", *res_three_param_concat?.result());
+        assert_eq!("abc123abc", *res_four_param_concat?.result());
+        assert_eq!(-1.0, *res_one_param_fp?.result());
 
         Ok::<_, anyhow::Error>(())
     };

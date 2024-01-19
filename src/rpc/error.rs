@@ -104,7 +104,11 @@ pub(crate) fn convert_deferred_write_err(e: TrySendError<WriterDirective>) -> Tr
     match e {
         TrySendError::Closed(_) => TrySendMsgError::ChannelClosed,
         // XXX: In future, we should deal with re-sending failed message.
-        TrySendError::Full(WriterDirective::WriteMsg(_)) => TrySendMsgError::ChannelAtCapacity,
+        TrySendError::Full(
+            WriterDirective::WriteMsg(..)
+            | WriterDirective::WriteMsgBurst(..)
+            | WriterDirective::WriteReqMsg(..),
+        ) => TrySendMsgError::ChannelAtCapacity,
         TrySendError::Full(_) => unreachable!(),
     }
 }
