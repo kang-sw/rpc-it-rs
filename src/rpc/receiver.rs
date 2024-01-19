@@ -76,6 +76,8 @@ impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
         loop {
             let inbound = read.as_mut().next().await?.ok_or(ReceiveError::Eof)?;
 
+            self.scratch.clear();
+
             // SAFETY: Core is always valid unless we call `into_response_only_task`
             let core = unsafe { self.core.as_ref().unwrap_unchecked() };
             let task_rx = rx_inner::handle_inbound_once(core, inbound, &mut self.scratch);
@@ -126,6 +128,8 @@ impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
                 let Some(core) = wctx.upgrade() else {
                     return Ok(ReadRunnerExitType::AllHandleDropped);
                 };
+
+                self.scratch.clear();
 
                 if let Some(ib) = rx_inner::handle_inbound_once(&core, inbound, &mut self.scratch)
                     .await
