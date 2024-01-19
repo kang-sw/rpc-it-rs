@@ -24,13 +24,13 @@ struct RawData<'a> {
     #[serde(borrow, default)]
     method: Option<&'a str>,
 
-    #[serde(borrow, default)]
+    #[serde(borrow, default, deserialize_with = "parse_null_or_raw")]
     params: Option<&'a RawJsonValue>,
 
-    #[serde(borrow, default)]
+    #[serde(borrow, default, deserialize_with = "parse_null_or_raw")]
     result: Option<&'a RawJsonValue>,
 
-    #[serde(default)]
+    #[serde(borrow, default)]
     error: Option<RawErrorObject<'a>>,
 
     #[serde(borrow, default)]
@@ -45,6 +45,15 @@ struct RawErrorObject<'a> {
     // NOTE: Commenting out `message` field, as we're not using it.
     //
     // message: Option<&'a str>,
+}
+
+// ==== Null param handling ====
+
+fn parse_null_or_raw<'de, D>(de: D) -> Result<Option<&'de RawJsonValue>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    <&'de RawJsonValue>::deserialize(de).map(Some)
 }
 
 // ========================================================== Trait Implementation ===|
