@@ -9,7 +9,7 @@ use crate::{
     codec::{
         self,
         error::{DecodeError, EncodeError},
-        AsDeserializer, DeserializeError, EncodeResponsePayload, InboundFrameType,
+        AsDeserializer, EncodeResponsePayload, InboundFrameType, SerDeError,
     },
     defs::{RequestId, SizeType},
     ResponseError,
@@ -96,7 +96,7 @@ impl crate::Codec for Codec {
             params,
         }
         .serialize(&mut serde_json::Serializer::new(buf.writer()))
-        .map_err(DeserializeError::from)?;
+        .map_err(SerDeError::from)?;
 
         Ok(())
     }
@@ -125,7 +125,7 @@ impl crate::Codec for Codec {
             id: &format!("{:x}", request_id.value()),
         }
         .serialize(&mut serde_json::Serializer::new(buf.writer()))
-        .map_err(DeserializeError::from)?;
+        .map_err(SerDeError::from)?;
 
         // We won't modify the original request ID.
         Ok(request_id)
@@ -162,7 +162,7 @@ impl crate::Codec for Codec {
         }
 
         let request_id =
-            std::str::from_utf8(request_id_raw).map_err(|_| EncodeError::NonUtf8StringRequestId)?;
+            std::str::from_utf8(request_id_raw).map_err(|_| EncodeError::InvalidRequestId)?;
 
         fn error_to_errc(ec: ResponseError) -> i64 {
             match ec {
@@ -218,7 +218,7 @@ impl crate::Codec for Codec {
 
         encode
             .serialize(&mut serde_json::Serializer::new(buf.writer()))
-            .map_err(DeserializeError::from)?;
+            .map_err(SerDeError::from)?;
 
         Ok(())
     }
@@ -230,7 +230,7 @@ impl crate::Codec for Codec {
     ) -> Result<codec::InboundFrameType, DecodeError> {
         let frame = std::str::from_utf8(frame).map_err(|_| DecodeError::NonUtf8Input)?;
         let mut de = serde_json::Deserializer::from_str(frame);
-        let raw = RawData::deserialize(&mut de).map_err(DeserializeError::from)?;
+        let raw = RawData::deserialize(&mut de).map_err(SerDeError::from)?;
 
         let range_of = |s: &str| -> Range<SizeType> {
             // May panic if the range is out of bounds. (e.g. front of the frame)
@@ -285,7 +285,7 @@ impl crate::Codec for Codec {
                 payload: data.map(|x| range_of(x.get())).unwrap_or_default(),
             },
             _other => {
-                return Err(DeserializeError::from(InvalidJsonRpcFrame).into());
+                return Err(SerDeError::from(InvalidJsonRpcFrame).into());
             }
         };
 
@@ -332,8 +332,8 @@ fn errc_to_error(errc: i64) -> ResponseError {
 fn req_id_from_str(s: &str) -> Result<RequestId, DecodeError> {
     Ok(RequestId::new(
         u64::from_str_radix(s, 16)
-            .map_err(|_| DecodeError::RequestIdRetrievalFailed)?
+            .map_err(|_| DecodeError::InvalidFormat)?
             .try_into()
-            .map_err(|_| DecodeError::RequestIdRetrievalFailed)?,
+            .map_err(|_| DecodeError::InvalidFormat)?,
     ))
 }

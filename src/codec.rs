@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::str::FromStr;
 
 use bytes::Bytes;
 use bytes::BytesMut;
@@ -8,6 +9,8 @@ use thiserror::Error;
 use self::error::*;
 use crate::defs::RequestId;
 use crate::defs::SizeType;
+
+// ========================================================== Response Error Type ===|
 
 /// Set of predefined error codes for RPC responses. The codec implementation is responsible for
 /// mapping these error codes to the corresponding error codes of the underlying protocol. For
@@ -51,18 +54,60 @@ pub enum ResponseError {
     ParseFailed = 8,
 }
 
-pub enum EncodeResponsePayload<'a, S: serde::Serialize> {
-    Ok(&'a S),
-    ErrCodeOnly(ResponseError),
-    ErrObjectOnly(&'a S),
-    Err(ResponseError, &'a S),
-}
-
 impl ResponseError {
     /// Unknown is kind of special error code, which is used when the error code is not specified
     /// by the underlying protocol, or the error code is not defined in this crate.
     pub fn is_error_code(&self) -> bool {
         !matches!(self, Self::Unknown)
+    }
+
+    const STR_UNKNOWN: &'static str = "RPC_IT_UNKNOWN";
+    const STR_INVALID_ARGUMENT: &'static str = "RPC_IT_INVALID_ARGUMENT";
+    const STR_UNAUTHORIZED: &'static str = "RPC_IT_UNAUTHORIZED";
+    const STR_BUSY: &'static str = "RPC_IT_BUSY";
+    const STR_METHOD_NOT_FOUND: &'static str = "RPC_IT_METHOD_NOT_FOUND";
+    const STR_ABORTED: &'static str = "RPC_IT_ABORTED";
+    const STR_UNHANDLED: &'static str = "RPC_IT_UNHANDLED";
+    const STR_NON_UTF8_METHOD_NAME: &'static str = "RPC_IT_NON_UTF8_METHOD_NAME";
+    const STR_PARSE_FAILED: &'static str = "RPC_IT_PARSE_FAILED";
+
+    /// Change this to arbitrary string.
+    pub fn to_str(self) -> &'static str {
+        use ResponseError::*;
+
+        match self {
+            Unknown => Self::STR_UNKNOWN,
+            InvalidArgument => Self::STR_INVALID_ARGUMENT,
+            Unauthorized => Self::STR_UNAUTHORIZED,
+            Busy => Self::STR_BUSY,
+            MethodNotFound => Self::STR_METHOD_NOT_FOUND,
+            Aborted => Self::STR_ABORTED,
+            Unhandled => Self::STR_UNHANDLED,
+            NonUtf8MethodName => Self::STR_NON_UTF8_METHOD_NAME,
+            ParseFailed => Self::STR_PARSE_FAILED,
+        }
+    }
+}
+
+impl FromStr for ResponseError {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        /// Change this to arbitrary string.
+        use ResponseError::*;
+
+        Ok(match s {
+            Self::STR_UNKNOWN => Unknown,
+            Self::STR_INVALID_ARGUMENT => InvalidArgument,
+            Self::STR_UNAUTHORIZED => Unauthorized,
+            Self::STR_BUSY => Busy,
+            Self::STR_METHOD_NOT_FOUND => MethodNotFound,
+            Self::STR_ABORTED => Aborted,
+            Self::STR_UNHANDLED => Unhandled,
+            Self::STR_NON_UTF8_METHOD_NAME => NonUtf8MethodName,
+            Self::STR_PARSE_FAILED => ParseFailed,
+            _ => return Err(()),
+        })
     }
 }
 
@@ -102,23 +147,23 @@ impl From<ResponseError> for u8 {
 // ========================================================== Error ===|
 
 #[cfg(feature = "detailed-parse-errors")]
-pub type DeserializeError = anyhow::Error;
+pub type SerDeError = anyhow::Error;
 #[cfg(not(feature = "detailed-parse-errors"))]
-pub struct DeserializeError;
+pub struct SerDeError;
 
 #[cfg(not(feature = "detailed-parse-errors"))]
 mod omitted_error {
     use std::ops::Deref;
 
-    use super::DeserializeError;
+    use super::SerDeError;
 
-    impl std::fmt::Debug for DeserializeError {
+    impl std::fmt::Debug for SerDeError {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             Monostate.fmt(f)
         }
     }
 
-    impl std::fmt::Display for DeserializeError {
+    impl std::fmt::Display for SerDeError {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             Monostate.fmt(f)
         }
@@ -135,7 +180,7 @@ mod omitted_error {
         }
     }
 
-    impl Deref for DeserializeError {
+    impl Deref for SerDeError {
         type Target = Monostate;
 
         fn deref(&self) -> &Self::Target {
@@ -143,7 +188,7 @@ mod omitted_error {
         }
     }
 
-    impl<E: std::error::Error> From<E> for DeserializeError {
+    impl<E: std::error::Error> From<E> for SerDeError {
         fn from(_: E) -> Self {
             Self
         }
@@ -159,6 +204,13 @@ pub struct DecodePayloadUnsupportedError(pub &'static str);
 pub trait AsDeserializer<'de> {
     fn as_deserializer(&mut self) -> impl serde::Deserializer<'de>;
     fn is_human_readable(&self) -> bool;
+}
+
+pub enum EncodeResponsePayload<'a, S: serde::Serialize> {
+    Ok(&'a S),
+    ErrCodeOnly(ResponseError),
+    ErrObjectOnly(&'a S),
+    Err(ResponseError, &'a S),
 }
 
 pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
@@ -290,7 +342,7 @@ pub enum InboundFrameType {
 pub mod error {
     use thiserror::Error;
 
-    use super::DeserializeError;
+    use super::SerDeError;
 
     #[derive(Debug, Error)]
     pub enum EncodeError {
@@ -304,10 +356,10 @@ pub mod error {
         NonUtf8StringPayloadContent,
 
         #[error("Non UTF-8 string detected: request id")]
-        NonUtf8StringRequestId,
+        InvalidRequestId,
 
         #[error("Serialize failed: {0}")]
-        SerializeFailed(#[from] DeserializeError),
+        SerializeFailed(#[from] SerDeError),
 
         #[error("This codec is not reusable")]
         NotReusable,
@@ -325,8 +377,8 @@ pub mod error {
         #[error("Unsupported protocol")]
         UnsupportedProtocol,
 
-        #[error("Failed to retrieve request ID")]
-        RequestIdRetrievalFailed,
+        #[error("Input is not valid format")]
+        InvalidFormat,
 
         #[error("UTF-8 input is expected")]
         NonUtf8Input,
@@ -335,7 +387,7 @@ pub mod error {
         BufferSizeExceeded(u64),
 
         #[error("Parse failed: {0}")]
-        ParseFailed(#[from] DeserializeError),
+        ParseFailed(#[from] SerDeError),
     }
 }
 
@@ -352,7 +404,7 @@ pub trait ParseMessage<C: Codec> {
     /// Note: This function is not exposed in the public API, mirroring the context of
     /// [`Deserialize::deserialize_in_place`].
     #[doc(hidden)]
-    fn parse_in_place<'de, R>(&'de self, dst: &mut R) -> Result<(), DeserializeError>
+    fn parse_in_place<'de, R>(&'de self, dst: &mut R) -> Result<(), SerDeError>
     where
         R: Deserialize<'de>,
     {
@@ -362,7 +414,7 @@ pub trait ParseMessage<C: Codec> {
         R::deserialize_in_place(as_de.as_deserializer(), dst).map_err(err_to_de_error)
     }
 
-    fn parse<'de, R>(&'de self) -> Result<R, DeserializeError>
+    fn parse<'de, R>(&'de self) -> Result<R, SerDeError>
     where
         R: Deserialize<'de>,
     {
@@ -373,14 +425,14 @@ pub trait ParseMessage<C: Codec> {
     }
 }
 
-fn err_to_de_error(_e: impl std::error::Error) -> DeserializeError {
+fn err_to_de_error(_e: impl std::error::Error) -> SerDeError {
     #[cfg(feature = "detailed-parse-errors")]
     {
         anyhow::anyhow!("{}", _e)
     }
     #[cfg(not(feature = "detailed-parse-errors"))]
     {
-        DeserializeError
+        SerDeError
     }
 }
 

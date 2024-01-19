@@ -48,6 +48,11 @@ mod rpc {
     pub fn four_param_concat(a: &str, b: i32, c: u64, d: &str) -> &str;
 
     pub fn one_param_fp(x: __<f32, f64>) -> f32;
+
+    pub fn noti_zero_param();
+    pub fn noti_one_param(st: &str);
+    pub fn noti_two_params(st: &str, x: i32);
+    pub fn noti_three_params(st: &str, x: i32, y: f64);
 }
 
 // Recursive expansion of service macro

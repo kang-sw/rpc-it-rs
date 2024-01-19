@@ -7,7 +7,7 @@ pub mod defs {
 
     use std::{
         num::{NonZeroU32, NonZeroU64},
-        ops::Range,
+        ops::{Deref, DerefMut, Range},
         sync::atomic::AtomicU64,
     };
 
@@ -63,10 +63,10 @@ pub mod defs {
     // ========================================================== ID Types ===|
 
     macro_rules! define_id {
-		($(#[doc=$doc:literal])* $vis:vis struct $name:ident($base:ty)) => {
+		($(#[doc=$doc:literal])* $vis:vis struct $name:ident($inner_vis:vis $base:ty)) => {
 			$(#[doc=$doc])*
 			#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-			$vis struct $name($base);
+			$vis struct $name($inner_vis $base);
 
             impl $name {
                 #[allow(dead_code)]
@@ -90,8 +90,30 @@ pub mod defs {
     }
 
     impl RequestId {
+        /// The request ID is always generated randomly for each request. This method may be less
+        /// efficient in terms of serialized binary size, but we have opted for this approach to
+        /// implement a best-effort strategy aimed at minimizing the likelihood of request ID
+        /// collisions among multiple network peers.
+        ///
+        /// Utilizing randomness in generating request IDs significantly decreases the probability
+        /// of collisions compared to using incremental request IDs across different network peers.
+        /// This strategy provides a safer means of forwarding requests from one peer to another.
         pub(crate) fn generate() -> Self {
             Self(rand::random::<NonZeroU64>())
+        }
+    }
+
+    impl Deref for RequestId {
+        type Target = NonZeroU64;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl DerefMut for RequestId {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.0
         }
     }
 }
