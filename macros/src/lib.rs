@@ -343,56 +343,57 @@ impl DataModel {
 
         let mut out_method_defs = TokenStream::new();
         let mut out_routes = TokenStream::new();
+        let mut pass_thru_items = Vec::new();
         let mut route_items = Vec::new();
 
         // Parse list of module items
         // - If it's function body (or verbatim function declaration), generate method definition
         // - If it's const item, try parse it as route item
         for item in item.content.unwrap().1.into_iter() {
-            match item {
+            let pass_thru = match item {
                 Item::Fn(syn::ItemFn {
                     attrs,
                     vis,
                     sig,
                     block: _,
-                }) => self.generate_item_fn(
-                    syn::ForeignItemFn {
-                        semi_token: Token![;](sig.span()),
-                        attrs,
-                        sig,
-                        vis,
-                    },
-                    vis_level,
-                    &mut out_method_defs,
-                ),
+                }) => {
+                    self.generate_item_fn(
+                        syn::ForeignItemFn {
+                            semi_token: Token![;](sig.span()),
+                            attrs,
+                            sig,
+                            vis,
+                        },
+                        vis_level,
+                        &mut out_method_defs,
+                    );
+                    continue;
+                }
                 Item::Const(item) => {
-                    let Some(path_seg) = type_util::type_path_as_mono_seg(&item.ty) else {
-                        emit_error!(item.ty, "Expected single type path segment");
-                        continue;
+                    if let Some(path_seg) = type_util::type_path_as_mono_seg(&item.ty) {
+                        if path_seg.ident == "Route" {
+                            route_items.push(item);
+                            continue;
+                        }
                     };
-
-                    if path_seg.ident == "Route" {
-                        route_items.push(item);
-                    } else {
-                        // NOTE: Update this on every route item addition
-                        emit_error!(item.ty, "Unknown type. Expected 'Route'");
-                    }
+                    Item::Const(item)
                 }
                 Item::Verbatim(verbatim) => {
-                    let Ok(x @ syn::ItemForeignMod { .. }) =
+                    if let Ok(x @ syn::ItemForeignMod { .. }) =
                         syn::parse2(quote!(extern "C" { #verbatim }))
-                    else {
-                        continue;
-                    };
+                    {
+                        if let syn::ForeignItem::Fn(item) = x.items.into_iter().next().unwrap() {
+                            self.generate_item_fn(item, vis_level, &mut out_method_defs);
+                            continue;
+                        }
+                    }
 
-                    let Some(syn::ForeignItem::Fn(item)) = x.items.into_iter().next() else {
-                        continue;
-                    };
-
-                    self.generate_item_fn(item, vis_level, &mut out_method_defs);
+                    Item::Verbatim(verbatim)
                 }
-                other => emit_error!(other, "Unknown item type"),
-            }
+                other => other,
+            };
+
+            pass_thru_items.push(pass_thru);
         }
 
         for item in route_items {
@@ -415,6 +416,9 @@ impl DataModel {
 
             use ___crate::macros as ___macros;
             use ___macros::route as ___route;
+
+            // Pass through all other items
+            #(#pass_thru_items)*
 
             // Let routes appear before methods; let method decls appear as method syntax by
             // language server

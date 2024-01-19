@@ -82,6 +82,9 @@ impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
 
             if let Some(rx) = task_rx.await? {
                 break Ok(rx);
+            } else {
+                // Continuing the loop means this inbound message was response, therefore, we need
+                // to wait for next message.
             }
         }
     }
@@ -308,7 +311,7 @@ pub struct Inbound<R: Config> {
 }
 
 /// An inbound message delivered from the background receiver.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct InboundInner {
     buffer: Bytes,
     method: RangeType,
@@ -322,6 +325,15 @@ pub(crate) struct InboundInner {
 pub struct ResponsePayload<T: serde::Serialize>(Result<T, (ResponseError, Option<T>)>);
 
 // ==== impl:Inbound ====
+
+impl<R: Config> std::fmt::Debug for Inbound<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Inbound")
+            .field("owner", &self.owner)
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
 
 impl<R: Config> Inbound<R> {
     pub(super) fn new(owner: Arc<RpcCore<R>>, inner: InboundInner) -> Self {

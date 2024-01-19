@@ -19,7 +19,7 @@ pub mod defs {
     // ========================================================== RangeType ===|
 
     /// 32-bit range type. Defines set of helper methods for working with ranges.
-    #[derive(Default, Clone, Copy)]
+    #[derive(Debug, Default, Clone, Copy)]
     pub(crate) struct RangeType([SizeType; 2]);
 
     impl RangeType {
@@ -135,7 +135,7 @@ pub use macros::route::{
 #[cfg(feature = "proc-macro")]
 pub mod cached {
     pub use crate::macros::inbound::{
-        CachedErrorObj as ErrorObj, CachedNotify as Notify, CachedOkayObj as OkayOjb,
+        CachedErrorObj as ErrorObj, CachedNotify as Notify, CachedOkayObj as OkayObj,
         CachedRequest as Request, CachedWaitError as WaitError, CachedWaitResponse as WaitResponse,
     };
 }

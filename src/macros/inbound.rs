@@ -58,7 +58,7 @@ where
         })
     }
 
-    pub async fn response<'a>(
+    pub async fn respond<'a>(
         &self,
         buf: &mut BytesMut,
         result: Result<M::OkSend<'a>, M::ErrSend<'a>>,

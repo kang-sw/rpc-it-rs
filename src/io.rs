@@ -47,6 +47,8 @@ pub trait AsyncFrameRead {
     /// lies with the implementation of [`AsyncFrameRead`].
     ///
     /// It'll return [`Ok(None)`] if it was gracefully closed.
+    ///
+    /// The returned future should be cancellation safe where it can be dropped at any time.
     fn next<'this>(
         self: Pin<&'this mut Self>,
     ) -> impl Future<Output = std::io::Result<Option<Bytes>>> + Send + 'this;

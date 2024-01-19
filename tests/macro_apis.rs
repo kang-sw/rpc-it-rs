@@ -1,13 +1,21 @@
 #![cfg(all(feature = "in-memory-io", feature = "proc-macro"))]
 
-use futures::executor::LocalPool;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
+use futures::{executor::LocalPool, FutureExt};
 use rpc_it::{ext_codec::jsonrpc, io::InMemoryRx, Codec, DefaultConfig};
 
 mod shared;
 
 #[rpc_it::service(rename_all = "camelCase")]
 mod rpc {
+    use enum_as_inner::EnumAsInner;
+
     #[install]
+    #[derive(EnumAsInner)]
     pub const Route: Route = ALL_PASCAL_CASE;
 
     #[direct]
@@ -18,6 +26,8 @@ mod rpc {
     #[name = "One/Param/Flip"]
     pub fn one_param_flip(a: i32) -> i32;
 
+    pub fn pass_positive_value_only(x: i32) -> Result<i32, &str>;
+
     #[name = "T wo P aaa ram Ad"]
     pub fn two_param_add(a: i32, b: i32) -> i32;
 
@@ -25,30 +35,46 @@ mod rpc {
     #[route = "Param/Thre"]
     #[route = "Param/Thr"]
     #[route = "Param/Th"]
-    pub fn three_param_concat(a: String, b: String, c: String) -> String;
+    pub fn three_param_concat(a: &str, b: &str, c: &str) -> &str;
 
-    pub fn four_param_concat(a: String, b: i32, c: u64, d: String) -> String;
+    pub fn four_param_concat(a: &str, b: i32, c: u64, d: &str) -> &str;
 
-    pub fn one_param_split(x: __<i32, f32>) -> i32;
+    pub fn one_param_fp(x: __<f32, f64>) -> f32;
 }
 
 // Recursive expansion of service macro
 // =====================================
 
-type TestCfg<C> = DefaultConfig<(), C>;
+type TestCfg<C> = DefaultConfig<Arc<DropCheck>, C>;
+
+#[derive(Debug, Clone)]
+struct DropCheck;
+
+static DROP_CALLED: AtomicBool = AtomicBool::new(false);
+
+impl Drop for DropCheck {
+    fn drop(&mut self) {
+        DROP_CALLED.store(true, Ordering::SeqCst);
+    }
+}
 
 #[test]
 fn test_macro_ops_correct_jsonrpc() {
-    let mut executor = LocalPool::new();
+    {
+        let mut executor = LocalPool::new();
+        let drop_check = Arc::new(DropCheck);
 
-    let (client, mut server) = shared::create_default_rpc_pair::<TestCfg<jsonrpc::Codec>>(
-        &executor.spawner(),
-        (),
-        (),
-        || jsonrpc::Codec,
-    );
+        let (client, mut server) = shared::create_default_rpc_pair::<TestCfg<jsonrpc::Codec>>(
+            &executor.spawner(),
+            drop_check.clone(),
+            drop_check.clone(),
+            || jsonrpc::Codec,
+        );
 
-    executor.run_until(test_macro_ops_correct(&mut server, client.clone()));
+        executor.run_until(test_macro_ops_correct(&mut server, client.clone()));
+    }
+
+    assert!(DROP_CALLED.load(Ordering::SeqCst));
 }
 
 async fn test_macro_ops_correct<C: Codec>(
@@ -65,8 +91,6 @@ async fn test_macro_ops_correct<C: Codec>(
         |_, _, _| {},
     );
 
-    let router = route_bulider.finish();
-
     let task_client = async {
         let b = &mut Default::default();
         assert_eq!(3, *client.try_call(b, rpc::zero_param())?.await?.result());
@@ -76,19 +100,116 @@ async fn test_macro_ops_correct<C: Codec>(
             *client.try_call(b, rpc::one_param_flip(&2))?.await?.result()
         );
 
+        assert_eq!(
+            "-5 is Negative Value",
+            *client
+                .try_call(b, rpc::pass_positive_value_only(&-5))?
+                .await
+                .map(drop)
+                .unwrap_err()
+                .into_response()
+                .unwrap()
+                .result()
+        );
+
+        assert_eq!(
+            3,
+            *client
+                .try_call(b, rpc::two_param_add(&1, &2))?
+                .await?
+                .result()
+        );
+
+        assert_eq!(
+            "abc",
+            *client
+                .try_call(b, rpc::three_param_concat("a", "b", "c"))?
+                .await?
+                .result()
+        );
+
+        assert_eq!(
+            "abc123abc",
+            *client
+                .try_call(b, rpc::four_param_concat("abc", &1, &23, "abc"))?
+                .await?
+                .result()
+        );
+
+        assert_eq!(
+            -1.0,
+            *client
+                .try_call(b, rpc::one_param_fp(&1.55))?
+                .await?
+                .result()
+        );
+
         Ok::<_, anyhow::Error>(())
     };
 
     let task_service = async {
-        while let Ok(rx) = rx_route.recv().await {
-            match rx {
-                rpc::Route::ZeroParam(msg) => todo!(),
-                rpc::Route::OneParamFlip(_) => todo!(),
-                rpc::Route::TwoParamAdd(_) => todo!(),
-                rpc::Route::ThreeParamConcat(_) => todo!(),
-                rpc::Route::FourParamConcat(_) => todo!(),
-                rpc::Route::OneParamSplit(_) => todo!(),
-            }
+        let b = &mut Default::default();
+
+        let msg = rx_route.recv().await?.into_zero_param().ok().unwrap();
+        msg.respond(b, Ok(&3)).await?;
+
+        let msg = rx_route.recv().await?.into_one_param_flip().ok().unwrap();
+        msg.respond(b, Ok(&-**msg.args())).await?;
+
+        let msg = rx_route
+            .recv()
+            .await?
+            .into_pass_positive_value_only()
+            .ok()
+            .unwrap();
+        msg.respond(b, Err(&format!("{} is Negative Value", **msg.args())))
+            .await?;
+
+        let msg = rx_route.recv().await?.into_two_param_add().ok().unwrap();
+        msg.respond(b, Ok(&(msg.args().a + msg.args().b))).await?;
+
+        let msg = rx_route
+            .recv()
+            .await?
+            .into_three_param_concat()
+            .ok()
+            .unwrap();
+        msg.respond(
+            b,
+            Ok(&format!("{}{}{}", msg.args().a, msg.args().b, msg.args().c)),
+        )
+        .await?;
+
+        let msg = rx_route
+            .recv()
+            .await?
+            .into_four_param_concat()
+            .ok()
+            .unwrap();
+        let arg = msg.args();
+        msg.respond(b, Ok(&format!("{}{}{}{}", arg.a, arg.b, arg.c, arg.d,)))
+            .await?;
+
+        let msg = rx_route.recv().await?.into_one_param_fp().ok().unwrap();
+        msg.respond(b, Ok(&(-msg.args().floor() as _))).await?;
+
+        Ok::<_, anyhow::Error>(())
+    };
+
+    let task_bg_recv = async {
+        let router = route_bulider.finish();
+        while let Ok(rx) = server.recv().await {
+            router.route(rx).unwrap();
         }
     };
+
+    let (r1, r2) = futures::join!(task_client, async {
+        futures::select! {
+            r = task_service.fuse() => r,
+            _ = task_bg_recv.fuse() => panic!("bg recv task should not finish"),
+        }
+    });
+
+    r1.unwrap();
+    r2.unwrap();
 }
