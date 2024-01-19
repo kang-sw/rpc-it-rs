@@ -125,8 +125,8 @@ async fn test_macro_ops_correct<C: Codec>(
             res_pass_positive_value_only,
         );
 
-        assert_eq!(3, *res_zero_param?.result());
-        assert_eq!(-2, *res_one_param_flip?.result());
+        assert_eq!(3, *res_zero_param?.value());
+        assert_eq!(-2, *res_one_param_flip?.value());
         assert_eq!(
             "-5 is Negative Value",
             *res_pass_positive_value_only
@@ -134,12 +134,12 @@ async fn test_macro_ops_correct<C: Codec>(
                 .unwrap_err()
                 .into_response()
                 .unwrap()
-                .result()
+                .value()
         );
-        assert_eq!(3, *res_two_param_add?.result());
-        assert_eq!("abc", *res_three_param_concat?.result());
-        assert_eq!("abc123abc", *res_four_param_concat?.result());
-        assert_eq!(-1.0, *res_one_param_fp?.result());
+        assert_eq!(3, *res_two_param_add?.value());
+        assert_eq!("abc", *res_three_param_concat?.value());
+        assert_eq!("abc123abc", *res_four_param_concat?.value());
+        assert_eq!(-1.0, *res_one_param_fp?.value());
 
         Ok::<_, anyhow::Error>(())
     };

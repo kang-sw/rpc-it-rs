@@ -247,7 +247,7 @@ impl<C: Codec, F> CachedOkayObj<C, F>
 where
     F: RequestMethod,
 {
-    pub fn result(&self) -> &F::OkRecv<'_> {
+    pub fn value(&self) -> &F::OkRecv<'_> {
         // SAFETY: See the comment in `CachedNotify::args`
         unsafe { transmute(&self.1) }
     }
@@ -257,7 +257,7 @@ impl<C: Codec, F> CachedErrorObj<C, F>
 where
     F: RequestMethod,
 {
-    pub fn result(&self) -> &F::ErrRecv<'_> {
+    pub fn value(&self) -> &F::ErrRecv<'_> {
         // SAFETY: See the comment in `CachedNotify::args`
         unsafe { transmute(&self.1) }
     }
