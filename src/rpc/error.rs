@@ -2,7 +2,11 @@ use bytes::Bytes;
 use mpsc::TrySendError;
 use thiserror::Error;
 
-use crate::codec::{self, Codec};
+use crate::{
+    codec::{self, Codec},
+    defs::RangeType,
+    ParseMessage,
+};
 
 use super::WriterDirective;
 
@@ -134,9 +138,40 @@ pub enum TryRecvError {
 
 #[derive(Debug)]
 pub struct ErrorResponse<C: Codec> {
-    pub(super) errc: codec::ResponseError,
-    pub(super) codec: C,
-    pub(super) payload: Bytes,
+    errc: codec::ResponseError,
+    codec: C,
+    raw: Bytes,
+    payload: RangeType,
+}
+
+impl<C: Codec> ErrorResponse<C> {
+    pub(super) fn new(
+        errc: codec::ResponseError,
+        codec: C,
+        raw: Bytes,
+        payload: RangeType,
+    ) -> Self {
+        Self {
+            errc,
+            codec,
+            raw,
+            payload,
+        }
+    }
+
+    pub fn errc(&self) -> codec::ResponseError {
+        self.errc
+    }
+
+    pub(super) fn raw(&self) -> &Bytes {
+        &self.raw
+    }
+}
+
+impl<C: Codec> ParseMessage<C> for ErrorResponse<C> {
+    fn codec_payload_pair(&self) -> (&C, &[u8]) {
+        (&self.codec, &self.raw[self.payload.range()])
+    }
 }
 
 // ========================================================== Runner Enums ===|

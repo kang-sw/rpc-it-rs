@@ -174,7 +174,7 @@ mod rx_inner {
 
     use crate::{
         codec::error::DecodeError,
-        defs::{NonZeroRangeType, RangeType},
+        defs::NonZeroRangeType,
         rpc::{core::RpcCore, make_response, ErrorResponse, InboundInner},
         Codec, Config, Inbound, Response,
     };
@@ -229,19 +229,21 @@ mod rx_inner {
                 errc,
                 payload,
             } => {
-                let payload = ib.slice(RangeType::from(payload).range());
+                let payload = payload.into();
 
                 let Some(reqs) = core.request_context() else {
                     return Err(Error::UnhandledResponse(make_response(
                         core.codec.clone(),
+                        ib,
                         payload,
                         errc,
                     )));
                 };
 
-                if let Err(payload) = reqs.set_response(req_id, payload, errc) {
+                if let Err(ib) = reqs.set_response(req_id, ib, payload, errc) {
                     return Err(Error::UnhandledResponse(make_response(
                         core.codec.clone(),
+                        ib,
                         payload,
                         errc,
                     )));

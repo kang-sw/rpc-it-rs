@@ -19,7 +19,15 @@ mod rpc {
     pub const Route: Route = ALL_PASCAL_CASE;
 
     #[direct]
-    pub const DRoute: Route = ALL_PASCAL_CASE;
+    pub const MainRoute: Route = [
+        zero_param,
+        two_param_add,
+        three_param_concat,
+        four_param_concat,
+    ];
+
+    #[direct]
+    pub const SubRoute: Route = [one_param_flip, one_param_fp];
 
     pub fn zero_param() -> i32;
 
@@ -60,9 +68,10 @@ impl Drop for DropCheck {
 
 #[test]
 fn test_macro_ops_correct_jsonrpc() {
+    let drop_check = Arc::new(DropCheck);
+
     {
         let mut executor = LocalPool::new();
-        let drop_check = Arc::new(DropCheck);
 
         let (client, mut server) = shared::create_default_rpc_pair::<TestCfg<jsonrpc::Codec>>(
             &executor.spawner(),
@@ -74,6 +83,7 @@ fn test_macro_ops_correct_jsonrpc() {
         executor.run_until(test_macro_ops_correct(&mut server, client.clone()));
     }
 
+    drop(drop_check);
     assert!(DROP_CALLED.load(Ordering::SeqCst));
 }
 

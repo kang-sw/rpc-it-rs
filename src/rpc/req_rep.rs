@@ -16,7 +16,7 @@ use parking_lot::Mutex;
 
 use crate::{
     codec::{Codec, ParseMessage, ResponseError},
-    defs::RequestId,
+    defs::{RangeType, RequestId},
 };
 
 use super::{error::ErrorResponse, Config, ReceiveResponse, ResponseReceiveError};
@@ -25,7 +25,8 @@ use super::{error::ErrorResponse, Config, ReceiveResponse, ResponseReceiveError}
 #[derive(Debug)]
 pub struct Response<C> {
     codec: C,
-    payload: Bytes,
+    raw: Bytes,
+    payload: RangeType,
 }
 
 /// A context for pending RPC requests.
@@ -48,7 +49,7 @@ struct Waiter {
 enum ResponseState {
     #[default]
     None,
-    Ready(Bytes, Option<ResponseError>),
+    Ready(Bytes, Option<ResponseError>, RangeType),
     WriteFailed,
     PendingRemove,
 }
@@ -113,8 +114,8 @@ where
 
                 Poll::Pending
             }
-            Poll::Ready(Some((payload, errc))) => {
-                let result = this.convert_result(payload, errc);
+            Poll::Ready(Some((raw, errc, payload))) => {
+                let result = this.convert_result(raw, payload, errc);
                 this.try_unregister();
                 Poll::Ready(result.map_err(ResponseReceiveError::Response))
             }
@@ -164,8 +165,8 @@ impl<'a, R: Config> ReceiveResponse<'a, R> {
 
                 Err(ResponseReceiveError::Empty)
             }
-            Poll::Ready(Some((payload, errc))) => {
-                let result = self.convert_result(payload, errc);
+            Poll::Ready(Some((data, errc, payload))) => {
+                let result = self.convert_result(data, payload, errc);
                 self.try_unregister();
                 result.map_err(ResponseReceiveError::Response)
             }
@@ -178,20 +179,13 @@ impl<'a, R: Config> ReceiveResponse<'a, R> {
 
     fn convert_result(
         &self,
-        payload: Bytes,
+        raw: Bytes,
+        payload: RangeType,
         errc: Option<ResponseError>,
     ) -> Result<Response<R::Codec>, ErrorResponse<R::Codec>> {
         let codec = self.owner.codec().clone();
 
-        if let Some(errc) = errc {
-            Err(ErrorResponse {
-                codec,
-                payload,
-                errc,
-            })
-        } else {
-            Ok(Response { codec, payload })
-        }
+        make_response(codec, raw, payload, errc)
     }
 
     fn try_unregister(&mut self) {
@@ -207,19 +201,20 @@ impl<'a, R: Config> ReceiveResponse<'a, R> {
 }
 
 impl Receive {
-    fn poll(&self) -> Poll<Option<(Bytes, Option<ResponseError>)>> {
+    fn poll(&self) -> Poll<Option<(Bytes, Option<ResponseError>, RangeType)>> {
         let mut data_lock = self.wait_obj.response.lock();
         let data_ref = &mut *data_lock;
 
         match data_ref {
             ResponseState::None => Poll::Pending,
-            x @ ResponseState::Ready(_, _) => {
-                let ResponseState::Ready(data, errc) = replace(x, ResponseState::PendingRemove)
+            x @ ResponseState::Ready(..) => {
+                let ResponseState::Ready(data, errc, payload) =
+                    replace(x, ResponseState::PendingRemove)
                 else {
                     unreachable!()
                 };
 
-                Poll::Ready(Some((data, errc)))
+                Poll::Ready(Some((data, errc, payload)))
             }
             ResponseState::WriteFailed => Poll::Ready(None),
             ResponseState::PendingRemove => {
@@ -239,35 +234,24 @@ impl<R: Config> Drop for ReceiveResponse<'_, R> {
 
 impl<C: Codec> ParseMessage<C> for Response<C> {
     fn codec_payload_pair(&self) -> (&C, &[u8]) {
-        (&self.codec, self.payload.as_ref())
-    }
-}
-
-impl<C: Codec> ErrorResponse<C> {
-    pub fn errc(&self) -> ResponseError {
-        self.errc
-    }
-}
-
-impl<C: Codec> ParseMessage<C> for ErrorResponse<C> {
-    fn codec_payload_pair(&self) -> (&C, &[u8]) {
-        (&self.codec, self.payload.as_ref())
+        (&self.codec, &self.raw[self.payload.range()])
     }
 }
 
 pub(super) fn make_response<C: Codec>(
     codec: C,
-    payload: Bytes,
+    raw: Bytes,
+    payload: RangeType,
     errc: Option<ResponseError>,
 ) -> Result<Response<C>, ErrorResponse<C>> {
     if let Some(errc) = errc {
-        Err(ErrorResponse {
+        Err(ErrorResponse::new(errc, codec, raw, payload))
+    } else {
+        Ok(Response {
             codec,
             payload,
-            errc,
+            raw,
         })
-    } else {
-        Ok(Response { codec, payload })
     }
 }
 
@@ -330,16 +314,17 @@ impl RequestContext {
     pub fn set_response(
         &self,
         id: RequestId,
-        payload: Bytes,
+        raw_data: Bytes,
+        payload: RangeType,
         errc: Option<ResponseError>,
     ) -> Result<(), Bytes> {
         let Some(wait_obj) = self.wait_list.lock().get(&id).cloned() else {
-            return Err(payload);
+            return Err(raw_data);
         };
 
         if self.is_expired() {
             // Here we check if expired after acquiring wait_list lock;
-            return Err(payload);
+            return Err(raw_data);
         }
 
         {
@@ -361,7 +346,7 @@ impl RequestContext {
             if matches!(*data, ResponseState::None | ResponseState::Ready(..)) {
                 // Based on the above reasoning, overwriting the current `Ready` data is
                 // likely more correct than retaining it.
-                *data = ResponseState::Ready(payload, errc);
+                *data = ResponseState::Ready(raw_data, errc, payload);
             } else {
                 // Despite the above reasoning, encountering this case is still quite rare.
                 crate::cold_path();
