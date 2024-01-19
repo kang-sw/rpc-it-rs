@@ -580,7 +580,7 @@ impl<R: Config> Inbound<R> {
     /// scenarios where the remote side is not under your control, due to the potential for
     /// unexpected behavior or security risks.
     pub fn clone_reusable_packet(&self) -> Option<PreparedPacket<R::Codec>> {
-        let Ok(hash) = (self.codec().codec_type_hash_ptr() as usize).try_into() else {
+        let Ok(hash) = self.codec().codec_reusability_id().try_into() else {
             return None;
         };
 

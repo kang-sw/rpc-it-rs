@@ -435,7 +435,10 @@ where
     ) -> Result<PreparedPacket<R::Codec>, EncodeError> {
         buf.clear();
 
-        let hash: NonZeroUsize = (self.context.codec.codec_type_hash_ptr() as usize)
+        let hash: NonZeroUsize = self
+            .context
+            .codec
+            .codec_reusability_id()
             .try_into()
             .map_err(|_| EncodeError::NotReusable)?;
 
@@ -479,7 +482,7 @@ where
         &self,
         burst: PacketWriteBurst<R::Codec>,
     ) -> Result<Option<(usize, WriterDirective)>, EncodeError> {
-        let codec_hash = self.context.codec.codec_type_hash_ptr() as usize;
+        let codec_hash = self.context.codec.codec_reusability_id();
 
         match burst {
             PacketWriteBurst::Empty => Ok(None),

@@ -128,6 +128,7 @@ pub use rpc::{
     RequestSender, Response, UserData, WeakNotifySender, WeakRequestSender,
 };
 
+#[cfg(feature = "proc-macro")]
 pub use macros::route::{
     ExecError as RouteExecError, Router, RouterBuilder, RouterFunc, RouterFuncBuilder,
 };

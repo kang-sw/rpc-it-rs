@@ -71,9 +71,9 @@ mod errc {
 }
 
 impl crate::Codec for Codec {
-    fn codec_type_hash_ptr(&self) -> *const () {
-        const ADDR: *const () = &();
-        ADDR
+    fn codec_reusability_id(&self) -> usize {
+        static ADDR: usize = 0;
+        &ADDR as *const usize as usize
     }
 
     fn encode_notify<S: Serialize>(

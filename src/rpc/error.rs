@@ -162,10 +162,6 @@ impl<C: Codec> ErrorResponse<C> {
     pub fn errc(&self) -> codec::ResponseError {
         self.errc
     }
-
-    pub(super) fn raw(&self) -> &Bytes {
-        &self.raw
-    }
 }
 
 impl<C: Codec> ParseMessage<C> for ErrorResponse<C> {

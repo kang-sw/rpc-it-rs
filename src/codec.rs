@@ -99,18 +99,58 @@ impl From<ResponseError> for u8 {
     }
 }
 
-// ========================================================== Codec ===|
+// ========================================================== Error ===|
+
 #[cfg(feature = "de-error-detail")]
 pub type DeserializeError = anyhow::Error;
 #[cfg(not(feature = "de-error-detail"))]
 pub struct DeserializeError;
 
 #[cfg(not(feature = "de-error-detail"))]
-impl<T: std::error::Error> From<T> for DeserializeError {
-    fn from(_: T) -> Self {
-        DeserializeError
+mod omitted_error {
+    use std::ops::Deref;
+
+    use super::DeserializeError;
+
+    impl std::fmt::Debug for DeserializeError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            Monostate.fmt(f)
+        }
+    }
+
+    impl std::fmt::Display for DeserializeError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            Monostate.fmt(f)
+        }
+    }
+
+    #[derive(thiserror::Error)]
+    #[error("Value deserialization failed, the detail was omitted")]
+    #[doc(hidden)]
+    pub struct Monostate;
+
+    impl std::fmt::Debug for Monostate {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("DeserializeError").finish()
+        }
+    }
+
+    impl Deref for DeserializeError {
+        type Target = Monostate;
+
+        fn deref(&self) -> &Self::Target {
+            &Monostate
+        }
+    }
+
+    impl<E: std::error::Error> From<E> for DeserializeError {
+        fn from(_: E) -> Self {
+            Self
+        }
     }
 }
+
+// ========================================================== Codec ===|
 
 #[derive(thiserror::Error, Debug)]
 #[error("Decoding payload is not supported for codec {0}")]
@@ -140,14 +180,14 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
     /// struct MyCodec;
     ///
     /// impl MyCodec {
-    ///     fn codec_type_addr(&self) -> *const () {
-    ///         const ADDR: *const () = &();
-    ///         ADDR
+    ///     fn codec_type_unique_addr(&self) -> usize {
+    ///         static ADDR: usize = 0;
+    ///         &ADDR as *const _ as usize
     ///     }
     /// }
     /// ```
-    fn codec_type_hash_ptr(&self) -> *const () {
-        std::ptr::null()
+    fn codec_reusability_id(&self) -> usize {
+        0
     }
 
     fn encode_notify<S: serde::Serialize>(
@@ -323,10 +363,10 @@ pub trait ParseMessage<C: Codec> {
     }
 }
 
-fn err_to_de_error(e: impl std::error::Error) -> DeserializeError {
+fn err_to_de_error(_e: impl std::error::Error) -> DeserializeError {
     #[cfg(feature = "de-error-detail")]
     {
-        anyhow::anyhow!("{}", e)
+        anyhow::anyhow!("{}", _e)
     }
     #[cfg(not(feature = "de-error-detail"))]
     {
