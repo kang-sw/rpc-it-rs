@@ -101,12 +101,12 @@ impl From<ResponseError> for u8 {
 
 // ========================================================== Error ===|
 
-#[cfg(feature = "de-error-detail")]
+#[cfg(feature = "detailed-parse-errors")]
 pub type DeserializeError = anyhow::Error;
-#[cfg(not(feature = "de-error-detail"))]
+#[cfg(not(feature = "detailed-parse-errors"))]
 pub struct DeserializeError;
 
-#[cfg(not(feature = "de-error-detail"))]
+#[cfg(not(feature = "detailed-parse-errors"))]
 mod omitted_error {
     use std::ops::Deref;
 
@@ -162,34 +162,45 @@ pub trait AsDeserializer<'de> {
 }
 
 pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
-    /// Returns the hash value of this codec. If two codec instances return same hash, their
-    /// notification result can be safely reused over multiple message transfer. If notification
-    /// encoding is stateful(e.g. contextually encrypted), this method should return `None`.
+    /// Returns a locally unique ID (valid during program execution) for this codec instance. If two
+    /// codec instances return the same ID, their notification results can be safely reused across
+    /// multiple message transfers. This is particularly applicable if the notification encoding is
+    /// stateful (e.g., contextually encrypted), in which case this method should return `0`.
     ///
-    /// Deterministic encoding result either means that you can forward received encoded chunk to
-    /// other RPC channel directly.
+    /// A deterministic encoding result implies that you can directly forward the received encoded
+    /// chunk to another RPC channel. However, it's important to note that there is no systematic
+    /// method to verify if two remotely connected RPCs actually use the same RPC codec. Therefore,
+    /// it is the user's responsibility to correctly reuse packets over the network.
     ///
-    /// This method is primarily used for broadcasting notification over multiple rpc channels.
+    /// This method is primarily intended for broadcasting notifications over multiple RPC channels.
     ///
-    /// # Recommended Implementation for Deterministic Codec
+    /// # Recommended Implementation for Deterministic Codecs
     ///
-    /// Following code guaranteed to return same hash value for same codec instance, and always
-    /// unique for different underlying codec type.
+    /// The following code guarantees to return the same hash value for instances of the same codec
+    /// type, while ensuring uniqueness for different codec types.
     ///
     /// ```no_run
     /// struct MyCodec;
     ///
-    /// impl MyCodec {
+    /// impl Codec for MyCodec {
     ///     fn codec_type_unique_addr(&self) -> usize {
-    ///         static ADDR: usize = 0;
+    ///         static ADDR: () = ();
     ///         &ADDR as *const _ as usize
     ///     }
     /// }
     /// ```
+    ///
+    /// In this implementation, each codec type (like `MyCodec`) has its own static `ADDR` variable.
+    /// This approach ensures that each type returns a unique address, fulfilling the requirement
+    /// for distinct identifiers within a single process.
     fn codec_reusability_id(&self) -> usize {
         0
     }
 
+    /// Encodes a notification message into the provided buffer. This function is used for
+    /// sending notifications which do not expect a response. The `method` specifies the type
+    /// of notification, and `params` contain the data associated with the notification.
+    /// The encoded message is stored in `buf`.
     fn encode_notify<S: serde::Serialize>(
         &self,
         method: &str,
@@ -197,10 +208,10 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
         buf: &mut BytesMut,
     ) -> Result<(), EncodeError>;
 
-    /// Encodes a request message into the given buffer. The `request_id` is contextually unique
-    /// integer value, which is used to match the returned response with the request that was
-    /// sent. Underlying implementation can encode this `request_id` in any manner or type, as
-    /// long as it can be decoded back to the original value.
+    /// Encodes a request message into the specified buffer. The `request_id` is a uniquely
+    /// identifiable integer used to correlate the corresponding response with this request. The
+    /// implementation can encode this `request_id` in any suitable format or type, provided it is
+    /// capable of being decoded back to its original value.
     fn encode_request<S: serde::Serialize>(
         &self,
         request_id: RequestId,
@@ -209,15 +220,15 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
         buf: &mut BytesMut,
     ) -> Result<RequestId, EncodeError>;
 
-    /// This is called from server side, where it responds to the request with received request_id.
+    /// Invoked server-side to respond to a request using the provided `request_id`.
     ///
     /// # NOTE
     ///
-    /// During encoding request, we can use our internal request id representation as we know how to
-    /// deal with 4-byte representation encoding and decoding. However, when we're responding to
-    /// received request, we don't know how the request id was encoded as it may not be originated
-    /// from this crate's implementation. Therefore, we need to send back the original bytes of
-    /// received request id as-is.
+    /// When encoding a request, we utilize our internal request id representation, as our
+    /// implementation is equipped to handle the encoding and decoding of a 4-byte id format.
+    /// However, when responding to an incoming request, the encoding method of the request id might
+    /// differ since it may not originate from this crate's implementation. Therefore, it is
+    /// essential to return the original byte sequence of the received request id unaltered.
     fn encode_response<S: serde::Serialize>(
         &self,
         request_id_raw: &[u8],
@@ -231,16 +242,12 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
         payload: &'de [u8],
     ) -> Result<impl AsDeserializer<'de>, DecodePayloadUnsupportedError>;
 
-    /// Given frame of the raw bytes, decode it into a message.
+    /// Decodes a frame of raw bytes into a message. An empty scratch buffer is provided,
+    /// which can be modified during the decoding process. This functionality is particularly
+    /// useful when the codec implementation requires alterations to the frame for successful
+    /// decoding, such as in cases of compressed data.
     ///
-    /// It passes an empty scratch buffer, which allows the modification of inbound frame.
-    /// This is useful when the codec implementation needs to modify the frame in order to
-    /// decode it. (e.g. compressed)
-    ///
-    /// # NOTE
-    ///
-    /// The frame size is guaranteed to be shorter than 2^32-1 bytes. Therefore, any range in
-    /// returned [`InboundFrameType`] should be able to be represented in `u32` type.
+    /// Received buffer size can't exceed 2^32 byte range.
     fn decode_inbound(
         &self,
         scratch: &mut BytesMut,
@@ -324,6 +331,9 @@ pub mod error {
         #[error("UTF-8 input is expected")]
         NonUtf8Input,
 
+        #[error("Received buffer size exceeded 32 bit size range: {0}")]
+        BufferSizeExceeded(u64),
+
         #[error("Parse failed: {0}")]
         ParseFailed(#[from] DeserializeError),
     }
@@ -364,11 +374,11 @@ pub trait ParseMessage<C: Codec> {
 }
 
 fn err_to_de_error(_e: impl std::error::Error) -> DeserializeError {
-    #[cfg(feature = "de-error-detail")]
+    #[cfg(feature = "detailed-parse-errors")]
     {
         anyhow::anyhow!("{}", _e)
     }
-    #[cfg(not(feature = "de-error-detail"))]
+    #[cfg(not(feature = "detailed-parse-errors"))]
     {
         DeserializeError
     }

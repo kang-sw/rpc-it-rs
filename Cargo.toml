@@ -32,6 +32,9 @@ anyhow = { version = "1.0.79", optional = true }
 
 erased-serde = { version = "0.4", optional = true }
 
+rmp = { version = "0.8", optional = true }
+rmp-serde = { version = "1", optional = true }
+
 [dependencies.rpc-it-macros]
 path = "./macros"
 version = "0.10.0-alpha.1"
@@ -45,7 +48,7 @@ serde = { version = "1.0", features = ["derive"] }
 tap = "1.0.1"
 
 [features]
-default = ["proc-macro", "de-error-detail"]
+default = ["proc-macro", "detailed-parse-errors"]
 
 # Enable full RPC support
 full = ["jsonrpc", "msgpack-rpc", "dynamic-codec", "in-memory-io"]
@@ -58,7 +61,7 @@ dynamic-codec = ["dep:erased-serde"]
 # For servers, disabling this would be more benefitial as creating error object for every mismatched
 # protocols would be pretty costly, which involves creating a new error object and serializing it
 # everytime.
-de-error-detail = ["dep:anyhow"]
+detailed-parse-errors = ["dep:anyhow"]
 
 # Enable proc-macro support
 proc-macro = ["dep:rpc-it-macros"]
@@ -70,7 +73,7 @@ proc-macro-rkyv = ["proc-macro"]
 jsonrpc = ["dep:serde_json"]
 
 # Add msgpack-rpc support to the library
-msgpack-rpc = []
+msgpack-rpc = ["dep:rmp", "dep:rmp-serde"]
 
 # Adds in-memory-io default IO support
 in-memory-io = ["dep:crossbeam-queue"]
