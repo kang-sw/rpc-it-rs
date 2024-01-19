@@ -1,3 +1,4 @@
+//! Partial implementation of [JSON-RPC 2.0](https://www.jsonrpc.org/specification) codec
 use std::ops::Range;
 
 use bytes::{BufMut, Bytes, BytesMut};
