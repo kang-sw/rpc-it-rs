@@ -40,7 +40,8 @@ struct RawData<'a> {
 #[derive(Debug, serde::Deserialize)]
 struct RawErrorObject<'a> {
     code: Option<i64>,
-    #[serde(borrow)]
+
+    #[serde(borrow, deserialize_with = "parse_null_or_raw")]
     data: Option<&'a RawJsonValue>,
     // NOTE: Commenting out `message` field, as we're not using it.
     //
