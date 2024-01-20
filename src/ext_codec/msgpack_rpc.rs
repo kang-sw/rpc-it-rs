@@ -21,15 +21,38 @@ const TYPE_ID_REQUEST: u8 = 0;
 const TYPE_ID_RESPONSE: u8 = 1;
 const TYPE_ID_NOTIFICATION: u8 = 2;
 
-///
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct Codec {
-    /// If true, the codec will validate the format of codec parameter. For example if input
-    /// parameter is not wrapped in array, it will wrap it with array.
+    /// Determines whether the codec validates the format of the codec parameter. For instance,
+    /// if the input parameter is not enclosed in an array, this option enables the codec to
+    /// automatically wrap it in an array.
     ///
-    /// Otherwise, it'll just serialize invalid parameter as-is, which will be rejected by
-    /// correctly implemented server. (this implementation does not reject unformatted parameter)
-    pub validate_encoded_param_format: bool,
+    /// If disabled, the codec serializes the parameter as-is, even if it's invalid. Such
+    /// parameters will likely be rejected by a correctly implemented server, as this
+    /// implementation does not refuse unformatted parameters.
+    ///
+    /// Utilizing this library with procedural macros typically warrants enabling this option
+    /// (which is the default behavior). However, if you're facilitating communication within your
+    /// own internal system without procedural macros, enabling this may lead to deserialization
+    /// errors. This is because the serialization type might not be compatible with the
+    /// deserialization type, unless you are deserializing into Serde's automatically generated
+    /// new type wrappers.
+    enc_validate_param: bool,
+}
+
+impl Default for Codec {
+    fn default() -> Self {
+        Self {
+            enc_validate_param: true,
+        }
+    }
+}
+
+impl Codec {
+    pub fn with_encoding_parameter_validation(mut self, validate: bool) -> Self {
+        self.enc_validate_param = validate;
+        self
+    }
 }
 
 impl crate::Codec for Codec {
@@ -44,14 +67,7 @@ impl crate::Codec for Codec {
         params: &S,
         buf: &mut bytes::BytesMut,
     ) -> Result<(), EncodeError> {
-        encode_noti_or_req(
-            method,
-            params,
-            None,
-            buf,
-            self.validate_encoded_param_format,
-        )
-        .map(drop)
+        encode_noti_or_req(method, params, None, buf, self.enc_validate_param).map(drop)
     }
 
     fn encode_request<S: serde::Serialize>(
@@ -66,7 +82,7 @@ impl crate::Codec for Codec {
             params,
             Some(request_id),
             buf,
-            self.validate_encoded_param_format,
+            self.enc_validate_param,
         )
         .map(Option::unwrap)
     }
@@ -183,7 +199,7 @@ impl crate::Codec for Codec {
                     let req_id: u32 = dec::read_int(rd)?;
                     let req_id = RequestId::new((req_id as u64).try_into()?);
 
-                    let is_ok_result = if dec::read_nil(&mut *rd).is_ok() {
+                    let is_ok_result = if dec::read_nil(&mut { *rd }).is_ok() {
                         dec::read_nil(rd).unwrap();
                         true
                     } else {
@@ -213,7 +229,7 @@ impl crate::Codec for Codec {
 
                         // Try to parse the error object as `(errc, obj)`
                         let errc_payload = 'errc_find: {
-                            let rd = &mut *rd;
+                            let rd = &mut { *rd };
 
                             if !dec::read_array_len(rd).is_ok_and(|x| x == 2) {
                                 break 'errc_find None;
@@ -301,9 +317,9 @@ fn encode_noti_or_req<S: serde::Serialize>(
     let head = &mut ArrayVec::<u8, 12>::new();
 
     let init_marker = if is_request {
-        [Marker::FixMap(4), Marker::FixPos(TYPE_ID_REQUEST)].map(|x| x.to_u8())
+        [Marker::FixArray(4), Marker::FixPos(TYPE_ID_REQUEST)].map(|x| x.to_u8())
     } else {
-        [Marker::FixMap(3), Marker::FixPos(TYPE_ID_NOTIFICATION)].map(|x| x.to_u8())
+        [Marker::FixArray(3), Marker::FixPos(TYPE_ID_NOTIFICATION)].map(|x| x.to_u8())
     };
 
     head.extend(init_marker);
@@ -350,10 +366,10 @@ fn encode_noti_or_req<S: serde::Serialize>(
         .map_err(SerDeError::from)?;
 
     // Check if the serialized value is array or not
-    let is_array_parameter = rmp::decode::read_array_len(&mut &buf[data_start_pos..]).is_ok();
+    let is_array_parameter = || rmp::decode::read_array_len(&mut &buf[data_start_pos..]).is_ok();
 
     // Head position changes whether it's array or not
-    if !validate_param_format || is_array_parameter {
+    if !validate_param_format || is_array_parameter() {
         buf.advance(1);
     } else {
         buf[data_start_pos - 1] = rmp::Marker::FixArray(1).to_u8();
@@ -361,7 +377,7 @@ fn encode_noti_or_req<S: serde::Serialize>(
 
     // Finish by writing header and method name.
     buf[..head.len()].copy_from_slice(head);
-    buf[head.len()..data_start_pos - 1].copy_from_slice(method.as_bytes());
+    buf[head.len()..head.len() + method.len()].copy_from_slice(method.as_bytes());
 
     Ok(request_id)
 }

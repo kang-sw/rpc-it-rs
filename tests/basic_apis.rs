@@ -11,6 +11,19 @@ use crate::shared::create_default_rpc_pair;
 mod shared;
 
 #[test]
+#[cfg(feature = "msgpack-rpc")]
+fn verify_request_msgpack_rpc() {
+    use rpc_it::{ext_codec::msgpack_rpc, rpc::DefaultConfig};
+
+    verify_request::<DefaultConfig<(), _>>(
+        // The subsequent test cases do not receive types as tuples. Therefore, if the codec
+        // internally converts parameter types into tuples, it would lead to a failure in
+        // decoding the payload.
+        || msgpack_rpc::Codec::default().with_encoding_parameter_validation(false),
+    );
+}
+
+#[test]
 #[cfg(feature = "jsonrpc")]
 fn verify_request_jsonrpc() {
     use rpc_it::{ext_codec::jsonrpc, rpc::DefaultConfig};
