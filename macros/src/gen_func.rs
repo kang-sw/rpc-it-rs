@@ -4,8 +4,6 @@ use quote::{quote, quote_spanned, ToTokens};
 
 use proc_macro_error::abort;
 
-use proc_macro2::Span;
-
 use proc_macro_error::emit_error;
 
 use syn::spanned::Spanned;
@@ -14,6 +12,7 @@ use syn::Meta;
 use std::mem::take;
 
 use crate::type_util;
+use crate::type_util::wrap_type_with_reference;
 
 use super::MethodDef;
 
@@ -55,8 +54,6 @@ impl DataModel {
                 )
             }
         */
-
-        let item_span = item.span();
 
         let vis_outer = type_util::elevate_vis_level(item.vis.clone(), vis_offset);
         let vis_inner = type_util::elevate_vis_level(vis_outer.clone(), 1);
@@ -141,10 +138,20 @@ impl DataModel {
         }
 
         if let Some(unchecked) = rkyv_unchecked {
-        } else {
-            self.fn_def_normal(
-                &mut def, item, item_span, &vis_outer, &vis_inner, no_recv, out, attrs,
+            if !self.rkyv_enabled {
+                self.rkyv_enabled = true;
+
+                out.extend(quote!(
+                    use ___crate::rkyv;
+                    use ___crate::rkyv_utils as ___rkyv;
+                ))
+            }
+
+            self.fn_def_rkyv(
+                &mut def, item, &vis_outer, &vis_inner, no_recv, out, attrs, unchecked,
             );
+        } else {
+            self.fn_def_normal(&mut def, item, &vis_outer, &vis_inner, no_recv, out, attrs);
         }
 
         if !no_recv {
@@ -154,19 +161,145 @@ impl DataModel {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn fn_def_normal(
+    pub(crate) fn fn_def_rkyv(
         &mut self,
         def: &mut MethodDef,
         item: syn::ForeignItemFn,
-        item_span: Span,
         vis_outer: &syn::Visibility,
         vis_inner: &syn::Visibility,
         no_recv: bool,
         out: &mut TokenStream,
-        attrs_fwd: TokenStream,
+        attrs_fwd_ser_method: TokenStream,
+        unchecked: bool,
+    ) {
+        // * Defines new deserialization type
+        // * Defines new serialization type
+        // * Defines serializer method type
+
+        let method_ident = &def.method_ident;
+
+        let tok_module_input = {
+            let args = item
+                .sig
+                .inputs
+                .into_iter()
+                .map(|arg| {
+                    if let syn::FnArg::Typed(arg) = arg {
+                        arg
+                    } else {
+                        abort!(arg, "Can't set receiver token here")
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            // (ident, serialize, deserialize)
+            let mut arg_defs = Vec::with_capacity(args.len());
+
+            for arg in &args {
+                // The argument pattern should be identifier
+                let syn::Pat::Ident(ident) = &*arg.pat else {
+                    abort!(arg.pat, "Argument name must be valid identifier")
+                };
+
+                let Some((ser, de)) = type_util::retr_ser_de_params(&arg.ty) else {
+                    // Do nothing; this is error case.
+                    emit_error!(arg, "Serde parameter retrieval failed");
+                    return;
+                };
+
+                arg_defs.push((ident, ser, de));
+            }
+
+            let iter_idents = || arg_defs.iter().map(|(ident, _, _)| &ident.ident);
+            let iter_types = || {
+                arg_defs
+                    .iter()
+                    .map(|(_, ser, _)| wrap_type_with_reference(ser))
+            };
+
+            let method_ident_str = syn::LitStr::new(&method_ident.to_string(), method_ident.span());
+            let tok_param_recv = if unchecked {
+                quote!(___rkyv::DeUnchecked<'___a, Param<'___a>>)
+            } else {
+                quote!(___rkyv::De<'___a, Param<'___a>>)
+            };
+
+            // TODO:
+
+            let tok_archive_type = {
+                let idents = iter_idents();
+                let types_ser = iter_types();
+
+                quote!(
+                    #[derive(rkyv::Serialize)]
+                    struct Param<'___ser> {
+                        ___lifetime: ::std::marker::PhantomData<&'___ser ()>,
+                        #(
+                            #[with(rkyv::with::AsOwned)]
+                            #idents: #types_ser,
+                        )*
+                    }
+                )
+            };
+
+            let tok_ser_fn = {
+                let idents = iter_idents();
+                let types = iter_types();
+
+                quote!(
+                    #attrs_fwd_ser_method
+                    #vis_inner fn #method_ident<'___a>(
+                        #( #idents: #types ),*
+                    ) -> (
+                        self::Fn,
+                        ___rkyv::Ser<'___a, Param<'___a>>
+                    ) {
+
+                    }
+                )
+            };
+
+            quote!(
+                impl ___macros::NotifyMethod for Fn {
+                    type ParamSend<'___a>  = ___rkyv::Ser<'___a, Param<'___a>>; // TODO
+                    type ParamRecv<'___a>  = #tok_param_recv; // TODO
+
+                    const METHOD_NAME: &'static str = #method_ident_str;
+                }
+
+                #tok_archive_type
+
+            )
+        };
+
+        let tok_module_output = { quote!() };
+
+        out.extend(quote!(
+            #vis_outer mod #method_ident {
+                use super::*;
+
+                #vis_inner struct Fn;
+
+                #tok_module_input
+                #tok_module_output
+            }
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fn_def_normal(
+        &mut self,
+        def: &mut MethodDef,
+        item: syn::ForeignItemFn,
+        vis_outer: &syn::Visibility,
+        vis_inner: &syn::Visibility,
+        no_recv: bool,
+        out: &mut TokenStream,
+        attrs_fwd_ser_method: TokenStream,
     ) {
         let serializer_method;
 
+        let item_span = item.span();
         let method_ident = &def.method_ident;
         let method_name = &def.name;
 
@@ -429,7 +562,7 @@ impl DataModel {
             }
 
             // #vis_outer fn #method_ident(_: #method_ident::Fn) {}
-            #attrs_fwd
+            #attrs_fwd_ser_method
             #serializer_method
         ));
     }

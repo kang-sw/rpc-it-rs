@@ -1,4 +1,5 @@
 use proc_macro_error::emit_error;
+use std::borrow::Cow;
 use std::mem::take;
 use syn::parse_quote_spanned;
 use syn::spanned::Spanned;
@@ -143,6 +144,19 @@ pub(crate) fn retr_ser_de_params(ty: &Type) -> Option<(Type, Type)> {
     replace_lifetime_occurence(&mut ty_de, &life_de, false);
 
     Some((ty_ser, ty_de))
+}
+
+pub(crate) fn wrap_type_with_reference(ty: &Type) -> Cow<'_, Type> {
+    if let Type::Reference(_) = ty {
+        Cow::Borrowed(ty)
+    } else {
+        Cow::Owned(Type::Reference(syn::TypeReference {
+            and_token: Token![&](ty.span()),
+            lifetime: None,
+            mutability: None,
+            elem: Box::new(ty.clone()),
+        }))
+    }
 }
 
 // Replace 'EVERY' lifetime occurrences into given lifetime.

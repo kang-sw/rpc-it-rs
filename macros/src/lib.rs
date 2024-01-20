@@ -230,6 +230,9 @@ struct DataModel {
     /// No newtype for `ParamRecv` types.
     no_param_recv_newtype: bool,
 
+    /// Is `rkyv` mode enabled?
+    rkyv_enabled: bool,
+
     /// Visibility of generated methods.
     vis: Option<syn::Visibility>,
 
