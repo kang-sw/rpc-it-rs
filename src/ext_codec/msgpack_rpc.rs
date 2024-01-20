@@ -27,12 +27,10 @@ const TYPE_ID_NOTIFICATION: u8 = 2;
 ///
 /// <br>
 ///
-/// ## NOTE: Why Doesn't This Library Automatically Encapsulate Parameters in an Array?
+/// ### NOTE: Why Doesn't This Library Automatically Encapsulate Parameters in an Array?
 ///
-/// One might consider the following approach:
-///
-/// - Serialize the parameter first, then check its marker; if it's not an array, encapsulate it in
-///   an array.
+/// An alternative approach involves serializing the parameter initially, followed by checking its
+/// marker. Should it not be an array, the parameter is then encapsulated in one.
 ///
 /// Consider an example where we serialize an `i32` parameter with automatic array encapsulation.
 /// During serialization, this would be automatically encapsulated into `[i32]`. Our `proc-macro`
