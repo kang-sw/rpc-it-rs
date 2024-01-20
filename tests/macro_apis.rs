@@ -29,6 +29,15 @@ mod rpc {
     #[direct]
     pub const SubRoute: Route = [one_param_flip, one_param_fp];
 
+    #[direct]
+    #[derive(EnumAsInner)]
+    pub const Noti: Route = [
+        noti_zero_param,
+        noti_one_param,
+        noti_two_params,
+        noti_three_params,
+    ];
+
     pub fn zero_param() -> i32;
 
     #[name = "One/Param/Flip"]
@@ -112,6 +121,51 @@ async fn run_notify_param_correct<C: Codec>(
     server: &mut rpc_it::Receiver<TestCfg<C>, InMemoryRx>,
     client: rpc_it::RequestSender<TestCfg<C>>,
 ) {
+    let task_client = async {
+        let b = &mut Default::default();
+
+        client.noti(b, rpc::noti_zero_param()).await?;
+        client.noti(b, rpc::noti_one_param("a")).await?;
+        client.noti(b, rpc::noti_two_params("a", &1)).await?;
+        client
+            .noti(b, rpc::noti_three_params("a", &1, &2.0))
+            .await?;
+
+        Ok::<_, anyhow::Error>(())
+    };
+
+    let task_recv = async {
+        macro_rules! get {
+            () => {
+                server
+                    .recv()
+                    .map(move |val| rpc::Noti::route(val.unwrap()))
+                    .await
+                    .ok()
+                    .unwrap()
+            };
+        }
+
+        get!().into_noti_zero_param().ok().unwrap();
+
+        let arg = get!().into_noti_one_param().ok().unwrap();
+        assert_eq!("a", **arg.args());
+
+        let arg = get!().into_noti_two_params().ok().unwrap();
+        assert_eq!("a", arg.args().st);
+        assert_eq!(1, arg.args().x);
+
+        let arg = get!().into_noti_three_params().ok().unwrap();
+        assert_eq!("a", arg.args().st);
+        assert_eq!(1, arg.args().x);
+        assert_eq!(2.0, arg.args().y);
+
+        Ok::<_, anyhow::Error>(())
+    };
+
+    let (r1, r2) = futures::join!(task_client, task_recv);
+    r1.unwrap();
+    r2.unwrap();
 }
 
 async fn run_macro_ops_correct<C: Codec>(

@@ -881,6 +881,22 @@ impl DataModel {
             )
         });
 
+        let tok_direct_try_from = generate_direct.then(|| {
+            quote!(
+                impl<R: ___crate::Config> ::std::convert::TryFrom<___crate::Inbound<R>>
+                    for #ident_this<R>
+                {
+                    type Error = (___crate::Inbound<R>, ___route::ExecError);
+
+                    fn try_from(___ib: ___crate::Inbound<R>)
+                        -> Result<Self, Self::Error>
+                    {
+                        Self::route(___ib)
+                    }
+                }
+            )
+        });
+
         // ==== Direct Routing Validity Check ====
 
         generate_targets.iter().fold(
@@ -940,6 +956,8 @@ impl DataModel {
                 #tok_func_install
                 #tok_func_direct
             }
+
+            #tok_direct_try_from
         ))
     }
 
