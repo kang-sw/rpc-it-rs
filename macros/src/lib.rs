@@ -41,7 +41,7 @@ use std::{collections::BTreeMap, mem::take};
 use convert_case::{Case, Casing};
 use proc_macro_error::{abort, emit_error, emit_warning, proc_macro_error};
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned, ToTokens};
 use syn::{punctuated::Punctuated, spanned::Spanned, GenericArgument, Item, Meta, Token, Type};
 
@@ -101,6 +101,9 @@ mod type_util;
 ///     - Adds an additional route to the method.
 /// - `[no_recv]`
 ///     - Do not define handler for this method.
+/// - `[rkyv]` or `[rkyv(unchecked)]`
+///     - Generates method as RKYV version. It'll create new type which (de)serializes all arguments
+///       into rkyv format, which allows you zero-copy deserialization of arguments.
 ///
 /// ### Router Attributes
 ///
@@ -963,7 +966,7 @@ impl DataModel {
 
     fn generate_item_fn(
         &mut self,
-        item: syn::ForeignItemFn,
+        mut item: syn::ForeignItemFn,
         vis_offset: usize,
         out: &mut TokenStream,
     ) {
@@ -997,16 +1000,17 @@ impl DataModel {
 
         let item_span = item.span();
 
-        let vis_outer = type_util::elevate_vis_level(item.vis, vis_offset);
+        let vis_outer = type_util::elevate_vis_level(item.vis.clone(), vis_offset);
         let vis_inner = type_util::elevate_vis_level(vis_outer.clone(), 1);
 
         let mut attrs = TokenStream::new();
         let mut no_recv = false;
+        let mut rkyv_unchecked = None;
 
         let mut def = MethodDef {
             is_req: false,
             name: Default::default(),
-            method_ident: item.sig.ident,
+            method_ident: item.sig.ident.clone(),
             routes: Vec::new(),
         };
 
@@ -1014,10 +1018,17 @@ impl DataModel {
             def.name = convert_case::Casing::to_case(&def.name, *case);
         }
 
-        'outer: for mut attr in item.attrs {
+        'outer: for mut attr in take(&mut item.attrs) {
             attr.meta = match attr.meta {
-                Meta::Path(path) if path.is_ident("no_recv") => {
-                    no_recv = true;
+                Meta::Path(path) => 'ret: {
+                    if path.is_ident("no_recv") {
+                        no_recv = true;
+                    } else if path.is_ident("rkyv") {
+                        rkyv_unchecked = Some(false);
+                    } else {
+                        break 'ret Meta::Path(path);
+                    }
+
                     continue 'outer;
                 }
 
@@ -1053,8 +1064,14 @@ impl DataModel {
                 }
 
                 // Intentionally leaving this as-is matchings for future use
-                attr @ Meta::Path(_) => attr,
-                attr @ Meta::List(_) => attr,
+                Meta::List(meta) => 'ret: {
+                    if false {
+                    } else {
+                        break 'ret Meta::List(meta);
+                    }
+
+                    continue 'outer;
+                }
             };
 
             attrs.extend(attr.into_token_stream());
@@ -1065,6 +1082,31 @@ impl DataModel {
             def.name = def.method_ident.to_string();
         }
 
+        if let Some(unchecked) = rkyv_unchecked {
+        } else {
+            self.fn_def_normal(
+                &mut def, item, item_span, &vis_outer, &vis_inner, no_recv, out, attrs,
+            );
+        }
+
+        if !no_recv {
+            // Only generate receiver part if it's not explicitly disabled
+            self.handled_methods.push(def);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fn_def_normal(
+        &mut self,
+        def: &mut MethodDef,
+        item: syn::ForeignItemFn,
+        item_span: Span,
+        vis_outer: &syn::Visibility,
+        vis_inner: &syn::Visibility,
+        no_recv: bool,
+        out: &mut TokenStream,
+        attrs_fwd: TokenStream,
+    ) {
         let serializer_method;
 
         let method_ident = &def.method_ident;
@@ -1329,13 +1371,8 @@ impl DataModel {
             }
 
             // #vis_outer fn #method_ident(_: #method_ident::Fn) {}
-            #attrs
+            #attrs_fwd
             #serializer_method
         ));
-
-        if !no_recv {
-            // Only generate receiver part if it's not explicitly disabled
-            self.handled_methods.push(def);
-        }
     }
 }
