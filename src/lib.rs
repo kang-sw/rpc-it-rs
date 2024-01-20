@@ -177,3 +177,9 @@ pub mod router {
 
 pub use codec::{Codec, ParseMessage, ResponseError};
 pub use io::{AsyncFrameRead, AsyncFrameWrite};
+
+#[cfg(feature = "proc-macro-rkyv")]
+pub extern crate rkyv;
+
+#[cfg(feature = "proc-macro-rkyv")]
+pub mod rkyv_utils;

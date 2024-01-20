@@ -35,6 +35,8 @@ erased-serde = { version = "0.4", optional = true }
 rmp = { version = "0.8", optional = true }
 rmp-serde = { version = "1", optional = true }
 
+rkyv = { version = "0.7", optional = true }
+
 [dependencies.rpc-it-macros]
 path = "./macros"
 version = "0.10.0-alpha.1"
@@ -67,7 +69,7 @@ detailed-parse-errors = ["dep:anyhow"]
 proc-macro = ["dep:rpc-it-macros"]
 
 # RKYV archive library support for generated macros.
-proc-macro-rkyv = ["proc-macro"]
+proc-macro-rkyv = ["proc-macro", "dep:rkyv", "rkyv/bytecheck"]
 
 # Add JSONRPC support to the library
 jsonrpc = ["dep:serde_json"]
