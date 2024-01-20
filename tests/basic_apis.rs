@@ -19,7 +19,7 @@ fn verify_request_msgpack_rpc() {
         // The subsequent test cases do not receive types as tuples. Therefore, if the codec
         // internally converts parameter types into tuples, it would lead to a failure in
         // decoding the payload.
-        || msgpack_rpc::Codec::default().with_encoding_parameter_validation(false),
+        || msgpack_rpc::Codec,
     );
 }
 

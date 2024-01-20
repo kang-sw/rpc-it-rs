@@ -231,10 +231,10 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
     /// The following code guarantees to return the same hash value for instances of the same codec
     /// type, while ensuring uniqueness for different codec types.
     ///
-    /// ```no_run
+    /// ```ignore
     /// struct MyCodec;
     ///
-    /// impl Codec for MyCodec {
+    /// impl rpc_it::Codec for MyCodec {
     ///     fn codec_type_unique_addr(&self) -> usize {
     ///         static ADDR: () = ();
     ///         &ADDR as *const _ as usize
@@ -455,7 +455,7 @@ mod dynamic {
             payload: &'de [u8],
         ) -> Result<Box<dyn erased_serde::Deserializer<'de> + 'de>, DecodePayloadUnsupportedError>;
 
-        fn codec_type_addr(&self) -> *const ();
+        fn codec_reusability_id(&self) -> usize;
 
         fn encode_notify(
             &self,
@@ -508,8 +508,8 @@ mod dynamic {
             <dyn DynCodec>::dynamic_payload_deserializer(self.as_ref(), payload).map(Boxed::<'de>)
         }
 
-        fn codec_type_hash_ptr(&self) -> *const () {
-            <dyn DynCodec>::codec_type_addr(self.as_ref())
+        fn codec_reusability_id(&self) -> usize {
+            <dyn DynCodec>::codec_reusability_id(self.as_ref())
         }
 
         fn encode_notify<S: serde::Serialize>(
@@ -641,8 +641,8 @@ mod dynamic {
             Ok(boxed)
         }
 
-        fn codec_type_addr(&self) -> *const () {
-            <Self as Codec>::codec_type_hash_ptr(self)
+        fn codec_reusability_id(&self) -> usize {
+            <Self as Codec>::codec_reusability_id(self)
         }
 
         fn encode_notify(

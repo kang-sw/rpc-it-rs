@@ -1,9 +1,5 @@
-//! Partial implementation of [msgpack-rpc
-//! specification](https://github.com/msgpack-rpc/msgpack-rpc/blob/master/spec.md)
-
 use std::{marker::PhantomData, num::NonZeroU64, str::FromStr};
 
-use arrayvec::ArrayVec;
 use bytes::{Buf, BufMut};
 use rmp::Marker;
 use serde::Serialize;
@@ -21,39 +17,51 @@ const TYPE_ID_REQUEST: u8 = 0;
 const TYPE_ID_RESPONSE: u8 = 1;
 const TYPE_ID_NOTIFICATION: u8 = 2;
 
-#[derive(Clone, Debug)]
-pub struct Codec {
-    /// Determines whether the codec validates the format of the codec parameter. For instance,
-    /// if the input parameter is not enclosed in an array, this option enables the codec to
-    /// automatically wrap it in an array.
-    ///
-    /// If disabled, the codec serializes the parameter as-is, even if it's invalid. Such
-    /// parameters will likely be rejected by a correctly implemented server, as this
-    /// implementation does not refuse unformatted parameters.
-    ///
-    /// Utilizing this library with procedural macros typically warrants enabling this option
-    /// (which is the default behavior). However, if you're facilitating communication within your
-    /// own internal system without procedural macros, enabling this may lead to deserialization
-    /// errors. This is because the serialization type might not be compatible with the
-    /// deserialization type, unless you are deserializing into Serde's automatically generated
-    /// new type wrappers.
-    enc_validate_param: bool,
-}
-
-impl Default for Codec {
-    fn default() -> Self {
-        Self {
-            enc_validate_param: true,
-        }
-    }
-}
-
-impl Codec {
-    pub fn with_encoding_parameter_validation(mut self, validate: bool) -> Self {
-        self.enc_validate_param = validate;
-        self
-    }
-}
+/// Partial Implementation of the [msgpack-rpc
+/// Specification](https://github.com/msgpack-rpc/msgpack-rpc/blob/master/spec.md)
+///
+/// This library diverges from the msgpack-rpc specification by not enforcing the wrapping of
+/// parameters in an array. Parameters are serialized as they are, without automatic encapsulation.
+/// This method may result in a violation of the specification if the user does not encapsulate
+/// parameters in a tuple.
+///
+/// <br>
+///
+/// ## NOTE: Why Doesn't This Library Automatically Encapsulate Parameters in an Array?
+///
+/// One might consider the following approach:
+///
+/// - Serialize the parameter first, then check its marker; if it's not an array, encapsulate it in
+///   an array.
+///
+/// Consider an example where we serialize an `i32` parameter with automatic array encapsulation.
+/// During serialization, this would be automatically encapsulated into `[i32]`. Our `proc-macro`
+/// feature generates a protocol based on the original type name (e.g., `... { type ParamRecv = i32;
+/// ... }`), expecting the original parameter payload to be `i32`.
+///
+/// Typically, this is generated as a new-typed version of the original value, `struct
+/// ParamRecv(i32)`. This might allow for deserialization of a single-argument sequence back into
+/// the original value. However, it appears that the `rmp_serde` deserializer does not invoke the
+/// `visit_seq` routine during deserialization.
+///
+/// Could we then 'unwrap' the single-argument serialization back into the original value during
+/// decoding? Unfortunately, this is also not feasible. Consider a `Vec<i32>` with a single element.
+/// If the decoder naively unwraps single-argument arrays to their inner representation, valid array
+/// representations could be mistakenly altered. For instance, `[1]` in a `Vec<i32>` is a valid
+/// array representation. If decoded as a single-argument tuple, it would incorrectly unwrap to `1`,
+/// resulting in a violation.
+///
+/// An alternative could be to encapsulate every parameter in a single-argument array, regardless of
+/// its content, and then unwrap it during decoding. However, this approach fails when dealing with
+/// external remote requirements that expect multiple argument array parameters.
+///
+/// THEREFORE; this library intentionally does not alter parameter serialization, even if it means
+/// not adhering to the msgpack-rpc array type specification. It is the responsibility of the
+/// library user to encapsulate parameters into tuples when necessary. To address this within the
+/// library, our rpc implementation is permissive regarding parameter types and accepts any type not
+/// encapsulated in an array.
+#[derive(Default, Clone, Debug)]
+pub struct Codec;
 
 impl crate::Codec for Codec {
     fn codec_reusability_id(&self) -> usize {
@@ -67,24 +75,41 @@ impl crate::Codec for Codec {
         params: &S,
         buf: &mut bytes::BytesMut,
     ) -> Result<(), EncodeError> {
-        encode_noti_or_req(method, params, None, buf, self.enc_validate_param).map(drop)
+        (TYPE_ID_NOTIFICATION, method, params)
+            .serialize(&mut rmp_serde::Serializer::new(buf.writer()).with_struct_map())
+            .map_err(SerDeError::from)
+            .map_err(Into::into)
     }
 
     fn encode_request<S: serde::Serialize>(
         &self,
-        request_id: crate::defs::RequestId,
+        mut req_id: crate::defs::RequestId,
         method: &str,
         params: &S,
         buf: &mut bytes::BytesMut,
     ) -> Result<crate::defs::RequestId, EncodeError> {
-        encode_noti_or_req(
-            method,
-            params,
-            Some(request_id),
-            buf,
-            self.enc_validate_param,
-        )
-        .map(Option::unwrap)
+        // Make the request ID to fit in 32-bit range
+        if req_id.get() > u32::MAX as u64 {
+            *req_id = (req_id.get() & u32::MAX as u64)
+                .try_into()
+                .unwrap_or_else(|_| {
+                    // It's cold: only 0 will be 1. Which is single case out of 2^32.
+                    crate::cold_path();
+
+                    // SAFETY: 1 is not zero.
+                    unsafe { NonZeroU64::new_unchecked(1) }
+                });
+        } else {
+            // In most cases, the original request ID will exceed 32-bit range as it was generated
+            // randomly at first.
+            crate::cold_path();
+        }
+
+        (TYPE_ID_REQUEST, req_id.get() as u32, method, params)
+            .serialize(&mut rmp_serde::Serializer::new(buf.writer()).with_struct_map())
+            .map_err(SerDeError::from)?;
+
+        Ok(req_id)
     }
 
     fn encode_response<S: serde::Serialize>(
@@ -287,97 +312,4 @@ impl crate::Codec for Codec {
 
 fn retrieve_req_id(raw: &[u8]) -> Option<u32> {
     rmp::decode::read_u32(&mut { raw }).ok()
-}
-
-fn encode_noti_or_req<S: serde::Serialize>(
-    method: &str,
-    params: &S,
-    request_id: Option<RequestId>,
-    buf: &mut bytes::BytesMut,
-    validate_param_format: bool,
-) -> Result<Option<RequestId>, EncodeError> {
-    debug_assert!(buf.is_empty());
-
-    // Allocates one more byte than required, and start serialization of `params` firstly ...
-    // This is to wrap the single `params` object into an array, as required by the spec. This
-    // works by inserting single array byte ahead of `params` serialization, and then writing
-    // rest of the data in front of the params byte.
-
-    // Fisrt we calculate reserved buffer size for method and params serialization
-    use rmp::encode as enc;
-
-    let mut request_id = request_id;
-    let is_request = request_id.is_some();
-
-    // At any case, it can't exceed 16 bytes
-    // - FixMap, 1B
-    // - TypeID, 1B
-    // - (optional) Request ID, Max 5B (1B marker, 4B payload)
-    // - Method name length, Max 5B (1B marker, 4B payload)
-    let head = &mut ArrayVec::<u8, 12>::new();
-
-    let init_marker = if is_request {
-        [Marker::FixArray(4), Marker::FixPos(TYPE_ID_REQUEST)].map(|x| x.to_u8())
-    } else {
-        [Marker::FixArray(3), Marker::FixPos(TYPE_ID_NOTIFICATION)].map(|x| x.to_u8())
-    };
-
-    head.extend(init_marker);
-
-    // For request, `msgid` slot is addtionally reserved.
-    if is_request {
-        // Make the request ID to fit in 32-bit range
-        let req_id = request_id.as_mut().unwrap();
-        if req_id.get() > u32::MAX as u64 {
-            **req_id = (req_id.get() & u32::MAX as u64)
-                .try_into()
-                .unwrap_or_else(|_| {
-                    // It's cold: only 0 will be 1. Which is single case out of 2^32.
-                    crate::cold_path();
-
-                    // SAFETY: 1 is not zero.
-                    unsafe { NonZeroU64::new_unchecked(1) }
-                });
-        } else {
-            // In most cases, the original request ID will exceed 32-bit range as it was generated
-            // randomly at first.
-            crate::cold_path();
-        }
-
-        let req_id = req_id.get() as u32;
-        enc::write_u32(head, req_id).unwrap();
-    }
-
-    enc::write_str_len(head, method.len() as _).expect("data exceeded 32-bit range");
-
-    // We'll write method name later. For now, we just reserve space for it.
-    let data_start_pos = head.len() + method.len() + 1 /* as margin */;
-
-    // Just reserve few more bytes for really required amount.
-    const DATA_MARGIN: usize = 32;
-    buf.reserve(DATA_MARGIN + data_start_pos);
-
-    // SAFETY: We just reserved enough space for `head` and `method` serialization.
-    unsafe { buf.set_len(data_start_pos) }
-
-    // Encode params at buffer position
-    params
-        .serialize(&mut rmp_serde::Serializer::new(buf.writer()).with_struct_map())
-        .map_err(SerDeError::from)?;
-
-    // Check if the serialized value is array or not
-    let is_array_parameter = || rmp::decode::read_array_len(&mut &buf[data_start_pos..]).is_ok();
-
-    // Head position changes whether it's array or not
-    if !validate_param_format || is_array_parameter() {
-        buf.advance(1);
-    } else {
-        buf[data_start_pos - 1] = rmp::Marker::FixArray(1).to_u8();
-    }
-
-    // Finish by writing header and method name.
-    buf[..head.len()].copy_from_slice(head);
-    buf[head.len()..head.len() + method.len()].copy_from_slice(method.as_bytes());
-
-    Ok(request_id)
 }

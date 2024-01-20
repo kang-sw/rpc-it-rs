@@ -1140,7 +1140,7 @@ impl DataModel {
                 //     contains all parameters as its field names.
 
                 if types_de.is_empty() {
-                    (quote!(()), quote!())
+                    (quote!(serde::de::IgnoredAny), quote!())
                 } else if types_de.len() == 1 {
                     let ty = types_de.first().unwrap();
                     let has_lifetime = type_util::has_any_lifetime(ty);

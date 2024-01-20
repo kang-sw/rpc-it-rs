@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 use futures::{executor::LocalPool, FutureExt};
-use rpc_it::{ext_codec::jsonrpc, io::InMemoryRx, Codec, DefaultConfig};
+use rpc_it::{io::InMemoryRx, Codec, DefaultConfig};
 
 mod shared;
 
@@ -72,27 +72,49 @@ impl Drop for DropCheck {
 }
 
 #[test]
-fn test_macro_ops_correct_jsonrpc() {
+#[cfg(feature = "jsonrpc")]
+fn jsonrpc() {
+    use rpc_it::ext_codec::jsonrpc;
+
+    run_with_codec(|| jsonrpc::Codec);
+}
+
+#[test]
+#[cfg(feature = "msgpack-rpc")]
+fn mspgack_rpc() {
+    use rpc_it::ext_codec::msgpack_rpc;
+
+    run_with_codec(msgpack_rpc::Codec::default)
+}
+
+fn run_with_codec<C: Codec>(codec: impl Fn() -> C) {
     let drop_check = Arc::new(DropCheck);
 
     {
         let mut executor = LocalPool::new();
 
-        let (client, mut server) = shared::create_default_rpc_pair::<TestCfg<jsonrpc::Codec>>(
+        let (client, mut server) = shared::create_default_rpc_pair::<TestCfg<_>>(
             &executor.spawner(),
             drop_check.clone(),
             drop_check.clone(),
-            || jsonrpc::Codec,
+            codec,
         );
 
-        executor.run_until(test_macro_ops_correct(&mut server, client.clone()));
+        executor.run_until(run_macro_ops_correct(&mut server, client.clone()));
+        executor.run_until(run_notify_param_correct(&mut server, client.clone()));
     }
 
     drop(drop_check);
     assert!(DROP_CALLED.load(Ordering::SeqCst));
 }
 
-async fn test_macro_ops_correct<C: Codec>(
+async fn run_notify_param_correct<C: Codec>(
+    server: &mut rpc_it::Receiver<TestCfg<C>, InMemoryRx>,
+    client: rpc_it::RequestSender<TestCfg<C>>,
+) {
+}
+
+async fn run_macro_ops_correct<C: Codec>(
     server: &mut rpc_it::Receiver<TestCfg<C>, InMemoryRx>,
     client: rpc_it::RequestSender<TestCfg<C>>,
 ) {
