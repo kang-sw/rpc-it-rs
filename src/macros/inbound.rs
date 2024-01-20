@@ -4,7 +4,7 @@ use bytes::BytesMut;
 use thiserror::Error;
 
 use crate::{
-    codec::{error::EncodeError, DeserializeError},
+    codec::{error::EncodeError, SerDeError},
     error::{ErrorResponse, ResponseReceiveError},
     rpc::{Config, PreparedPacket},
     Codec, Inbound, NotifySender, ParseMessage, RequestSender, Response,
@@ -52,7 +52,7 @@ where
 {
     /// # Safety
     #[doc(hidden)]
-    pub fn __internal_create(msg: Inbound<R>) -> Result<Self, (Inbound<R>, DeserializeError)> {
+    pub fn __internal_create(msg: Inbound<R>) -> Result<Self, (Inbound<R>, SerDeError)> {
         Ok(Self {
             inner: CachedNotify::__internal_create(msg)?,
         })
@@ -101,7 +101,7 @@ where
     M: NotifyMethod,
 {
     #[doc(hidden)]
-    pub fn __internal_create(msg: Inbound<R>) -> Result<Self, (Inbound<R>, DeserializeError)> {
+    pub fn __internal_create(msg: Inbound<R>) -> Result<Self, (Inbound<R>, SerDeError)> {
         // SAFETY:
         // * The borrowed lifetime `'de` is bound to the payload of the inbound message, not
         //   the object itself. Since `CachedNotify` holds the inbound message as long as
@@ -168,7 +168,7 @@ pub enum CachedWaitError<C: Codec, M: RequestMethod> {
     Response(CachedErrorObj<C, M>),
 
     #[error("Parse error during deserialization: {0:?}")]
-    DeserializeFailed(DeserializeError, Result<Response<C>, ErrorResponse<C>>),
+    DeserializeFailed(SerDeError, Result<Response<C>, ErrorResponse<C>>),
 }
 
 impl<'a, R, M> std::future::Future for CachedWaitResponse<'a, R, M>
@@ -343,7 +343,7 @@ unsafe fn parsed_pair<
     D: serde::de::Deserialize<'static>,
 >(
     p: P,
-) -> (P, Result<D, DeserializeError>) {
+) -> (P, Result<D, SerDeError>) {
     // From the parser's perspective, the lifetime of original buffer is 'static until it
     // gets dropped. It's not clear if the parsing behavior differentiates whether borrowing
     // buffer is 'static or not, just to be safe, we're transmuting the lifetime to 'static

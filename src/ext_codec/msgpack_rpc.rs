@@ -1,7 +1,7 @@
 //! Partial implementation of [msgpack-rpc
 //! specification](https://github.com/msgpack-rpc/msgpack-rpc/blob/master/spec.md)
 
-use std::{io::Write, marker::PhantomData, num::NonZeroU64};
+use std::{marker::PhantomData, num::NonZeroU64, str::FromStr};
 
 use arrayvec::ArrayVec;
 use bytes::{Buf, BufMut};
@@ -11,13 +11,26 @@ use serde::Serialize;
 use crate::{
     codec::{
         error::{DecodeError, EncodeError},
-        AsDeserializer, SerDeError,
+        AsDeserializer, InboundFrameType, SerDeError,
     },
     defs::RequestId,
+    ResponseError,
 };
 
-#[derive(Clone, Debug)]
-pub struct Codec;
+const TYPE_ID_REQUEST: u8 = 0;
+const TYPE_ID_RESPONSE: u8 = 1;
+const TYPE_ID_NOTIFICATION: u8 = 2;
+
+///
+#[derive(Default, Clone, Debug)]
+pub struct Codec {
+    /// If true, the codec will validate the format of codec parameter. For example if input
+    /// parameter is not wrapped in array, it will wrap it with array.
+    ///
+    /// Otherwise, it'll just serialize invalid parameter as-is, which will be rejected by
+    /// correctly implemented server. (this implementation does not reject unformatted parameter)
+    pub validate_encoded_param_format: bool,
+}
 
 impl crate::Codec for Codec {
     fn codec_reusability_id(&self) -> usize {
@@ -31,7 +44,14 @@ impl crate::Codec for Codec {
         params: &S,
         buf: &mut bytes::BytesMut,
     ) -> Result<(), EncodeError> {
-        encode_noti_or_req(method, params, None, buf).map(drop)
+        encode_noti_or_req(
+            method,
+            params,
+            None,
+            buf,
+            self.validate_encoded_param_format,
+        )
+        .map(drop)
     }
 
     fn encode_request<S: serde::Serialize>(
@@ -41,7 +61,14 @@ impl crate::Codec for Codec {
         params: &S,
         buf: &mut bytes::BytesMut,
     ) -> Result<crate::defs::RequestId, EncodeError> {
-        encode_noti_or_req(method, params, Some(request_id), buf).map(Option::unwrap)
+        encode_noti_or_req(
+            method,
+            params,
+            Some(request_id),
+            buf,
+            self.validate_encoded_param_format,
+        )
+        .map(Option::unwrap)
     }
 
     fn encode_response<S: serde::Serialize>(
@@ -57,13 +84,16 @@ impl crate::Codec for Codec {
         let ser = &mut rmp_serde::Serializer::new(buf.writer()).with_struct_map();
 
         match result {
-            ERP::Ok(ok) => (1, req_id, (), ok).serialize(ser),
+            ERP::Ok(ok) => (TYPE_ID_RESPONSE, req_id, (), ok).serialize(ser),
 
             // When there's error code, it is serialized as (code, errobj) tuple. No error code,
             // just errobj. If failed to parse error code, the entire slot is treated as errobj.
-            ERP::ErrCodeOnly(ec) => (1, req_id, (ec.to_str(), ()), ()).serialize(ser),
-            ERP::ErrObjectOnly(obj) => (1, req_id, obj, ()).serialize(ser),
-            ERP::Err(ec, obj) => (1, req_id, (ec.to_str(), obj), ()).serialize(ser),
+            ERP::ErrCodeOnly(ec) => {
+                (TYPE_ID_RESPONSE, req_id, (ec.to_str(), ()), ()).serialize(ser)
+            }
+
+            ERP::ErrObjectOnly(obj) => (TYPE_ID_RESPONSE, req_id, obj, ()).serialize(ser),
+            ERP::Err(ec, obj) => (TYPE_ID_RESPONSE, req_id, (ec.to_str(), obj), ()).serialize(ser),
         }
         .map_err(SerDeError::from)
         .map_err(Into::into)
@@ -101,10 +131,128 @@ impl crate::Codec for Codec {
 
     fn decode_inbound(
         &self,
-        scratch: &mut bytes::BytesMut,
+        _scratch: &mut bytes::BytesMut,
         frame: &mut bytes::Bytes,
-    ) -> Result<crate::codec::InboundFrameType, crate::codec::error::DecodeError> {
-        todo!()
+    ) -> Result<InboundFrameType, crate::codec::error::DecodeError> {
+        // We don't need mutable reference.
+        let frame = &frame[..];
+        let rd = &mut { frame };
+
+        use rmp::decode as dec;
+
+        fn pos(base: &[u8], cursor: &[u8]) -> u32 {
+            (cursor.as_ptr() as usize - base.as_ptr() as usize) as u32
+        }
+
+        // *Poor man's try block*
+        (|| {
+            let array_size = dec::read_array_len(rd)?;
+            let type_id: u8 = dec::read_int(rd)?;
+
+            let frame_type = match (array_size, type_id) {
+                (4, ty @ TYPE_ID_REQUEST) | (3, ty @ TYPE_ID_NOTIFICATION) => {
+                    let req_id_range = if ty == TYPE_ID_REQUEST {
+                        let req_id_start_pos = pos(frame, rd);
+                        let _: u32 = dec::read_int(rd)?;
+
+                        Some(req_id_start_pos..pos(frame, rd))
+                    } else {
+                        None
+                    };
+
+                    let method_len: u32 = dec::read_str_len(rd)?;
+                    let method_start_pos = pos(frame, rd);
+
+                    rd.advance(method_len as _);
+                    let method = method_start_pos..pos(frame, rd);
+
+                    let params_start_pos = pos(frame, rd);
+                    let params = params_start_pos..frame.len() as u32;
+
+                    if let Some(req_id_raw) = req_id_range {
+                        InboundFrameType::Request {
+                            req_id_raw,
+                            method,
+                            params,
+                        }
+                    } else {
+                        InboundFrameType::Notify { method, params }
+                    }
+                }
+                (4, TYPE_ID_RESPONSE) => {
+                    let req_id: u32 = dec::read_int(rd)?;
+                    let req_id = RequestId::new((req_id as u64).try_into()?);
+
+                    let is_ok_result = if dec::read_nil(&mut *rd).is_ok() {
+                        dec::read_nil(rd).unwrap();
+                        true
+                    } else {
+                        if *frame.last().unwrap() != Marker::Null.to_u8() {
+                            // Check if result slot is correctly specifying `nil` marker
+                            return Err(DecodeError::InvalidFormat.into());
+                        }
+
+                        false
+                    };
+
+                    // If it's error, the last byte is error object's `nil` marker
+                    let payload_end = frame.len() as u32 - (!is_ok_result as u32);
+                    let payload_start = pos(frame, rd);
+
+                    let payload = payload_start..payload_end;
+
+                    // Here, cursor is pointing to either error object or returned result object.
+                    if is_ok_result {
+                        InboundFrameType::Response {
+                            req_id,
+                            errc: None,
+                            payload,
+                        }
+                    } else {
+                        // error is `obj` or `(errc:&str, obj: any)`.
+
+                        // Try to parse the error object as `(errc, obj)`
+                        let errc_payload = 'errc_find: {
+                            let rd = &mut *rd;
+
+                            if !dec::read_array_len(rd).is_ok_and(|x| x == 2) {
+                                break 'errc_find None;
+                            }
+
+                            let Ok((err_str, tail)) = dec::read_str_from_slice(&*rd) else {
+                                break 'errc_find None;
+                            };
+
+                            let Ok(errc) = ResponseError::from_str(err_str) else {
+                                break 'errc_find None;
+                            };
+
+                            // Rest of the data is error object part.
+                            let payload = pos(frame, tail)..payload_end;
+                            Some((errc, payload))
+                        };
+
+                        if let Some((errc, payload)) = errc_payload {
+                            InboundFrameType::Response {
+                                req_id,
+                                errc: Some(errc),
+                                payload,
+                            }
+                        } else {
+                            InboundFrameType::Response {
+                                req_id,
+                                errc: Some(Default::default()),
+                                payload, // Treat the whole object as error object.
+                            }
+                        }
+                    }
+                }
+                _ => return Err(DecodeError::InvalidFormat.into()),
+            };
+
+            Ok::<_, SerDeError>(frame_type)
+        })()
+        .map_err(Into::into)
     }
 
     fn restore_request_id(
@@ -130,6 +278,7 @@ fn encode_noti_or_req<S: serde::Serialize>(
     params: &S,
     request_id: Option<RequestId>,
     buf: &mut bytes::BytesMut,
+    validate_param_format: bool,
 ) -> Result<Option<RequestId>, EncodeError> {
     debug_assert!(buf.is_empty());
 
@@ -152,9 +301,9 @@ fn encode_noti_or_req<S: serde::Serialize>(
     let head = &mut ArrayVec::<u8, 12>::new();
 
     let init_marker = if is_request {
-        [Marker::FixMap(4), Marker::FixPos(0)].map(|x| x.to_u8())
+        [Marker::FixMap(4), Marker::FixPos(TYPE_ID_REQUEST)].map(|x| x.to_u8())
     } else {
-        [Marker::FixMap(3), Marker::FixPos(2)].map(|x| x.to_u8())
+        [Marker::FixMap(3), Marker::FixPos(TYPE_ID_NOTIFICATION)].map(|x| x.to_u8())
     };
 
     head.extend(init_marker);
@@ -204,11 +353,11 @@ fn encode_noti_or_req<S: serde::Serialize>(
     let is_array_parameter = rmp::decode::read_array_len(&mut &buf[data_start_pos..]).is_ok();
 
     // Head position changes whether it's array or not
-    if is_array_parameter {
+    if !validate_param_format || is_array_parameter {
         buf.advance(1);
     } else {
         buf[data_start_pos - 1] = rmp::Marker::FixArray(1).to_u8();
-    };
+    }
 
     // Finish by writing header and method name.
     buf[..head.len()].copy_from_slice(head);

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{codec::DeserializeError, rpc::Config, Inbound};
+use crate::{codec::SerDeError, rpc::Config, Inbound};
 
 /// A function which actually deals with inbound message.
 pub type ExecFunc<R> =
@@ -13,7 +13,7 @@ pub enum ExecError {
     RouteFailed,
 
     #[error("parsing inbound failed")]
-    ParseError(#[from] DeserializeError),
+    ParseError(#[from] SerDeError),
 
     #[error("request received on notify handler!")]
     RequestOnNotifyHandler,
