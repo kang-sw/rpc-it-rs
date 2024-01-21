@@ -63,7 +63,6 @@ impl DataModel {
 
         let mut attrs = TokenStream::new();
         let mut no_recv = false;
-        let mut rkyv_unchecked = None;
 
         let mut def = MethodDef {
             is_req: false,
@@ -81,8 +80,6 @@ impl DataModel {
                 Meta::Path(path) => 'ret: {
                     if path.is_ident("no_recv") {
                         no_recv = true;
-                    } else if path.is_ident("rkyv") {
-                        rkyv_unchecked = Some(false);
                     } else {
                         break 'ret Meta::Path(path);
                     }
@@ -140,12 +137,9 @@ impl DataModel {
             def.name = def.method_ident.to_string();
         }
 
-        if let Some(unchecked) = rkyv_unchecked {
-        } else {
-            self.fn_def_normal(
-                &mut def, item, item_span, &vis_outer, &vis_inner, no_recv, out, attrs,
-            );
-        }
+        self.fn_def_body(
+            &mut def, item, item_span, &vis_outer, &vis_inner, no_recv, out, attrs,
+        );
 
         if !no_recv {
             // Only generate receiver part if it's not explicitly disabled
@@ -154,7 +148,7 @@ impl DataModel {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn fn_def_normal(
+    pub(crate) fn fn_def_body(
         &mut self,
         def: &mut MethodDef,
         item: syn::ForeignItemFn,
@@ -258,7 +252,7 @@ impl DataModel {
                 //     contains all parameters as its field names.
 
                 if types_de.is_empty() {
-                    (quote!(serde::de::IgnoredAny), quote!())
+                    (quote!(()), quote!())
                 } else if types_de.len() == 1 {
                     let ty = types_de.first().unwrap();
                     let has_lifetime = type_util::has_any_lifetime(ty);

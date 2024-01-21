@@ -99,9 +99,6 @@ mod type_util;
 ///     - Adds an additional route to the method.
 /// - `[no_recv]`
 ///     - Do not define handler for this method.
-/// - `[rkyv]` or `[rkyv(unchecked)]`
-///     - Generates method as RKYV version. It'll create new type which (de)serializes all arguments
-///       into rkyv format, which allows you zero-copy deserialization of arguments.
 ///
 /// ### Router Attributes
 ///
