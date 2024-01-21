@@ -138,6 +138,9 @@ mod type_util;
 ///
 ///   // If serialization type and deserialization type is different, you can specify it by
 ///   // double underscore and angle brackets, like specifying two parameters on generic type `__`
+///   //
+///   // It may work incorrectly if the underlying codec is not self-descriptive format such as
+///   // postcard.
 ///   fn from_to(s: __<i32, u64>, b: __<&'_ str, String>) -> __<i32, String> ;
 ///
 ///   // After defining all methods, you can define server-side router by defining `Route` const
