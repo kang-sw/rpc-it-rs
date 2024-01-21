@@ -4,3 +4,5 @@
 pub mod jsonrpc;
 #[cfg(feature = "msgpack-rpc")]
 pub mod msgpack_rpc;
+#[cfg(feature = "rawrpc")]
+pub mod rawrpc;

@@ -56,7 +56,7 @@ mod rpc {
 
     pub fn four_param_concat(a: &str, b: i32, c: u64, d: &str) -> &str;
 
-    pub fn one_param_fp(x: __<f32, f64>) -> f32;
+    pub fn one_param_fp(x: f32) -> f32;
 
     pub fn noti_zero_param();
     pub fn noti_one_param(st: &str);
@@ -86,6 +86,14 @@ fn jsonrpc() {
     use rpc_it::ext_codec::jsonrpc;
 
     run_with_codec(|| jsonrpc::Codec);
+}
+
+#[test]
+#[cfg(feature = "rawrpc")]
+fn rawrpc() {
+    use rpc_it::ext_codec::rawrpc;
+
+    run_with_codec(|| rawrpc::Codec);
 }
 
 #[test]
@@ -149,7 +157,7 @@ async fn run_notify_param_correct<C: Codec>(
         get!().into_noti_zero_param().ok().unwrap();
 
         let arg = get!().into_noti_one_param().ok().unwrap();
-        assert_eq!("a", **arg.args());
+        assert_eq!("a", *arg.args());
 
         let arg = get!().into_noti_two_params().ok().unwrap();
         assert_eq!("a", arg.args().st);
@@ -242,7 +250,7 @@ async fn run_macro_ops_correct<C: Codec>(
         msg.respond(b, Ok(&3)).await?;
 
         let msg = rx_route.recv().await?.into_one_param_flip().ok().unwrap();
-        msg.respond(b, Ok(&-**msg.args())).await?;
+        msg.respond(b, Ok(&-*msg.args())).await?;
 
         let msg = rx_route
             .recv()
@@ -250,7 +258,7 @@ async fn run_macro_ops_correct<C: Codec>(
             .into_pass_positive_value_only()
             .ok()
             .unwrap();
-        msg.respond(b, Err(&format!("{} is Negative Value", **msg.args())))
+        msg.respond(b, Err(&format!("{} is Negative Value", *msg.args())))
             .await?;
 
         let msg = rx_route.recv().await?.into_two_param_add().ok().unwrap();

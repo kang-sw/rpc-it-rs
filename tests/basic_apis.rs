@@ -32,6 +32,14 @@ fn verify_request_jsonrpc() {
 }
 
 #[test]
+#[cfg(feature = "rawrpc")]
+fn verify_request_rawrpc() {
+    use rpc_it::{ext_codec::rawrpc, rpc::DefaultConfig};
+
+    verify_request::<DefaultConfig<(), _>>(|| rawrpc::Codec);
+}
+
+#[test]
 #[cfg(all(feature = "jsonrpc", feature = "dynamic-codec"))]
 fn verify_request_dynamic_codecs() {
     use rpc_it::{codec::DynamicCodec, ext_codec::jsonrpc, rpc::DefaultConfig};

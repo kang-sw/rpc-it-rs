@@ -315,7 +315,7 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
 pub enum InboundFrameType {
     Request {
         /// The raw request id bytes range.
-        req_id_raw: Range<SizeType>,
+        raw_request_id: Range<SizeType>,
         method: Range<SizeType>,
         params: Range<SizeType>,
     },
@@ -324,7 +324,7 @@ pub enum InboundFrameType {
         params: Range<SizeType>,
     },
     Response {
-        req_id: RequestId,
+        request_id: RequestId,
 
         /// If this value presents, it means that the response is an error response. When response
         /// error code couldn't be parsed but still it's an error, use [`ResponseError::Unknown`]

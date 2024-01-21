@@ -254,7 +254,7 @@ impl crate::Codec for Codec {
                 id: Some(id),
                 ..
             } => InboundFrameType::Request {
-                req_id_raw: range_of(id),
+                raw_request_id: range_of(id),
                 method: range_of(method),
                 params: range_of(params.get()),
             },
@@ -271,7 +271,7 @@ impl crate::Codec for Codec {
                 id: Some(id),
                 ..
             } => InboundFrameType::Response {
-                req_id: req_id_from_str(id)?,
+                request_id: req_id_from_str(id)?,
                 errc: None,
                 payload: range_of(result.get()),
             },
@@ -280,7 +280,7 @@ impl crate::Codec for Codec {
                 id: Some(id),
                 ..
             } => InboundFrameType::Response {
-                req_id: req_id_from_str(id)?,
+                request_id: req_id_from_str(id)?,
                 errc: Some(errc_to_error(code.unwrap_or(errc::INTERNAL_ERROR))),
                 payload: data.map(|x| range_of(x.get())).unwrap_or_default(),
             },

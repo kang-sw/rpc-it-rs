@@ -210,7 +210,7 @@ impl crate::Codec for Codec {
 
                     if let Some(req_id_raw) = req_id_range {
                         InboundFrameType::Request {
-                            req_id_raw,
+                            raw_request_id: req_id_raw,
                             method,
                             params,
                         }
@@ -243,7 +243,7 @@ impl crate::Codec for Codec {
                     // Here, cursor is pointing to either error object or returned result object.
                     if is_ok_result {
                         InboundFrameType::Response {
-                            req_id,
+                            request_id: req_id,
                             errc: None,
                             payload,
                         }
@@ -273,13 +273,13 @@ impl crate::Codec for Codec {
 
                         if let Some((errc, payload)) = errc_payload {
                             InboundFrameType::Response {
-                                req_id,
+                                request_id: req_id,
                                 errc: Some(errc),
                                 payload,
                             }
                         } else {
                             InboundFrameType::Response {
-                                req_id,
+                                request_id: req_id,
                                 errc: Some(Default::default()),
                                 payload, // Treat the whole object as error object.
                             }

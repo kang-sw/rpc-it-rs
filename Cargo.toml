@@ -35,6 +35,8 @@ erased-serde = { version = "0.4", optional = true }
 rmp = { version = "0.8", optional = true }
 rmp-serde = { version = "1", optional = true }
 
+postcard = { version = "1", optional = true }
+
 [dependencies.rpc-it-macros]
 path = "./macros"
 version = "0.10.0-alpha.1"
@@ -51,7 +53,7 @@ tap = "1.0.1"
 default = ["proc-macro", "detailed-parse-errors"]
 
 # Enable full RPC support
-full = ["jsonrpc", "msgpack-rpc", "dynamic-codec", "in-memory-io"]
+full = ["jsonrpc", "msgpack-rpc", "dynamic-codec", "in-memory-io", "rawrpc"]
 
 # Enable dynamic codec support
 dynamic-codec = ["dep:erased-serde"]
@@ -71,6 +73,10 @@ jsonrpc = ["dep:serde_json"]
 
 # Add msgpack-rpc support to the library
 msgpack-rpc = ["dep:rmp", "dep:rmp-serde"]
+
+# Internal highspeed unstable RPC protocol. This protocol only guarantees compatibility between same
+# `rpc-it` crate minor versions.
+rawrpc = ["dep:postcard"]
 
 # Adds in-memory-io default IO support
 in-memory-io = ["dep:crossbeam-queue"]

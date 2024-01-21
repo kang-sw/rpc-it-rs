@@ -216,7 +216,7 @@ mod rx_inner {
         use crate::codec::InboundFrameType as IFT;
         let inbound = match frame_type {
             IFT::Request {
-                req_id_raw: std::ops::Range { start, end },
+                raw_request_id: std::ops::Range { start, end },
                 method,
                 params,
             } => InboundInner::new_request(
@@ -229,7 +229,7 @@ mod rx_inner {
                 InboundInner::new_notify(ib, method.into(), params.into())
             }
             IFT::Response {
-                req_id,
+                request_id: req_id,
                 errc,
                 payload,
             } => {

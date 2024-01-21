@@ -254,26 +254,33 @@ impl DataModel {
                 if types_de.is_empty() {
                     (quote!(()), quote!())
                 } else if types_de.len() == 1 {
-                    let ty = types_de.first().unwrap();
-                    let has_lifetime = type_util::has_any_lifetime(ty);
-                    let lifetime = has_lifetime.then(|| quote!(<'___de>));
-                    let borrow = has_lifetime.then(|| quote!(#[serde(borrow)]));
+                    #[cfg(any())]
+                    {
+                        let ty = types_de.first().unwrap();
+                        let has_lifetime = type_util::has_any_lifetime(ty);
+                        let lifetime = has_lifetime.then(|| quote!(<'___de>));
+                        let borrow = has_lifetime.then(|| quote!(#[serde(borrow)]));
 
-                    (
-                        quote!(ParamRecv #lifetime),
-                        quote_spanned!(item_span =>
-                            #[derive(serde::Deserialize)]
-                            #vis_inner struct ParamRecv #lifetime ( #borrow #ty );
+                        (
+                            quote!(ParamRecv #lifetime),
+                            quote_spanned!(item_span =>
+                                #[derive(serde::Deserialize)]
+                                #vis_inner struct ParamRecv #lifetime ( #borrow #ty );
 
-                            impl #lifetime ::std::ops::Deref for ParamRecv #lifetime {
-                                type Target = #ty;
+                                impl #lifetime ::std::ops::Deref for ParamRecv #lifetime {
+                                    type Target = #ty;
 
-                                fn deref(&self) -> &Self::Target {
-                                    &self.0
+                                    fn deref(&self) -> &Self::Target {
+                                        &self.0
+                                    }
                                 }
-                            }
-                        ),
-                    )
+                            ),
+                        )
+                    }
+                    {
+                        let ty = types_de.first().unwrap();
+                        (quote!(#ty), quote!())
+                    }
                 } else {
                     let mut has_any_lifetime = false;
 

@@ -86,7 +86,7 @@ pub mod defs {
         ///
         /// This is basically incremental per connection, and rotates back to 1 after reaching the
         /// maximum value(2^32-1).
-        pub struct RequestId(NonZeroU64)
+        pub struct RequestId(pub(crate) NonZeroU64)
     }
 
     impl RequestId {
