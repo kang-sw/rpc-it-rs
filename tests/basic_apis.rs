@@ -12,7 +12,7 @@ mod shared;
 
 #[test]
 #[cfg(feature = "msgpack-rpc")]
-fn verify_request_msgpack_rpc() {
+fn request_msgpack_rpc() {
     use rpc_it::{ext_codec::msgpack_rpc, rpc::DefaultConfig};
 
     verify_request::<DefaultConfig<(), _>>(
@@ -25,7 +25,7 @@ fn verify_request_msgpack_rpc() {
 
 #[test]
 #[cfg(feature = "jsonrpc")]
-fn verify_request_jsonrpc() {
+fn request_jsonrpc() {
     use rpc_it::{ext_codec::jsonrpc, rpc::DefaultConfig};
 
     verify_request::<DefaultConfig<(), _>>(|| jsonrpc::Codec);
@@ -33,7 +33,7 @@ fn verify_request_jsonrpc() {
 
 #[test]
 #[cfg(feature = "rawrpc")]
-fn verify_request_rawrpc() {
+fn request_rawrpc() {
     use rpc_it::{ext_codec::rawrpc, rpc::DefaultConfig};
 
     verify_request::<DefaultConfig<(), _>>(|| rawrpc::Codec);
@@ -41,7 +41,7 @@ fn verify_request_rawrpc() {
 
 #[test]
 #[cfg(all(feature = "jsonrpc", feature = "dynamic-codec"))]
-fn verify_request_dynamic_codecs() {
+fn request_dynamic_codecs() {
     use rpc_it::{codec::DynamicCodec, ext_codec::jsonrpc, rpc::DefaultConfig};
 
     verify_request::<DefaultConfig<(), DynamicCodec>>(|| Arc::new(jsonrpc::Codec));
