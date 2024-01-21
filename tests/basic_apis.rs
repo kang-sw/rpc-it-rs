@@ -77,7 +77,7 @@ where
 
                 // Test plain request response
                 println!("I.client: sending request");
-                let response = client.request(b, "hello", &(1, 2)).await.unwrap();
+                let response = client.send_request(b, "hello", &(1, 2)).await.unwrap();
 
                 println!("I.server: receiving request");
                 let request = server.recv().await.unwrap();
@@ -96,7 +96,7 @@ where
 
                 // Test dropped request
                 println!("I.client: sending request 2");
-                let response = client.request(b, "hello", &(3, 4)).await.unwrap();
+                let response = client.send_request(b, "hello", &(3, 4)).await.unwrap();
 
                 println!("I.server: receiving request 2");
                 let request = server.recv().await.unwrap();
@@ -127,10 +127,10 @@ where
         spawner
             .spawn(async move {
                 let b = &mut BytesMut::new();
-                let req1 = client.request(b, "pewpew", &(1, 2)).await.unwrap();
-                let req2 = client.request(b, "tewtew", &(3, 4)).await.unwrap();
-                let req3 = client.request(b, "rewrew", &(5, 6)).await.unwrap();
-                let req4 = client.request(b, "qewqew", &(7, 8)).await.unwrap();
+                let req1 = client.send_request(b, "pewpew", &(1, 2)).await.unwrap();
+                let req2 = client.send_request(b, "tewtew", &(3, 4)).await.unwrap();
+                let req3 = client.send_request(b, "rewrew", &(5, 6)).await.unwrap();
+                let req4 = client.send_request(b, "qewqew", &(7, 8)).await.unwrap();
 
                 let rep1 = req1.await.unwrap().parse::<i32>().unwrap();
                 let rep2 = req2.await.unwrap().parse::<i32>().unwrap();

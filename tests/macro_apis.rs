@@ -132,11 +132,11 @@ async fn run_notify_param_correct<C: Codec>(
     let task_client = async {
         let b = &mut Default::default();
 
-        client.noti(b, rpc::noti_zero_param()).await?;
-        client.noti(b, rpc::noti_one_param("a")).await?;
-        client.noti(b, rpc::noti_two_params("a", &1)).await?;
+        client.notify(b, rpc::noti_zero_param()).await?;
+        client.notify(b, rpc::noti_one_param("a")).await?;
+        client.notify(b, rpc::noti_two_params("a", &1)).await?;
         client
-            .noti(b, rpc::noti_three_params("a", &1, &2.0))
+            .notify(b, rpc::noti_three_params("a", &1, &2.0))
             .await?;
 
         Ok::<_, anyhow::Error>(())
@@ -193,18 +193,19 @@ async fn run_macro_ops_correct<C: Codec>(
     let task_client = async {
         let b = &mut Default::default();
 
-        let res_zero_param = client.call(b, rpc::zero_param()).await?;
-        let res_one_param_flip = client.call(b, rpc::one_param_flip(&2)).await?;
-        let res_pass_positive_value_only =
-            client.call(b, rpc::pass_positive_value_only(&-5)).await?;
-        let res_two_param_add = client.call(b, rpc::two_param_add(&1, &2)).await?;
+        let res_zero_param = client.request(b, rpc::zero_param()).await?;
+        let res_one_param_flip = client.request(b, rpc::one_param_flip(&2)).await?;
+        let res_pass_positive_value_only = client
+            .request(b, rpc::pass_positive_value_only(&-5))
+            .await?;
+        let res_two_param_add = client.request(b, rpc::two_param_add(&1, &2)).await?;
         let res_three_param_concat = client
-            .call(b, rpc::three_param_concat("a", "b", "c"))
+            .request(b, rpc::three_param_concat("a", "b", "c"))
             .await?;
         let res_four_param_concat = client
-            .call(b, rpc::four_param_concat("abc", &1, &23, "abc"))
+            .request(b, rpc::four_param_concat("abc", &1, &23, "abc"))
             .await?;
-        let res_one_param_fp = client.call(b, rpc::one_param_fp(&1.55)).await?;
+        let res_one_param_fp = client.request(b, rpc::one_param_fp(&1.55)).await?;
 
         let (
             res_zero_param,

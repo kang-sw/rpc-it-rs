@@ -302,7 +302,7 @@ where
 // ========================================================== Extensions ===|
 
 impl<R: Config> NotifySender<R> {
-    pub async fn noti<M>(
+    pub async fn notify<M>(
         &self,
         buf: &mut BytesMut,
         (_, p): (M, M::ParamSend<'_>),
@@ -310,10 +310,10 @@ impl<R: Config> NotifySender<R> {
     where
         M: NotifyMethod,
     {
-        self.notify(buf, M::METHOD_NAME, &p).await
+        self.send_notify(buf, M::METHOD_NAME, &p).await
     }
 
-    pub fn try_noti<M>(
+    pub fn try_notify<M>(
         &self,
         buf: &mut BytesMut,
         (_, p): (M, M::ParamSend<'_>),
@@ -321,7 +321,7 @@ impl<R: Config> NotifySender<R> {
     where
         M: NotifyMethod,
     {
-        self.try_notify(buf, M::METHOD_NAME, &p)
+        self.try_send_notify(buf, M::METHOD_NAME, &p)
     }
 
     #[must_use = "Prepared packet won't do anything unless sent"]
@@ -333,7 +333,7 @@ impl<R: Config> NotifySender<R> {
     where
         M: NotifyMethod,
     {
-        self.encode_notify(buf, M::METHOD_NAME, &p)
+        self.prepare_notify(buf, M::METHOD_NAME, &p)
     }
 }
 
@@ -357,7 +357,7 @@ unsafe fn parsed_pair<
 }
 
 impl<R: Config> RequestSender<R> {
-    pub async fn call<M>(
+    pub async fn request<M>(
         &self,
         buf: &mut BytesMut,
         (_, p): (M, M::ParamSend<'_>),
@@ -365,12 +365,12 @@ impl<R: Config> RequestSender<R> {
     where
         M: NotifyMethod + RequestMethod,
     {
-        self.request(buf, M::METHOD_NAME, &p)
+        self.send_request(buf, M::METHOD_NAME, &p)
             .await
             .map(|x| CachedWaitResponse(x, PhantomData))
     }
 
-    pub fn try_call<M>(
+    pub fn try_request<M>(
         &self,
         buf: &mut BytesMut,
         (_, p): (M, M::ParamSend<'_>),
@@ -378,7 +378,7 @@ impl<R: Config> RequestSender<R> {
     where
         M: NotifyMethod + RequestMethod,
     {
-        self.try_request(buf, M::METHOD_NAME, &p)
+        self.try_send_request(buf, M::METHOD_NAME, &p)
             .map(|x| CachedWaitResponse(x, PhantomData))
     }
 }

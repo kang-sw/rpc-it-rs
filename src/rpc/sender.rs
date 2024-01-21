@@ -89,7 +89,7 @@ impl<R: Config> std::fmt::Debug for RequestSender<R> {
 // ========================================================== NotifySender ===|
 
 impl<R: Config> NotifySender<R> {
-    pub async fn notify<T: serde::Serialize>(
+    pub async fn send_notify<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
         method: &str,
@@ -103,7 +103,7 @@ impl<R: Config> NotifySender<R> {
         Ok(())
     }
 
-    pub fn try_notify<T: serde::Serialize>(
+    pub fn try_send_notify<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
         method: &str,
@@ -245,7 +245,7 @@ impl<R: Config> Clone for WeakNotifySender<R> {
 
 /// Implements request methods for [`RequestSender`].
 impl<R: Config> RequestSender<R> {
-    pub async fn request<T: serde::Serialize>(
+    pub async fn send_request<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
         method: &str,
@@ -265,7 +265,7 @@ impl<R: Config> RequestSender<R> {
         Ok(resp)
     }
 
-    pub fn try_request<T: serde::Serialize>(
+    pub fn try_send_request<T: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
         method: &str,
@@ -427,7 +427,7 @@ where
 {
     /// Prepare pre-encoded notification message. Request can't be prepared as there's no concept of
     /// broadcast or reuse in request.
-    pub fn encode_notify<S: serde::Serialize>(
+    pub fn prepare_notify<S: serde::Serialize>(
         &self,
         buf: &mut BytesMut,
         method: &str,
