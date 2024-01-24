@@ -382,9 +382,9 @@ impl<R: Config> Clone for WeakRequestSender<R> {
 /// A message that was encoded but not yet sent to client.
 #[derive(Debug)]
 pub struct PreparedPacket<C> {
-    _c: PhantomData<C>,
-    data: Bytes,
-    hash: NonZeroUsize,
+    pub(crate) _c: PhantomData<C>,
+    pub(crate) data: Bytes,
+    pub(crate) hash: NonZeroUsize,
 }
 
 pub enum PacketWriteBurst<C> {
@@ -421,6 +421,43 @@ impl<C> Clone for PreparedPacket<C> {
 
 // ==== Burst API ====
 
+pub trait PreparePacket {
+    type Codec: Codec;
+
+    fn prepare_notify<P: serde::Serialize>(
+        &self,
+        buf: &mut BytesMut,
+        method: &'_ str,
+        params: &P,
+    ) -> Result<PreparedPacket<Self::Codec>, EncodeError>;
+}
+
+impl<T: Codec> PreparePacket for T {
+    type Codec = Self;
+
+    fn prepare_notify<P: serde::Serialize>(
+        &self,
+        buf: &mut BytesMut,
+        method: &'_ str,
+        params: &P,
+    ) -> Result<PreparedPacket<Self::Codec>, EncodeError> {
+        buf.clear();
+
+        let hash: std::num::NonZeroUsize = self
+            .codec_reusability_id()
+            .try_into()
+            .map_err(|_| EncodeError::NotReusable)?;
+
+        self.encode_notify(method, params, buf)?;
+
+        Ok(PreparedPacket {
+            _c: PhantomData,
+            data: buf.split().freeze(),
+            hash,
+        })
+    }
+}
+
 impl<R> NotifySender<R>
 where
     R: Config,
@@ -433,22 +470,7 @@ where
         method: &str,
         params: &S,
     ) -> Result<PreparedPacket<R::Codec>, EncodeError> {
-        buf.clear();
-
-        let hash: NonZeroUsize = self
-            .context
-            .codec
-            .codec_reusability_id()
-            .try_into()
-            .map_err(|_| EncodeError::NotReusable)?;
-
-        self.context.codec.encode_notify(method, params, buf)?;
-
-        Ok(PreparedPacket {
-            _c: PhantomData,
-            data: buf.split().freeze(),
-            hash,
-        })
+        self.codec().prepare_notify(buf, method, params)
     }
 
     ///

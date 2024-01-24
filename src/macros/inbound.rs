@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::{
     codec::{error::EncodeError, SerDeError},
     error::{ErrorResponse, ResponseReceiveError},
-    rpc::{Config, PreparedPacket},
+    rpc::{Config, PreparePacket, PreparedPacket},
     Codec, Inbound, NotifySender, ParseMessage, RequestSender, Response,
 };
 
@@ -333,6 +333,28 @@ impl<R: Config> NotifySender<R> {
     where
         M: NotifyMethod,
     {
+        self.prepare_notify(buf, M::METHOD_NAME, &p)
+    }
+}
+
+pub trait PreparePacketWithMethod {
+    type Codec: Codec;
+
+    fn prepare<M: NotifyMethod>(
+        &self,
+        buf: &mut BytesMut,
+        p: (M, M::ParamSend<'_>),
+    ) -> Result<PreparedPacket<Self::Codec>, EncodeError>;
+}
+
+impl<T: Codec> PreparePacketWithMethod for T {
+    type Codec = Self;
+
+    fn prepare<M: NotifyMethod>(
+        &self,
+        buf: &mut BytesMut,
+        (_, p): (M, M::ParamSend<'_>),
+    ) -> Result<PreparedPacket<Self::Codec>, EncodeError> {
         self.prepare_notify(buf, M::METHOD_NAME, &p)
     }
 }
