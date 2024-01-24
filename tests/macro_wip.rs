@@ -5,6 +5,7 @@ use std::borrow::{Borrow, Cow};
 
 #[rpc_it_macros::service(rename_all = "camelCase")]
 pub(crate) mod prods {
+    use super::*;
 
     /// This generate router for every item in this module.
     const MyRoute: Route = ALL_PASCAL_CASE;

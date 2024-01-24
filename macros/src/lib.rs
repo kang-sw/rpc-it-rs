@@ -409,8 +409,6 @@ impl DataModel {
             #![allow(non_snake_case)]
             #![allow(clippy::needless_lifetimes)]
 
-            use super::*; // Make transparent to parent module
-
             use #crate_name as ___crate;
 
             use ___crate::serde as serde;
