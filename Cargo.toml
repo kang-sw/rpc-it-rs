@@ -39,7 +39,7 @@ postcard = { version = "1", optional = true }
 
 [dependencies.rpc-it-macros]
 path = "./macros"
-version = "0.10.0-alpha.2"
+version = "0.10.0-alpha.3"
 optional = true
 default-features = false
 
