@@ -213,6 +213,33 @@ pub enum EncodeResponsePayload<'a, S: serde::Serialize> {
     Err(ResponseError, &'a S),
 }
 
+/// Describes the inbound frame chunk.
+#[derive(Clone)]
+pub enum InboundFrameType {
+    Request {
+        /// The raw request id bytes range.
+        raw_request_id: Range<SizeType>,
+        method: Range<SizeType>,
+        params: Range<SizeType>,
+    },
+    Notify {
+        method: Range<SizeType>,
+        params: Range<SizeType>,
+    },
+    Response {
+        request_id: RequestId,
+
+        /// If this value presents, it means that the response is an error response. When response
+        /// error code couldn't be parsed but still it's an error, use [`ResponseError::Unknown`]
+        /// variant instead.
+        errc: Option<ResponseError>,
+
+        /// If response is error, this payload will be the error object's range. If it's the
+        /// protocol that can explicitly encode error code, this value can be empty(`[0, 0)`).
+        payload: Range<SizeType>,
+    },
+}
+
 pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
     /// Returns a locally unique ID (valid during program execution) for this codec instance. If two
     /// codec instances return the same ID, their notification results can be safely reused across
@@ -310,34 +337,7 @@ pub trait Codec: std::fmt::Debug + 'static + Send + Sync + Clone {
     fn restore_request_id(&self, raw_id: &[u8]) -> Result<RequestId, DecodeError>;
 }
 
-/// Describes the inbound frame chunk.
-#[derive(Clone)]
-pub enum InboundFrameType {
-    Request {
-        /// The raw request id bytes range.
-        raw_request_id: Range<SizeType>,
-        method: Range<SizeType>,
-        params: Range<SizeType>,
-    },
-    Notify {
-        method: Range<SizeType>,
-        params: Range<SizeType>,
-    },
-    Response {
-        request_id: RequestId,
-
-        /// If this value presents, it means that the response is an error response. When response
-        /// error code couldn't be parsed but still it's an error, use [`ResponseError::Unknown`]
-        /// variant instead.
-        errc: Option<ResponseError>,
-
-        /// If response is error, this payload will be the error object's range. If it's the
-        /// protocol that can explicitly encode error code, this value can be empty(`[0, 0)`).
-        payload: Range<SizeType>,
-    },
-}
-
-// ==== Codec ====
+// ==== Codec Errors ====
 
 pub mod error {
     use thiserror::Error;
