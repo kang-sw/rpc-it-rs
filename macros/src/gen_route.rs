@@ -1,4 +1,5 @@
 use super::DataModel;
+
 use super::MethodDef;
 use crate::type_util;
 use convert_case::{Case, Casing};

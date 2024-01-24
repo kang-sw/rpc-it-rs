@@ -227,7 +227,7 @@ impl DataModel {
                     item_span =>
                     #vis_outer fn #method_ident<'___ser>(#tok_input) -> (
                         #method_ident::Fn,
-                        <#method_ident::Fn as rpc_it::macros::NotifyMethod>::ParamSend<'___ser>
+                        <#method_ident::Fn as ___crate::macros::NotifyMethod>::ParamSend<'___ser>
                     ) {
                         (
                             #method_ident::Fn,
