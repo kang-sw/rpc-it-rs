@@ -1,671 +1,447 @@
-use std::collections::HashSet;
+//! # rpc-it-macros
+//!
+//! `rpc-it-macros` is a Rust utility crate designed to significantly enhance the development
+//! experience when working with RPC (Remote Procedure Call) systems. This crate primarily focuses
+//! on RPC code generation, leveraging Rust's strong type system.
+//!
+//! ## What Does This Library Do?
+//!
+//! The core functionality of `rpc-it-macros` lies in its ability to automate the generation of
+//! RPC-related code. By utilizing Rust's type system, this crate ensures that the code for handling
+//! RPC calls is generated in a way that is both type-safe and efficient. This approach minimizes
+//! the boilerplate code typically associated with setting up RPCs, leading to a cleaner and more
+//! maintainable codebase.
+//!
+//! ## Why Do You Need This?
+//!
+//! In the world of software development, especially when dealing with inter-process or network
+//! communication, minimizing human error is crucial. `rpc-it-macros` addresses this by offering a
+//! code-driven approach to RPC. This method reduces the likelihood of errors that can arise from
+//! manual setup and maintenance of RPC calls and routes. By integrating this crate into your
+//! project, you ensure that your RPC implementations are not only correct by design but also
+//! consistent and reliable.
+//!
+//! ## Getting Started
+//!
+//! To integrate `rpc-it-macros` into your Rust project, add it as a dependency in your `Cargo.toml`
+//! file:
+//!
+//! ```toml
+//! [dependencies]
+//! rpc-it-macros = "0.10.0"
+//! ```
+//!
+//! > Disclaimer: This README was generated with the assistance of AI. If there are any conceptual
+//! > errors or areas of improvement, please feel free to open an issue on our repository. Your
+//! > feedback is invaluable in enhancing the accuracy and utility of this documentation.
+//!
 
-use convert_case::{Case, Casing};
+use convert_case::Case;
+use proc_macro_error::proc_macro_error;
+
 use proc_macro2::TokenStream;
-use proc_macro_error::{abort, emit_error, proc_macro_error};
-use quote::{quote, quote_spanned};
-use syn::{
-    spanned::Spanned, FnArg, GenericArgument, Ident, Pat, ReturnType, Token, TraitItem,
-    TraitItemFn, Type, VisRestricted, Visibility,
-};
+use quote::quote;
+use syn::{punctuated::Punctuated, spanned::Spanned, Item, Meta, Token};
 
-/// Defines new RPC service
+mod type_util;
+
+/// # Procedural Macro for Generating RPC Signatures
 ///
-/// All parameter types must implement both of [`serde::Serialize`] and [`serde::Deserialize`].
+/// This documentation explains the procedural macro used for generating RPC signatures, focusing on
+/// key concepts and attributes.
 ///
-/// The trait name will be converted to snake_case module, and all related definitions will be
-/// defined inside the module.
+/// ## Key Concepts
 ///
-/// # Available Attributes for Traits
+/// - **Method Name** is the identifier for a method. Senders use this name to serialize requests,
+///   while receivers use it to locate the appropriate handler through an 'exact match' strategy.
+///   This is the default approach for filtering inbound requests and notifications.
 ///
-/// - `no_service`: Do not generate service-related code (TODO)
-/// - `no_client`: Do not generate client-related code (TODO)
+/// - **Method Route**, in server-side method routing, you can specify additional routing
+///   configurations for each method. This is useful for creating methods that respond to multiple
+///   names or patterns (if supported by the router). Method routes are not applicable to outbound
+///   requests or notifications.
 ///
-/// # Available Attributes for Methods
+/// - **Request Method** is a method that returns a value. The sender waits for a response from this
+///   type of method.
 ///
-/// - `sync`: Force generation of synchronous functions
-/// - `aliases = "..."`: Additional routes for the method. This is useful when you want to have
-///   multiple routes for the same method.
-/// - `with_reuse`: Generate `*_with_reuse` series of methods. This is useful when you want to
-///   optimize buffer allocation over multiple consecutive calls.
-/// - `skip`: Do not generate any code from this. This is useful when you need just a trait method,
-///   which can be used another default implementations.
-/// - `route`: Rename routing for caller
+/// - **Notification Method** is a method that does not return a value. It operates on a
+///   'fire-and-forget' basis, meaning the sender has no confirmation of the receiver having
+///   received the request.
+///
+/// ## Attributes
+///
+/// ### Service Attribute: `#[rpc_it::service(<ATTRS>)]`
+///
+/// - `name_prefix = "<PREFIX>"`
+///     - Appends a specified prefix to every method name.
+/// - `route_prefix = "<PREFIX>"`
+///     - Appends a specified prefix to every method route.
+/// - `rename_all = "<CASE>"`
+///     - Renames all default method names according to the specified case convention.
+///         - Explicit renamings using `#[name = "<NAME>"]` are exempt from this rule.
+///     - Supported case conventions: `snake_case`, `camelCase`, `PascalCase`,
+///       `SCREAMING_SNAKE_CASE`, `kebab-case`. The convention follows rules similar to
+///       `serde(rename_all = "<CASE>")`.
+/// - `vis = "<VIS>"`
+///     - Sets the visibility of generated methods. Defaults to private if unspecified.
+/// - `handler_module_name = "<NAME>"`
+///     - Sets the name of the module containing the generated handler. Defaults to `handler`.
+/// - `no_recv`
+///     - Do not generate receiver part of the module.
+/// - `no_param_recv_newtype`
+///     - Do not generate new type for `ParamRecv` types. This will reduce generated code size.
+///
+/// ### Method Attributes
+///
+/// - `[name = "<NAME>"]`
+///     - Renames the method to the specified string.
+/// - `[route = "<ROUTE>"]`
+///     - Adds an additional route to the method.
+/// - `[no_recv]`
+///     - Do not define handler for this method.
+///
+/// ### Router Attributes
+///
+/// - `[no_default_route]`
+///     - Do not generate default route for methods listed in this router.
+/// - `[install]`
+///     - Generate `install` function
+/// - `[direct]`
+///     - Generate `direct` mode router for this method.
+///
+/// ## Serialization / Deserialization Rules
+///
+/// - Single-argument methods: The argument is serialized as-is.
+/// - Multi-argument methods: Arguments are serialized as a tuple (array in most serialization
+///   formats).
+///     - To serialize a single argument as a tuple, wrap it in an additional tuple (e.g., `T`
+///       becomes `(T,)`).
+///
+/// ## Usage
+///
+/// ```ignore
+/// #[rpc_it::service(name_prefix = "Namespace/", rename_all = "PascalCase")]
+/// pub mod my_service {
+///   // If return type is specified explicitly, it is treated as request.
+///   pub fn method_req(arg: (i32, i32)) -> ();
+///
+///   // This is request; you can specify which error type will be returned.
+///   pub fn method_req_2() -> Result<MyParam<'_>, &'_ str> ;
+///
+///   // This is notification, which does not return anything.
+///   pub fn method_notify(arg: (i32, i32)) {}
+///
+///   #[name = "MethodName"] // Client will encode the method name as this. Server takes either.
+///   #[route = "MyMethod/*"] // This will define additional route on server side
+///   #[route = "OtherMethodName"]
+///   pub(crate) fn method_example(arg: &'_ str, arg2: &'_ [u8]) ;
+///
+///   // If serialization type and deserialization type is different, you can specify it by
+///   // double underscore and angle brackets, like specifying two parameters on generic type `__`
+///   //
+///   // It may work incorrectly if the underlying codec is not self-descriptive format such as
+///   // postcard.
+///   fn from_to(s: __<i32, u64>, b: __<&'_ str, String>) -> __<i32, String> ;
+///
+///   // After defining all methods, you can define server-side router by defining `Route` const
+///   // item. `ALL` and `ALL_PASCAL_CASE` generates router for every method within this namespace,
+///   // `ALL` will use method name as variant identifier as-is, while `ALL_PASCAL_CASE` will
+///   // convert method name to `PascalCase`.
+///   const MyRouterIdent: Route = ALL;
+///
+///   // You can also choose list of routed methods selectively:
+///   #[install]
+///   #[direct]
+///   const MySelectiveRoute: Route = [
+///     /// (Documentation comment is allowed)
+///     ///
+///     /// A identifier to rpc method must be specified here.
+///     method_example,
+///
+///     /// By opening braces next to method identifier, you can specify additional route
+///     /// specs for this method.
+///     from_to {
+///         routes = ["aaabbb", "from_to2"],
+///     },
+///
+///     /// You can route same method repeatedly, with different route config.
+///     /// (In practice, this is pointless)
+///     ///
+///     /// In following declaration, right side of the identifier is treated as new variant name.
+///     from_to = VariantName {
+///         no_default_route, // Prevents error from duplicated route
+///         routes = ["OtherRoute", "AAaaaH"]
+///     }
+///   ];
+///
+/// }
+///
+/// pub struct MyParam<'a> {
+///     name: &'a str,
+///     age: &'a str,
+/// }
+/// ```
+///
+/// ## Client side
+///
+/// ```ignore
+///
+/// let client: RequestSender = unimplemented!();
+///
+/// client.try_call(your_module_name::method_req, )
+/// ```
 ///
 #[proc_macro_error]
 #[proc_macro_attribute]
 pub fn service(
-    _attr: proc_macro::TokenStream,
-    item: proc_macro::TokenStream,
+    attr: proc_macro::TokenStream,
+    items: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let tokens = proc_macro2::TokenStream::from(item);
+    // let Ok(item) = syn::parse::<syn::ItemForeignMod>(items.clone()) else {
+    //     proc_macro_error::emit_call_site_error!("Expected foreign module");
+    //     return items;
+    // };
+    let item = syn::parse_macro_input!(items as syn::ItemMod);
 
-    /*
-        From comment example, this macro automatically implements:
-            struct MyServiceLoader;
-            impl MyServiceLoader {
-                fn load(this: Arc<MyService>, service: &mut ServiceBuilder) {
-                    service.register ...
+    let mut model = DataModel::default();
+    let mut out_stream = TokenStream::new();
+
+    model.parse_attr(attr.into());
+    model.main(item, &mut out_stream);
+
+    out_stream.into()
+}
+
+/// A model which describes parsed declarations
+#[derive(Default)]
+struct DataModel {
+    /// Prefix for all method names.
+    name_prefix: Option<syn::LitStr>,
+
+    /// Prefix for all method routes.
+    route_prefix: Option<syn::LitStr>,
+
+    /// Rename all method names with given case.
+    rename_all: Option<Case>,
+
+    /// No receiver part of the module.
+    no_recv: bool,
+
+    /// No newtype for `ParamRecv` types.
+    no_param_recv_newtype: bool,
+
+    /// Visibility of generated methods.
+    vis: Option<syn::Visibility>,
+
+    /// Notify method definitions. Used for generating inbound router.
+    handled_methods: Vec<MethodDef>,
+}
+
+#[derive(Clone)]
+struct MethodDef {
+    is_req: bool,
+    method_ident: syn::Ident,
+    name: String,
+    routes: Vec<syn::LitStr>,
+}
+
+impl DataModel {
+    fn vis(&self) -> &syn::Visibility {
+        self.vis.as_ref().unwrap_or(&syn::Visibility::Inherited)
+    }
+}
+
+impl DataModel {
+    fn parse_attr(&mut self, attrs: proc_macro2::TokenStream) {
+        let attrs: syn::Meta = syn::parse_quote_spanned! { attrs.span() => service(#attrs) };
+        let syn::Meta::List(attrs) = attrs else {
+            return;
+        };
+
+        let attrs = match attrs.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated) {
+            Ok(attrs) => attrs,
+            Err(err) => {
+                proc_macro_error::emit_error!("{}", err);
+                return; // Just skip attribute parsing
+            }
+        };
+
+        for meta in attrs.into_iter() {
+            let mut err_ident = None;
+
+            match meta {
+                Meta::Path(meta) => {
+                    if meta.is_ident("no_param_recv_newtype") {
+                        self.no_param_recv_newtype = true;
+                    } else if meta.is_ident("no_recv") {
+                        self.no_recv = true;
+                    } else {
+                        err_ident = meta.get_ident().cloned();
+                    }
+                }
+                Meta::NameValue(meta) => {
+                    if meta.path.is_ident("name_prefix") {
+                        self.name_prefix = type_util::expr_into_lit_str(meta.value);
+                    } else if meta.path.is_ident("route_prefix") {
+                        self.route_prefix = type_util::expr_into_lit_str(meta.value);
+                    } else if meta.path.is_ident("rename_all") {
+                        let Some(str) = type_util::expr_into_lit_str(meta.value) else {
+                            continue;
+                        };
+
+                        match str.value().as_str() {
+                            "snake_case" => self.rename_all = Some(Case::Snake),
+                            "camelCase" => self.rename_all = Some(Case::Camel),
+                            "PascalCase" => self.rename_all = Some(Case::Pascal),
+                            "SCREAMING_SNAKE_CASE" => self.rename_all = Some(Case::ScreamingSnake),
+                            "kebab-case" => self.rename_all = Some(Case::Kebab),
+                            "UPPERCASE" => self.rename_all = Some(Case::Upper),
+                            "lowercase" => self.rename_all = Some(Case::Lower),
+                            _ => {
+                                proc_macro_error::emit_error!(
+                                    str,
+                                    "Unknown case convention '{}', case must be one of \
+                                     'snake_case', 'camelCase', 'PascalCase', \
+                                     'SCREAMING_SNAKE_CASE', 'kebab-case', 'UPPERCASE', \
+                                     'lowercase'",
+                                    str.value()
+                                );
+                            }
+                        }
+                    } else {
+                        err_ident = meta.path.get_ident().cloned();
+                    }
+                }
+                Meta::List(m) => {
+                    err_ident = m.path.get_ident().cloned();
                 }
             }
 
-        For client, this struct is defined ...
-            struct MyServiceStub<'a>(Cow<'a, Transceiver>);
-            impl<'a> MyServiceStub<'a> {
-                pub fn new(trans: impl Into<Cow<'a, Transceiver>>) {
-
-                }
+            if let Some(ident) = err_ident {
+                proc_macro_error::emit_error!(
+                    ident,
+                    "Unexpected or incorrect usage of attribute argument '{}'",
+                    ident
+                );
             }
-    */
-
-    let Ok(ast) = syn::parse2::<syn::ItemTrait>(tokens) else {
-        return proc_macro::TokenStream::new();
-    };
-
-    let module_name = format!("{}", ast.ident.to_string().to_case(Case::Snake));
-    let module_name = Ident::new(&module_name, proc_macro2::Span::call_site());
-    let original_vis = &ast.vis;
-    let vis = match ast.vis.clone() {
-        vis @ (syn::Visibility::Public(_) | syn::Visibility::Restricted(_)) => vis,
-        syn::Visibility::Inherited => syn::Visibility::Restricted(VisRestricted {
-            pub_token: Token![pub](proc_macro2::Span::call_site()),
-            paren_token: Default::default(),
-            in_token: None,
-            path: Box::new(syn::parse2::<syn::Path>(quote!(super)).unwrap()),
-        }),
-    };
-
-    let mut statefuls = Vec::new();
-    let mut statelesses = Vec::new();
-    let mut call_binds = Vec::new();
-    let mut name_table = HashSet::new();
-
-    let (functions, attrs): (Vec<_>, Vec<_>) = ast
-        .items
-        .iter()
-        .filter_map(|x| if let TraitItem::Fn(x) = x { Some(x) } else { None })
-        .map(|x| {
-            let mut x = x.clone();
-            let attrs = method_attrs(&mut x);
-            (x, attrs)
-        })
-        .unzip();
-
-    let non_functions = ast
-        .items
-        .iter()
-        .filter_map(|x| if let TraitItem::Fn(_) = x { None } else { Some(x) })
-        .collect::<Vec<_>>();
-
-    for item in functions.iter().zip(&attrs) {
-        if let Some(loaded) = generate_loader_item(item.0, item.1, &mut name_table) {
-            match loaded {
-                LoaderOutput::Stateful(stateful) => statefuls.push(stateful),
-                LoaderOutput::Stateless(stateless) => statelesses.push(stateless),
-            }
-        }
-
-        if let Some(caller) = generate_call_stubs(item.0, item.1, &vis) {
-            call_binds.push(caller);
         }
     }
 
-    let trait_signatures = generate_trait_signatures(&functions, &attrs);
+    fn main(&mut self, item: syn::ItemMod, out: &mut TokenStream) {
+        let vis_level = 1;
 
-    let output = quote!(
-        #original_vis mod #module_name {
+        // TODO: Find way to use re-imported crate name
+        let crate_name = quote!(rpc_it);
+
+        // Create module name
+        {
+            self.vis = Some(item.vis);
+            let vis = self.vis();
+            let ident = &item.ident;
+
+            out.extend(quote!(#vis mod #ident));
+        }
+
+        let mut out_method_defs = TokenStream::new();
+        let mut out_routes = TokenStream::new();
+        let mut pass_thru_items = Vec::new();
+        let mut route_items = Vec::new();
+
+        // Parse list of module items
+        // - If it's function body (or verbatim function declaration), generate method definition
+        // - If it's const item, try parse it as route item
+        for item in item.content.unwrap().1.into_iter() {
+            let pass_thru = match item {
+                Item::Fn(syn::ItemFn {
+                    attrs,
+                    vis,
+                    sig,
+                    block: _,
+                }) => {
+                    self.generate_item_fn(
+                        syn::ForeignItemFn {
+                            semi_token: Token![;](sig.span()),
+                            attrs,
+                            sig,
+                            vis,
+                        },
+                        vis_level,
+                        &mut out_method_defs,
+                    );
+                    continue;
+                }
+                Item::Const(item) => {
+                    if let Some(path_seg) = type_util::type_path_as_mono_seg(&item.ty) {
+                        if path_seg.ident == "Route" {
+                            route_items.push(item);
+                            continue;
+                        }
+                    };
+                    Item::Const(item)
+                }
+                Item::Verbatim(verbatim) => {
+                    if let Ok(x @ syn::ItemForeignMod { .. }) =
+                        syn::parse2(quote!(extern "C" { #verbatim }))
+                    {
+                        if let syn::ForeignItem::Fn(item) = x.items.into_iter().next().unwrap() {
+                            self.generate_item_fn(item, vis_level, &mut out_method_defs);
+                            continue;
+                        }
+                    }
+
+                    Item::Verbatim(verbatim)
+                }
+                other => other,
+            };
+
+            pass_thru_items.push(pass_thru);
+        }
+
+        for item in route_items {
+            self.generate_route(item, vis_level, &mut out_routes);
+        }
+
+        // Wrap the result in block
+        out.extend(quote!({
             #![allow(unused_parens)]
             #![allow(unused)]
+            #![allow(non_camel_case_types)]
+            #![allow(non_snake_case)]
+            #![allow(clippy::needless_lifetimes)]
 
-            use super::*;
+            use super::*; // Make transparent to parent module
 
-            use rpc_it::service as __sv;
-            use rpc_it::service::macro_utils as __mc;
-            use rpc_it::serde;
-            use rpc_it::ExtractUserData;
+            use #crate_name as ___crate;
 
-            #vis trait Service: Send + Sync + 'static {
-                #trait_signatures
-                #(#non_functions)*
-            }
+            use ___crate::serde as serde;
 
-            #vis fn load_service_stateful_only<T: Service + Clone, R: __sv::Router>(
-                __this: T,
-                __service: &mut __sv::ServiceBuilder<R>
-            ) -> __mc::RegisterResult {
-                #(#statefuls;)*
-                Ok(())
-            }
+            use ___crate::macros as ___macros;
+            use ___macros::route as ___route;
 
-            #vis fn load_service_stateless_only<T: Service, R: __sv::Router>(
-                __service: &mut __sv::ServiceBuilder<R>
-            ) -> __mc::RegisterResult {
-                #(#statelesses;)*
-                Ok(())
-            }
+            // Pass through all other items
+            #(#pass_thru_items)*
 
-            #vis fn load_service<T:Service + Clone, R: __sv::Router>(
-                __this: T,
-                __service: &mut __sv::ServiceBuilder<R>
-            ) -> __mc::RegisterResult {
-                load_service_stateful_only(__this, __service)?;
-                load_service_stateless_only::<T, _>(__service)?;
-                Ok(())
-            }
-            
-            #vis fn load_service_arc_stateful_only<T: Service, R: __sv::Router>(
-                __this: std::sync::Arc<T>,
-                __service: &mut __sv::ServiceBuilder<R>
-            ) -> __mc::RegisterResult {
-                #(#statefuls;)*
-                Ok(())
-            }
+            // Let routes appear before methods; let method decls appear as method syntax by
+            // language server
+            #out_routes
 
-            #vis fn load_service_arc<T:Service, R: __sv::Router>(
-                __this: std::sync::Arc<T>,
-                __service: &mut __sv::ServiceBuilder<R>
-            ) -> __mc::RegisterResult {
-                load_service_arc_stateful_only(__this, __service)?;
-                load_service_stateless_only::<T, _>(__service)?;
-                Ok(())
-            }
-
-            #[derive(Debug, Clone)]
-            #vis struct Proxy<'a>(std::borrow::Cow<'a, rpc_it::Sender>);
-
-            #vis fn proxy_owned(value: rpc_it::Sender) -> Proxy<'static> {
-                Proxy(std::borrow::Cow::Owned(value))
-            }
-
-            #vis fn proxy<'a>(value: &'a rpc_it::Sender) -> Proxy<'a> {
-                Proxy(std::borrow::Cow::Borrowed(value))
-            }
-            
-            impl<'a> Proxy<'a> {
-                #vis fn into_inner(self) -> rpc_it::Sender {
-                    self.0.into_owned()
-                }
-
-                #vis fn inner(&self) -> &rpc_it::Sender {
-                    self.0.as_ref()
-                }
-
-                #(#call_binds)*
-            }
-        }
-    );
-
-    output.into()
-}
-
-enum LoaderOutput {
-    Stateful(TokenStream),
-    Stateless(TokenStream),
-}
-
-fn generate_loader_item(
-    method: &TraitItemFn,
-    attrs: &MethodAttrs,
-    used_route_table: &mut HashSet<String>,
-) -> Option<LoaderOutput> {
-    if attrs.skip {
-        return None;
+            // Method definitions here.
+            #out_method_defs
+        }))
     }
 
-    let mut is_self_ref = false;
-    let mut is_stateless = false;
-
-    if let Some(receiver) = method.sig.receiver() {
-        if receiver.reference.is_some() && receiver.colon_token.is_none() {
-            if receiver.mutability.is_some() {
-                emit_error!(receiver, "Only `&self` is allowed");
-                return None;
-            }
-
-            is_self_ref = true;
-        } else if receiver.colon_token.is_some() && receiver.reference.is_none() {
-            is_self_ref = matches!(&*receiver.ty, syn::Type::Reference(_));
-        }
-    } else {
-        is_stateless = true;
-    };
-
-    // Additional routes
-    let is_sync_func = attrs.sync;
-    let mut routes = Vec::with_capacity(1 + attrs.aliases.len());
-    let ident = &method.sig.ident;
-    routes.push(
-        attrs
-            .route
-            .as_ref()
-            .map(syn::LitStr::value)
-            .unwrap_or_else(|| method.sig.ident.to_string()),
-    );
-
-    for route in &attrs.aliases {
-        routes.push(route.value());
+    fn find_method(&self, ident: &syn::Ident) -> Option<&MethodDef> {
+        self.handled_methods
+            .iter()
+            .find(|x| &x.method_ident == ident)
     }
 
-    // Pairs of (is_ref, req-type)
-    let (is_ref, inputs): (Vec<_>, Vec<_>) = method
-        .sig
-        .inputs
-        .iter()
-        .skip(if is_self_ref { 1 } else { 0 })
-        .map(|input| {
-            let syn::FnArg::Typed(pat) = input else {
-                abort!(input, "unexpected argument type");
-            };
-
-            if let Type::Reference(r) = &*pat.ty {
-                let inner = &r.elem;
-                (true, Type::Verbatim(quote!(std::borrow::Cow<#inner>)))
-            } else {
-                (false, (*pat.ty).clone())
-            }
-        })
-        .unzip();
-
-    let tup_inputs = quote!((#(#inputs),*));
-    let route_paths = quote!(&[#(#routes),*]);
-    let unpack = if inputs.len() == 1 {
-        let tok_ref = is_ref[0].then(|| quote!(&));
-        quote!(#tok_ref __req)
-    } else {
-        let vals = (0..inputs.len()).map(|x| syn::Index::from(x));
-        let tok_ref = is_ref.iter().map(|x| if *x { quote!(&) } else { quote!() });
-        quote!(#( #tok_ref __req.#vals ),*)
-    };
-
-    for r in routes {
-        if !used_route_table.insert(r.clone()) {
-            emit_error!(method, "duplicated route: {}", r);
-        }
-    }
-
-    let output = OutputType::new(&method.sig.output);
-
-    let tok_this_clone = (!is_stateless).then(|| quote!(let __this_2 = __this.clone();));
-    let tok_this_param = (!is_stateless).then(|| quote!(&__this_2,));
-
-    let strm = if output.is_notify() {
-        quote!(
-            #tok_this_clone
-            __service.register_notify_handler(#route_paths, move |__src, __req: #tup_inputs| {
-                T::#ident(#tok_this_param __src, #unpack);
-                Ok(())
-            })?
-        )
-    } else {
-        let type_out = output.typed_req();
-        if is_sync_func {
-            let rval = output.handle_sync_retval_to_response(
-                Ident::new("__src", method.sig.output.span()),
-                Ident::new("__result", method.sig.output.span()),
-            );
-
-            quote!(
-                #tok_this_clone
-                __service.register_request_handler(#route_paths, move |__src: #type_out, __req: #tup_inputs| {
-                    let __result = T::#ident(#tok_this_param __src.user_data_owned(), #unpack);
-                    #rval;
-                    Ok(())
-                })?
-            )
-        } else {
-            quote!(
-                #tok_this_clone
-                __service.register_request_handler(#route_paths, move |__src: #type_out, __req: #tup_inputs| {
-                    T::#ident(#tok_this_param __src, #unpack);
-                    Ok(())
-                })?
-            )
-        }
-    };
-
-    Some(if is_stateless { LoaderOutput::Stateless(strm) } else { LoaderOutput::Stateful(strm) })
-}
-
-fn generate_call_stubs(
-    method: &TraitItemFn,
-    attrs: &MethodAttrs,
-    vis: &Visibility,
-) -> Option<TokenStream> {
-    if attrs.skip {
-        return None;
-    }
-
-    let has_receiver = method.sig.receiver().is_some();
-
-    let inputs = method
-        .sig
-        .inputs
-        .iter()
-        .skip(if has_receiver { 1 } else { 0 })
-        .map(|arg| {
-            let FnArg::Typed(pat) = arg else { abort!(arg, "unexpected argument type") };
-            if !matches!(*pat.pat, Pat::Ident(_)) {
-                abort!(arg, "Function argument pattern must be named identifier.");
-            }
-            pat
-        })
-        .collect::<Vec<_>>();
-
-    let input_ref_args = inputs.iter().map(|x| *x).cloned().map(|mut x| {
-        x.ty = match *x.ty {
-            ty @ Type::Reference(_) => ty.into(),
-            other => Type::Reference(syn::TypeReference {
-                and_token: Token![&](other.span()),
-                lifetime: None,
-                mutability: None,
-                elem: other.into(),
-            })
-            .into(),
-        };
-        x
-    });
-    let input_ref_arg_tokens = quote!(#(#input_ref_args),*);
-
-    let input_idents = inputs
-        .iter()
-        .map(|x| *x)
-        .cloned()
-        .map(|x| {
-            let syn::Pat::Ident(syn::PatIdent { ident, .. }) = &*x.pat else { unreachable!() };
-            ident.clone()
-        })
-        .collect::<Vec<_>>();
-
-    let method_ident = &method.sig.ident;
-    let output = OutputType::new(&method.sig.output);
-
-    let method_str =
-        attrs.route.as_ref().map(syn::LitStr::value).unwrap_or_else(|| method_ident.to_string());
-
-    let new_ident_suffixed =
-        |sfx: &str| syn::Ident::new(&format!("{0}_{1}", method_ident, sfx), method_ident.span());
-    let new_ident_prefixed =
-        |sfx: &str| syn::Ident::new(&format!("{1}_{0}", method_ident, sfx), method_ident.span());
-    let method_ident_deferred = new_ident_suffixed("deferred");
-
-    Some(if output.is_notify() {
-        let method_ident_with_reuse = new_ident_suffixed("with_reuse");
-        let method_ident_deferred_with_reuse = new_ident_suffixed("deferred_with_reuse");
-
-        let reuse_version = attrs.with_reuse.then(|| quote!(
-            #[doc(hidden)]
-            #vis async fn #method_ident_with_reuse(&self, buffer: &mut rpc_it::rpc::WriteBuffer,  #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
-                self.0.notify_with_reuse(buffer, #method_str, &(#(#input_idents),*)).await
-            }
-
-            #[doc(hidden)]
-            #vis fn #method_ident_deferred_with_reuse(&self, buffer: &mut rpc_it::rpc::WriteBuffer,  #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
-                self.0.notify_deferred_with_reuse(buffer, #method_str, &(#(#input_idents),*))
-            }
-        ));
-
-        quote!(
-            #vis async fn #method_ident(&self, #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
-                self.0.notify(#method_str, &(#(#input_idents),*)).await
-            }
-
-
-            #vis fn #method_ident_deferred(&self, #input_ref_arg_tokens) -> Result<(), rpc_it::SendError> {
-                self.0.notify_deferred(#method_str, &(#(#input_idents),*))
-            }
-
-            #reuse_version
-        )
-    } else {
-        let (ok_tok, err_tok) = match &output {
-            OutputType::Response(ok, err) => (quote!(#ok), quote!(#err)),
-            OutputType::ResponseNoErr(ok) => (quote!(#ok), quote!(())),
-            OutputType::Notify => unreachable!(),
-        };
-
-        let method_ident_request = new_ident_prefixed("request");
-
-        quote!(
-            #vis async fn #method_ident(&self, #input_ref_arg_tokens)
-                -> Result<#ok_tok, rpc_it::TypedCallError<#err_tok>>
-            {
-                self.0.call_with_err(#method_str, &(#(#input_idents),*)).await
-            }
-
-            #vis async fn #method_ident_request(&self, #input_ref_arg_tokens)
-                -> Result<rpc_it::TypedResponse<#ok_tok, #err_tok>, rpc_it::SendError>
-            {
-                let resp = self.0.request(#method_str, &(#(#input_idents),*)).await?;
-                Ok(rpc_it::TypedResponse::new(resp.to_owned()))
-            }
-
-            #vis fn #method_ident_deferred(&self, #input_ref_arg_tokens)
-                -> Result<rpc_it::TypedResponse<#ok_tok, #err_tok>, rpc_it::SendError>
-            {
-                let resp = self.0.request_deferred(#method_str, &(#(#input_idents),*))?;
-                Ok(rpc_it::TypedResponse::new(resp.to_owned()))
-            }
-        )
-    })
-}
-
-fn generate_trait_signatures(items: &[TraitItemFn], attrs: &[MethodAttrs]) -> TokenStream {
-    let tokens = items.iter().zip(attrs).map(|(method, attrs)| {
-        let mut method = method.clone();
-        let out = OutputType::new(&method.sig.output);
-
-        if attrs.skip {
-            // Use as-is
-            return TraitItem::Fn(method);
-        }
-
-        let req_param_ident = if let Some(body) =
-            method.default.as_ref().filter(|_| !attrs.sync && !out.is_notify())
-        {
-            let span = body.span();
-            let id_req = Ident::new("___rq", span);
-            let payload: syn::Expr = syn::parse_quote_spanned!(span => (move || #body)());
-            let response = match out {
-                OutputType::Notify => unreachable!(),
-                OutputType::ResponseNoErr(_) => {
-                    quote_spanned!(span => #id_req.ok(&#payload).ok();)
-                }
-                OutputType::Response(_, _) => {
-                    quote_spanned!(
-                        span => match #payload {
-                            Ok(x) => #id_req.ok(&x).ok(),
-                            Err(e) => #id_req.err(&e).ok(),
-                        }
-                    )
-                }
-            };
-
-            method.default = Some(syn::parse_quote_spanned!(
-                span =>
-                {
-                    #response;
-                }
-            ));
-
-            syn::Pat::Ident(syn::PatIdent {
-                attrs: Vec::new(),
-                by_ref: None,
-                mutability: None,
-                subpat: None,
-                ident: id_req,
-            })
-        } else {
-            syn::Pat::Wild(syn::PatWild {
-                attrs: Vec::new(),
-                underscore_token: Token![_](method.sig.output.span()),
-            })
-        };
-
-        {
-            let has_receiver = method.sig.receiver().is_some();
-            let insert_at = if has_receiver { 1 } else { 0 };
-
-            if out.is_notify() {
-                method.sig.inputs.insert(
-                    insert_at,
-                    syn::parse_quote_spanned!(method.sig.output.span() => _: rpc_it::Notify),
-                );
-            } else if !attrs.sync {
-                method.sig.inputs.insert(
-                    insert_at,
-                    syn::FnArg::Typed(syn::PatType {
-                        attrs: Vec::new(),
-                        colon_token: Default::default(),
-                        pat: req_param_ident.into(),
-                        ty: out.typed_req().into(),
-                    }),
-                );
-
-                method.sig.output = ReturnType::Default;
-            } else {
-                method.sig.inputs.insert(
-                    insert_at,
-                    syn::parse_quote_spanned!(method.sig.output.span() => _: rpc_it::OwnedUserData),
-                );
-            }
-        }
-
-        TraitItem::Fn(method)
-    });
-
-    quote!(#(#tokens)*)
-}
-
-#[derive(Default)]
-struct MethodAttrs {
-    sync: bool,
-    skip: bool,
-    aliases: Vec<syn::LitStr>,
-    with_reuse: bool,
-    route: Option<syn::LitStr>,
-}
-
-fn method_attrs(method: &mut TraitItemFn) -> MethodAttrs {
-    let mut attrs = MethodAttrs::default();
-
-    for attr in std::mem::take(&mut method.attrs) {
-        match &attr.meta {
-            syn::Meta::Path(path) => {
-                if path.is_ident("sync") {
-                    if matches!(method.sig.output, ReturnType::Default) {
-                        emit_error!(attr, "'sync' attribute is only allowed for requests");
-                    }
-
-                    attrs.sync = true;
-                } else if path.is_ident("skip") {
-                    attrs.skip = true;
-                } else if path.is_ident("with_reuse") {
-                    attrs.with_reuse = true;
-                } else {
-                    emit_error!(attr, "unexpected attribute")
-                }
-            }
-
-            syn::Meta::List(_) => {
-                emit_error!(attr, "unexpected attribute")
-            }
-
-            syn::Meta::NameValue(kv) => {
-                let Some(ident) = kv.path.get_ident() else {
-                    emit_error!(attr, "unexpected attribute");
-                    continue;
-                };
-                let syn::Expr::Lit(syn::ExprLit { lit, .. }) = &kv.value else {
-                    emit_error!(attr, "unexpected attribute");
-                    continue;
-                };
-
-                if ident == "aliases" {
-                    let syn::Lit::Str(route) = lit else {
-                        emit_error!(lit, "unexpected non-string literal attribute");
-                        continue;
-                    };
-                    attrs.aliases.push(route.clone());
-                } else if ident == "route" {
-                    let syn::Lit::Str(route) = lit else {
-                        emit_error!(lit, "unexpected non-string literal attribute");
-                        continue;
-                    };
-                    attrs.route = Some(route.clone());
-                } else {
-                    emit_error!(attr, "unexpected attribute")
-                }
-            }
-        }
-    }
-
-    attrs
-}
-
-enum OutputType {
-    Notify,
-    ResponseNoErr(Type),
-    Response(GenericArgument, GenericArgument),
-}
-
-impl OutputType {
-    fn new(val: &syn::ReturnType) -> Self {
-        let syn::ReturnType::Type(_, ty) = val else { return Self::Notify };
-
-        let fb = || Self::ResponseNoErr((**ty).clone());
-        let Type::Path(tp) = &**ty else { return fb() };
-        let Some(first_seg) = tp.path.segments.first() else { return fb() };
-
-        if first_seg.ident != "Result" {
-            return fb();
-        }
-
-        let syn::PathArguments::AngleBracketed(ang) = &first_seg.arguments else {
-            return fb();
-        };
-
-        let mut type_iter = ang.args.iter();
-        let [Some(ok), Some(err)] = std::array::from_fn(|_| type_iter.next()) else {
-            return fb();
-        };
-
-        Self::Response(ok.clone(), err.clone())
-    }
-
-    fn is_notify(&self) -> bool {
-        matches!(self, Self::Notify)
-    }
-
-    fn typed_req(&self) -> Type {
-        match self {
-            OutputType::Notify => unimplemented!(),
-
-            OutputType::ResponseNoErr(x) => {
-                syn::parse2(quote!(rpc_it::TypedRequest<#x, ()>)).unwrap()
-            }
-
-            OutputType::Response(r, e) => {
-                syn::parse2(quote!(rpc_it::TypedRequest<#r, #e>)).unwrap()
-            }
-        }
-    }
-
-    fn handle_sync_retval_to_response(&self, req_ident: Ident, val_ident: Ident) -> TokenStream {
-        match self {
-            OutputType::Notify => unimplemented!(),
-
-            OutputType::ResponseNoErr(_) => {
-                quote!(#req_ident.ok(&#val_ident)?;)
-            }
-
-            OutputType::Response(_, _) => {
-                quote!(
-                    match #val_ident {
-                        Ok(x) => #req_ident.ok(&x)?,
-                        Err(e) => #req_ident.err(&e)?,
-                    }
-                )
-            }
-        }
+    fn find_method_by_path(&self, path: &syn::Path) -> Option<&MethodDef> {
+        let seg = type_util::path_as_mono_seg(path)?;
+        self.find_method(&seg.ident)
     }
 }
+
+mod gen_route;
+
+mod gen_func;

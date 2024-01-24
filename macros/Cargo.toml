@@ -1,6 +1,6 @@
 [package]
 name = "rpc-it-macros"
-version = "0.2.4"
+version = "0.10.0-alpha.1"
 edition = "2021"
 repository = "https://github.com/kang-sw/rpc-it-rs"
 authors = ["kang-sw <ki6080@gmail.com>"]
@@ -17,3 +17,7 @@ syn = { version = "2.0.29", features = ["full"] }
 
 [lib]
 proc-macro = true
+
+[features]
+default = []
+extra-traits = ["syn/extra-traits"]
