@@ -329,18 +329,8 @@ impl DataModel {
 
     fn main(&mut self, item: syn::ItemMod, out: &mut TokenStream) {
         let vis_level = 1;
-
-        // TODO: Find way to use re-imported crate name
-        let crate_name = quote!(rpc_it);
-
-        // Create module name
-        {
-            self.vis = Some(item.vis);
-            let vis = self.vis();
-            let ident = &item.ident;
-
-            out.extend(quote!(#vis mod #ident));
-        }
+        self.vis = Some(item.vis);
+        let ident = item.ident;
 
         let mut out_method_defs = TokenStream::new();
         let mut out_routes = TokenStream::new();
@@ -402,29 +392,44 @@ impl DataModel {
         }
 
         // Wrap the result in block
-        out.extend(quote!({
-            #![allow(unused_parens)]
-            #![allow(unused)]
-            #![allow(non_camel_case_types)]
-            #![allow(non_snake_case)]
-            #![allow(clippy::needless_lifetimes)]
 
-            use #crate_name as ___crate;
+        // TODO: Find way to use re-imported crate name
+        // Create module name
+        let vis = self.vis();
 
-            use ___crate::serde as serde;
+        out.extend(quote!(#vis mod #ident {
+            // `rpc_it` can be non-root dependency, and only visible from super ... so we need to
+            // re-import it
+            use super::*;
+            use rpc_it as ___crate;
 
-            use ___crate::macros as ___macros;
-            use ___macros::route as ___route;
+            // Simply pass through all other items
+            pub use ___inner::*;
 
-            // Pass through all other items
-            #(#pass_thru_items)*
+            mod ___inner {
+                #![allow(unused_parens)]
+                #![allow(unused)]
+                #![allow(non_camel_case_types)]
+                #![allow(non_snake_case)]
+                #![allow(clippy::needless_lifetimes)]
 
-            // Let routes appear before methods; let method decls appear as method syntax by
-            // language server
-            #out_routes
+                use super::___crate;
 
-            // Method definitions here.
-            #out_method_defs
+                use ___crate::serde as serde;
+
+                use ___crate::macros as ___macros;
+                use ___macros::route as ___route;
+
+                // Pass through all other items
+                #(#pass_thru_items)*
+
+                // Let routes appear before methods; let method decls appear as method syntax by
+                // language server
+                #out_routes
+
+                // Method definitions here.
+                #out_method_defs
+            }
         }))
     }
 

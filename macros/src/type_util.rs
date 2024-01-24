@@ -259,6 +259,10 @@ pub(crate) fn elevate_vis_level(mut in_vis: syn::Visibility, amount: usize) -> s
                 return in_vis;
             }
 
+            if vis.in_token.is_none() {
+                vis.in_token = Some(Token![in](vis.span()));
+            }
+
             let is_first_token_self = first_ident == "self";
             let source = take(&mut vis.path.segments);
             vis.path.segments.extend(

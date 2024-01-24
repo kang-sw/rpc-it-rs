@@ -1,6 +1,6 @@
 [package]
 name = "rpc-it-macros"
-version = "0.10.0-alpha.2"
+version = "0.10.0-alpha.3"
 edition = "2021"
 repository = "https://github.com/kang-sw/rpc-it-rs"
 authors = ["kang-sw <ki6080@gmail.com>"]
@@ -9,7 +9,7 @@ license = "MIT"
 exclude = ["doc/"]
 
 [dependencies]
-proc-macro2 = "1.0.66"
+proc-macro2 = { version = "1.0.66" }
 quote = "1.0"
 convert_case = "0.6.0"
 proc-macro-error = "1.0.4"

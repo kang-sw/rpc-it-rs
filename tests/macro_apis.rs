@@ -16,7 +16,7 @@ mod rpc {
 
     #[install]
     #[derive(EnumAsInner)]
-    pub const Route: Route = ALL_PASCAL_CASE;
+    pub(super) const Route: Route = ALL_PASCAL_CASE;
 
     #[direct]
     pub const MainRoute: Route = [
@@ -41,7 +41,7 @@ mod rpc {
     pub fn zero_param() -> i32;
 
     #[name = "One/Param/Flip"]
-    pub fn one_param_flip(a: i32) -> i32;
+    pub(super) fn one_param_flip(a: i32) -> i32;
 
     pub fn pass_positive_value_only(x: i32) -> Result<i32, &str>;
 
