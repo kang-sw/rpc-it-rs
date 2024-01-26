@@ -12,6 +12,9 @@ use super::WriterDirective;
 
 // ========================================================== Send Errors ===|
 
+/// Re-export of original error type.
+pub use super::ReceiveError;
+
 /// Error that occurs when sending request/notify
 #[derive(Debug, Error)]
 #[non_exhaustive]

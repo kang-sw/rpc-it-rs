@@ -201,6 +201,12 @@ mod rx_inner {
         NonUtf8MethodName(Utf8Error, Bytes, Range<usize>),
     }
 
+    impl<C: Codec> Error<C> {
+        pub fn is_eof(&self) -> bool {
+            matches!(self, Self::Eof | Self::IoError(_))
+        }
+    }
+
     // ==== Impls ====
 
     pub(super) async fn handle_inbound_once<R: Config>(
