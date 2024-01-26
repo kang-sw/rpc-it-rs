@@ -1,12 +1,13 @@
 use std::{
     mem::{take, transmute},
+    num::NonZeroUsize,
     pin::Pin,
     sync::Arc,
     task::Poll,
 };
 
 use bytes::{Bytes, BytesMut};
-use futures::FutureExt;
+use futures::{Future, FutureExt};
 use thiserror::Error;
 
 use crate::{
@@ -100,6 +101,35 @@ impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
         crate::NotifySender {
             context: Arc::clone(self.core()),
         }
+    }
+
+    /// Split receiver task into inbound receiver part and background response handler part.
+    pub async fn split_recv_task(
+        mut self,
+        capacity: impl TryInto<NonZeroUsize>,
+    ) -> (
+        mpsc::Receiver<Result<Inbound<R>, ReceiveError<R::Codec>>>,
+        impl Future<Output = ()>,
+    ) {
+        let (tx, rx) = capacity
+            .try_into()
+            .ok()
+            .map(|x| x.get())
+            .map(mpsc::bounded)
+            .unwrap_or_else(mpsc::unbounded);
+
+        let task = async move {
+            loop {
+                let msg = self.recv().await;
+                let is_eof = msg.as_ref().is_err_and(|e| e.is_eof());
+
+                if tx.send(msg).await.is_err() || is_eof {
+                    break;
+                }
+            }
+        };
+
+        (rx, task)
     }
 
     /// Closes inbound channel. Except for messages that were already pushed into the channel, no

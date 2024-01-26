@@ -139,6 +139,9 @@ mod inner {
 pub extern crate bytes;
 pub extern crate serde;
 
+/// Re-export async-channel
+pub use mpsc;
+
 // ==== Exposed APIs ====
 
 pub use bytes::{Bytes, BytesMut};
