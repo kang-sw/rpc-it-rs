@@ -42,6 +42,10 @@ pub struct Receiver<R: Config, Rx> {
     scratch: BytesMut,
 }
 
+/// A channel splitted out from original receiver
+#[allow(type_alias_bounds)]
+pub type MessageReceiver<R: Config> = mpsc::Receiver<Result<Inbound<R>, ReceiveError<R::Codec>>>;
+
 // ==== impl:Receiver ====
 
 impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
@@ -104,13 +108,10 @@ impl<R: Config, Rx: AsyncFrameRead> Receiver<R, Rx> {
     }
 
     /// Split receiver task into inbound receiver part and background response handler part.
-    pub async fn split_recv_task(
+    pub fn split_recv_task(
         mut self,
         capacity: impl TryInto<NonZeroUsize>,
-    ) -> (
-        mpsc::Receiver<Result<Inbound<R>, ReceiveError<R::Codec>>>,
-        impl Future<Output = ()>,
-    ) {
+    ) -> (MessageReceiver<R>, impl Future<Output = ()>) {
         let (tx, rx) = capacity
             .try_into()
             .ok()
