@@ -5,7 +5,6 @@ edition = "2021"
 repository = "https://github.com/kang-sw/rpc-it-rs"
 authors = ["kang-sw <ki6080@gmail.com>"]
 description = "RPC library for my own demand."
-license = "MIT"
 exclude = ["doc/"]
 
 [workspace]
