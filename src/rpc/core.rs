@@ -407,6 +407,9 @@ where
                         .map_err(WriteRunnerError::WriteFailed)?;
                 }
                 WriterDirective::WriteReqMsg(payload, req_id) => {
+                    // We don't immediately break out of this loop when write ops is
+                    // failed; First we have to prevent any awaiting request hang while
+                    // not notified the right operation was failed at first place.
                     let write_result = writer
                         .as_mut()
                         .write_frame(payload)
@@ -414,16 +417,16 @@ where
                         .map_err(WriteRunnerError::WriteFailed);
 
                     let Some(context) = w_ctx.upgrade() else {
-                        // If all request handles were dropped, it means there's no awaiting
-                        // requests that were sent, which makes sending request and receiving
-                        // response pointless.
+                        // If all request handles were dropped, it means there's no
+                        // awaiting requests that were sent, which makes sending request
+                        // and receiving response pointless.
 
                         continue;
                     };
 
                     // All path to send request on disabled client should be blocked:
-                    // - Notify Sender -> Request Sender upgrade will be blocked if `reqs` not
-                    //   present
+                    // - Notify Sender -> Request Sender upgrade will be blocked if `reqs`
+                    //   not present
                     // - Once request sender present -> It'll always be valid
                     let reqs = context
                         .reqs
@@ -431,11 +434,20 @@ where
                         .expect("disabled request feature; logic error!");
 
                     if let Err(e) = write_result {
+                        // At this context, the writer is in broken state.
                         reqs.set_request_write_failed(req_id);
                         return Err(e);
                     }
                 }
             }
+        }
+
+        if matches!(exit_type, WriteRunnerExitType::ManualCloseImmediate) {
+            // We didn't closed the channel yet!
+            writer
+                .close()
+                .await
+                .map_err(WriteRunnerError::WriterCloseFailed)?;
         }
 
         Ok::<_, WriteRunnerError>(exit_type)
