@@ -207,8 +207,8 @@ where
     Wr: AsyncFrameWrite,
     Rd: AsyncFrameRead,
 {
-    /// Create a bidirectional RPC connection in client mode; which won't create inbound receiver
-    /// channel, but spawns reader task to enable receiving responses.
+    /// Create a bidirectional RPC connection in client mode; which won't create inbound
+    /// receiver channel, but spawns reader task to enable receiving responses.
     #[must_use = must_use_message!()]
     pub fn build_client(
         self,
@@ -239,8 +239,9 @@ where
         )
     }
 
-    /// Create a bidirectional RPC connection in server mode; which will create inbound receiver
-    /// channel. If you need sender channel either, you can spawn a sender handle from the receiver.
+    /// Create a bidirectional RPC connection in server mode; which will create inbound
+    /// receiver channel. If you need sender channel either, you can spawn a sender handle
+    /// from the receiver.
     #[must_use = must_use_message!()]
     pub fn build_server(
         self,
@@ -363,8 +364,9 @@ where
         while let Ok(msg) = rx_directive.recv().await {
             match msg {
                 WriterDirective::CloseImmediately => {
-                    // Prevent further messages from being sent immediately. This is basically
-                    // best-effort attempt, which simply neglects remaining messages in the queue.
+                    // Prevent further messages from being sent immediately. This is
+                    // basically best-effort attempt, which simply neglects remaining
+                    // messages in the queue.
                     //
                     // This can return false(already closed), where the sender closes the
                     // channel preemptively to block channel as soon as possible.
@@ -380,9 +382,9 @@ where
                 WriterDirective::CloseAfterFlush => {
                     rx_directive.close(); // Same as above.
 
-                    // To flush rest of the messages, just continue the loop. Since we closed the
-                    // channel already, the loop will be terminated soon after consuming all the
-                    // remaining messages.
+                    // To flush rest of the messages, just continue the loop. Since we
+                    // closed the channel already, the loop will be terminated soon after
+                    // consuming all the remaining messages.
                     exit_type = WriteRunnerExitType::ManualClose;
                 }
                 WriterDirective::Flush => {
@@ -459,8 +461,8 @@ where
         // Assures that the writer channel is closed.
         rx_directive.close();
 
-        // Since any further trials to send requests will fail, we can invalidate all pending
-        // requests here safely.
+        // Since any further trials to send requests will fail, we can invalidate all
+        // pending requests here safely.
         reqs.mark_expired();
     }
 
