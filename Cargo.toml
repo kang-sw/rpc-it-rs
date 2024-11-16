@@ -12,7 +12,7 @@ members = ["macros"]
 
 # --------------------------------------------- Deps --------------------------------------------- #
 [dependencies]
-thiserror = "1"
+thiserror = "2"
 
 serde = "1.0"
 rand = "0.8"
@@ -20,7 +20,7 @@ rand = "0.8"
 bytes = "1.4.0"
 mpsc = { package = "async-channel", version = "2" }
 parking_lot = "0.12.1"
-hashbrown = "0.14.3"
+hashbrown = "0.15"
 futures = "0.3"
 assert = { version = "1.1.0", package = "static_assertions" }
 
