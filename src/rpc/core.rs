@@ -23,7 +23,6 @@ use super::{
     Config, Receiver, RequestSender, WriterDirective,
 };
 
-///
 pub struct Builder<R: Config, Wr, Rd, U, C> {
     writer: Wr,
     reader: Rd,

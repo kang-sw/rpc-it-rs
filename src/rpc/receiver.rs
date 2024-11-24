@@ -456,6 +456,7 @@ impl<R: Config> Inbound<R> {
         Self::to_req_range(value)
     }
 
+    #[allow(clippy::missing_transmute_annotations)]
     fn to_req_range(i: u64) -> Option<NonZeroRangeType> {
         let [begin, end] = unsafe {
             // SAFETY: Just byte mucking

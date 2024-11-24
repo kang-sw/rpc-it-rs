@@ -473,7 +473,6 @@ where
         self.codec().prepare_notify(buf, method, params)
     }
 
-    ///
     pub async fn burst(
         &self,
         burst: impl Into<PacketWriteBurst<R::Codec>>,

@@ -101,6 +101,7 @@ where
     M: NotifyMethod,
 {
     #[doc(hidden)]
+    #[allow(clippy::missing_transmute_annotations)]
     pub fn __internal_create(msg: Inbound<R>) -> Result<Self, (Inbound<R>, SerDeError)> {
         // SAFETY:
         // * The borrowed lifetime `'de` is bound to the payload of the inbound message, not
@@ -178,6 +179,7 @@ where
 {
     type Output = Result<CachedOkayObj<R::Codec, M>, CachedWaitError<R::Codec, M>>;
 
+    #[allow(clippy::missing_transmute_annotations)]
     fn poll(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
