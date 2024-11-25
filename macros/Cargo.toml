@@ -1,6 +1,6 @@
 [package]
 name = "rpc-it-macros"
-version = "0.10.0-alpha.4"
+version = "0.10.0"
 edition = "2021"
 repository = "https://github.com/kang-sw/rpc-it-rs"
 authors = ["kang-sw <ki6080@gmail.com>"]
